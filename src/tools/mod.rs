@@ -1,14 +1,16 @@
 //! Managed tool installs: which tools hpds knows about, where their
-//! binaries live on disk, and what platform archive to fetch for each.
+//! binaries live on disk, what platform archive to fetch for each, and the
+//! downloader that installs them.
 //!
-//! This module returns data only. It never prints to the terminal — all
-//! output goes through `ui/`.
+//! Terminal output (progress bars, warnings) always goes through `ui/`.
 
 // NOTE: dead_code allowed per module because nothing outside `tools/` calls
-// in yet; the downloader and the `hpds tools` subcommands are the consumers.
-// Until then everything here is exercised by unit tests only.
+// in yet; the `hpds tools` subcommands and the format/lint adapters are the
+// consumers. Until then everything here is exercised by unit tests only.
 #[allow(dead_code)]
 mod cache;
+#[allow(dead_code)]
+mod download;
 #[allow(dead_code)]
 mod manifest;
 #[allow(dead_code)]
@@ -18,10 +20,13 @@ mod spec;
 #[allow(dead_code)]
 pub mod versions;
 
-// NOTE: re-exports are consumed by the tool downloader and the `hpds tools`
-// subcommands; until those land they are only exercised by unit tests.
+// NOTE: re-exports are consumed by the `hpds tools` subcommands and the
+// format/lint adapters; until those land they are only exercised by unit
+// tests.
 #[allow(unused_imports)]
 pub use cache::ToolCache;
+#[allow(unused_imports)]
+pub use download::{Downloader, InstallContext, ensure_installed};
 #[allow(unused_imports)]
 pub use manifest::Manifest;
 #[allow(unused_imports)]
