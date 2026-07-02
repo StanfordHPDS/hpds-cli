@@ -18,19 +18,63 @@ struct Sandbox {
 }
 
 impl Sandbox {
-    /// Repo dir containing a `.git` marker (so config discovery never walks
-    /// out of the sandbox) and an empty user-config dir.
+    /// A real git repo that passes every local check (committed README
+    /// with the lab-manual sections, complete `hpds.toml`), plus an empty
+    /// user-config dir so the developer's real config never leaks in.
     fn new() -> Self {
         let root = tempfile::tempdir().expect("create sandbox tempdir");
         let repo = root.path().join("demo-repo");
         let user_dir = root.path().join("user-config");
-        fs::create_dir_all(repo.join(".git")).expect("create repo/.git");
+        fs::create_dir_all(&repo).expect("create repo dir");
         fs::create_dir_all(&user_dir).expect("create user config dir");
-        Sandbox {
+
+        let sandbox = Sandbox {
             _root: root,
             repo,
             user_dir,
-        }
+        };
+        sandbox.git(&["init", "--quiet"]);
+        sandbox.write(
+            "README.md",
+            "# demo\n\n## Description\n\n## File structure\n\n## How to run\n\n## Dependencies\n",
+        );
+        sandbox.write(
+            "hpds.toml",
+            "[project]\nstatus = \"active\"\nprimary-author = \"malcolm\"\n",
+        );
+        sandbox.git(&["add", "-A"]);
+        sandbox.git(&["commit", "--quiet", "-m", "initial"]);
+        sandbox
+    }
+
+    /// Run git in the sandbox repo with an isolated identity/config.
+    fn git(&self, args: &[&str]) {
+        let excludes = format!(
+            "core.excludesFile={}",
+            self.repo.join("no-such-excludes").display()
+        );
+        let output = std::process::Command::new("git")
+            .arg("-C")
+            .arg(&self.repo)
+            .args(["-c", "user.name=Test", "-c", "user.email=test@example.com"])
+            // The default excludes file (~/.config/git/ignore) applies even
+            // with GIT_CONFIG_GLOBAL unset, so pin it somewhere empty too.
+            .args(["-c", &excludes])
+            .args(args)
+            .env("GIT_CONFIG_GLOBAL", self.repo.join("no-such-global-config"))
+            .env("GIT_CONFIG_SYSTEM", self.repo.join("no-such-system-config"))
+            .output()
+            .expect("run git in sandbox");
+        assert!(
+            output.status.success(),
+            "git {args:?} failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    /// Write a file inside the sandbox repo.
+    fn write(&self, rel: &str, content: &str) {
+        fs::write(self.repo.join(rel), content).expect("write sandbox file");
     }
 
     /// `hpds audit <args...>` invoked from the sandbox repo.
@@ -86,6 +130,57 @@ fn audit_json_emits_the_stable_report_schema() {
         value["summary"],
         serde_json::json!({ "errors": 0, "warnings": 0, "infos": 0 })
     );
+}
+
+#[test]
+fn audit_reports_error_findings_and_exits_1() {
+    let sb = Sandbox::new();
+    sb.write(".env", "SECRET=hunter2\n");
+    sb.git(&["add", "-f", ".env"]);
+    sb.git(&["commit", "--quiet", "-m", "oops"]);
+    sb.audit_cmd(&[])
+        .assert()
+        .code(1)
+        .stdout(
+            predicate::str::contains("junk-files")
+                .and(predicate::str::contains(".env"))
+                .and(predicate::str::contains("fix:")),
+        )
+        .stderr(predicate::str::contains("error:"));
+}
+
+#[test]
+fn audit_warnings_exit_0_normally_and_1_under_strict() {
+    let sb = Sandbox::new();
+    // A modified tracked file is a warning-severity finding.
+    sb.write("README.md", "# demo (edited)\n");
+    sb.audit_cmd(&[])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("dirty-files"));
+    sb.audit_cmd(&["--strict"])
+        .assert()
+        .code(1)
+        .stderr(predicate::str::contains("--strict"));
+}
+
+#[test]
+fn audit_from_a_subdirectory_audits_the_repo_root() {
+    let sb = Sandbox::new();
+    fs::create_dir_all(sb.repo.join("analysis")).expect("create subdir");
+    sb.write("analysis/notes.txt", "n\n");
+    sb.git(&["add", "-A"]);
+    sb.git(&["commit", "--quiet", "-m", "add analysis"]);
+
+    let mut cmd = Command::cargo_bin("hpds").expect("hpds binary should build");
+    cmd.current_dir(sb.repo.join("analysis"))
+        .env("HPDS_CONFIG_DIR", &sb.user_dir)
+        .arg("audit");
+    // The README and hpds.toml live at the root; auditing from a subdir
+    // must still see them (and name the report after the root).
+    cmd.assert()
+        .success()
+        .stdout(predicate::str::contains("no findings").and(predicate::str::contains("demo-repo")));
 }
 
 #[test]

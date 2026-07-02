@@ -60,9 +60,12 @@ fn audit_current_repo(args: &AuditArgs, global: &super::GlobalArgs) -> anyhow::R
         ui::warn(warning);
     }
 
-    let repo = repo_display_name(&cwd);
+    // Audit the whole repo even when started from a subdirectory; outside
+    // any repo, fall back to the cwd and let the checks report that state.
+    let root = audit::repo_root(&cwd).unwrap_or(cwd);
+    let repo = repo_display_name(&root);
     let ctx = AuditCtx {
-        repo: cwd,
+        repo: root,
         config: loaded.config,
     };
     let findings = audit::run_checks(&audit::registry(), &ctx);

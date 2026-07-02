@@ -4,6 +4,7 @@
 //! This module returns data and rendered strings only — it never prints.
 //! The command layer (`cli::audit`) does all terminal output through `ui/`.
 
+mod checks;
 mod report;
 
 pub use report::{Summary, render_json, render_text, summarize};
@@ -18,7 +19,6 @@ use crate::config::Config;
 ///
 /// GitHub-side context (auth state, `gh` availability) is added here when
 /// the remote checks land; local checks need only these two fields.
-#[allow(dead_code)] // fields are read by the repo checks, which land after the framework
 pub struct AuditCtx {
     /// Root of the repository being audited.
     pub repo: PathBuf,
@@ -62,7 +62,6 @@ pub struct Finding {
 pub trait Check {
     /// Stable identifier, used as [`Finding::check_id`] and in bot issue
     /// fingerprints.
-    #[allow(dead_code)] // consumed by the org sweep and bot reporter, which land later
     fn id(&self) -> &str;
 
     /// Inspect the repo and report zero or more findings. An empty vec
@@ -71,25 +70,15 @@ pub trait Check {
 }
 
 /// All registered checks, in the order they run and report.
-///
-/// Holds a single placeholder while the framework is the only thing built;
-/// the real repo checks replace it as they land.
 pub fn registry() -> Vec<Box<dyn Check>> {
-    vec![Box::new(FrameworkCheck)]
+    checks::all()
 }
 
-/// Placeholder check that always passes, so `hpds audit` runs end to end
-/// before any real check exists.
-struct FrameworkCheck;
-
-impl Check for FrameworkCheck {
-    fn id(&self) -> &str {
-        "framework"
-    }
-
-    fn run(&self, _ctx: &AuditCtx) -> Vec<Finding> {
-        Vec::new()
-    }
+/// The repository root containing `dir` (so an audit started in a subdir
+/// inspects the whole repo). `None` when `dir` is not inside a git repo —
+/// the checks then report that state themselves.
+pub fn repo_root(dir: &std::path::Path) -> Option<PathBuf> {
+    checks::repo_root(dir)
 }
 
 /// Run every check against `ctx`, collecting findings in registry order.
@@ -171,10 +160,15 @@ mod tests {
     }
 
     #[test]
-    fn registry_checks_all_pass_on_a_plain_directory() {
-        // The registered checks must run cleanly end to end; the real
-        // repo checks land later and get their own targeted fixtures.
-        let findings = run_checks(&registry(), &ctx());
+    fn registry_checks_all_pass_on_a_compliant_repo() {
+        let (_tmp, repo) = checks::testutil::compliant_repo();
+        let findings = run_checks(
+            &registry(),
+            &AuditCtx {
+                repo,
+                config: Config::default(),
+            },
+        );
         assert_eq!(findings, Vec::new());
     }
 

@@ -10,17 +10,20 @@ use super::{GitxError, git_expect_success, git_output, global_config_get, home_d
 const MARKER_BEGIN: &str = "# >>> hpds vaccinate >>>";
 const MARKER_END: &str = "# <<< hpds vaccinate <<<";
 
-/// Ignore patterns per the design: R (usethis::git_vaccinate), curated Python
-/// (from github/gitignore Python.gitignore), and general editor junk.
-const PATTERNS: &[&str] = &[
-    // R
+/// R ignore patterns (usethis::git_vaccinate). Also consumed by the audit's
+/// gitignore-hygiene check, so the list lives in exactly one place.
+pub(crate) const R_PATTERNS: &[&str] = &[
     ".Rhistory",
     ".RData",
     ".Rproj.user",
     ".Rdata",
     ".httr-oauth",
     ".DS_Store",
-    // Python (curated)
+];
+
+/// Curated Python ignore patterns (from github/gitignore Python.gitignore).
+/// Also consumed by the audit's gitignore-hygiene check.
+pub(crate) const PYTHON_PATTERNS: &[&str] = &[
     "__pycache__/",
     "*.py[cod]",
     ".venv/",
@@ -30,14 +33,19 @@ const PATTERNS: &[&str] = &[
     ".pytest_cache/",
     ".mypy_cache/",
     ".ruff_cache/",
-    // General editor junk
-    "*.swp",
-    "*.swo",
-    "*~",
-    ".idea/",
-    ".vscode/",
-    "Thumbs.db",
 ];
+
+/// General editor junk, vaccinated but not language-specific.
+const EDITOR_PATTERNS: &[&str] = &["*.swp", "*.swo", "*~", ".idea/", ".vscode/", "Thumbs.db"];
+
+/// Every pattern vaccination manages, in the order it writes them.
+fn all_patterns() -> impl Iterator<Item = &'static str> {
+    R_PATTERNS
+        .iter()
+        .chain(PYTHON_PATTERNS)
+        .chain(EDITOR_PATTERNS)
+        .copied()
+}
 
 /// What a vaccination run did, for the caller to render via `ui/`.
 #[derive(Debug)]
@@ -155,7 +163,7 @@ fn apply_patterns(content: &str) -> ApplyOutcome {
     let existing: std::collections::HashSet<&str> = content.lines().map(str::trim).collect();
     let mut added = Vec::new();
     let mut already_present = Vec::new();
-    for &pattern in PATTERNS {
+    for pattern in all_patterns() {
         if existing.contains(pattern) {
             already_present.push(pattern);
         } else {
@@ -220,11 +228,11 @@ mod tests {
     #[test]
     fn empty_content_gets_a_full_marker_block() {
         let outcome = apply_patterns("");
-        assert_eq!(outcome.added.len(), PATTERNS.len());
+        assert_eq!(outcome.added.len(), all_patterns().count());
         assert!(outcome.already_present.is_empty());
         assert!(outcome.content.starts_with(MARKER_BEGIN));
         assert!(outcome.content.ends_with(&format!("{MARKER_END}\n")));
-        for pattern in PATTERNS {
+        for pattern in all_patterns() {
             assert_eq!(line_count(&outcome.content, pattern), 1);
         }
     }
@@ -234,7 +242,7 @@ mod tests {
         let first = apply_patterns("");
         let second = apply_patterns(&first.content);
         assert!(second.added.is_empty());
-        assert_eq!(second.already_present.len(), PATTERNS.len());
+        assert_eq!(second.already_present.len(), all_patterns().count());
         assert_eq!(second.content, first.content);
     }
 

@@ -9,7 +9,7 @@
 //! returned on [`Loaded::warnings`] for the caller to report through `ui/`.
 
 mod discover;
-mod raw;
+pub(crate) mod raw;
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -25,8 +25,12 @@ pub struct Config {
     pub format: FileSelection,
     pub lint: FileSelection,
     pub sql: SqlConfig,
+    pub audit: AuditConfig,
     pub tools: ToolsConfig,
 }
+
+/// Valid `[project] status` values: the machine-readable lifecycle.
+pub const PROJECT_STATUSES: &[&str] = &["active", "submitted", "published", "retired"];
 
 /// `[project]`: lifecycle metadata used by `hpds audit`.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -49,6 +53,13 @@ pub struct FileSelection {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SqlConfig {
     pub dialect: String,
+}
+
+/// `[audit]`: knobs for `hpds audit`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AuditConfig {
+    /// A branch with no commits in more than this many days is stale.
+    pub stale_days: u32,
 }
 
 /// `[tools]`: version pins plus per-tool passthrough args.
@@ -82,6 +93,7 @@ impl Default for Config {
             sql: SqlConfig {
                 dialect: "bigquery".to_string(),
             },
+            audit: AuditConfig { stale_days: 90 },
             tools: ToolsConfig::default(),
         }
     }
@@ -101,6 +113,7 @@ pub struct Layer {
     pub lint_languages: Option<Vec<String>>,
     pub lint_exclude: Option<Vec<String>>,
     pub sql_dialect: Option<String>,
+    pub audit_stale_days: Option<u32>,
     pub tool_pins: BTreeMap<String, String>,
     pub tool_args: BTreeMap<String, Vec<String>>,
 }
@@ -128,6 +141,9 @@ impl Config {
         }
         if let Some(v) = layer.sql_dialect {
             self.sql.dialect = v;
+        }
+        if let Some(v) = layer.audit_stale_days {
+            self.audit.stale_days = v;
         }
         self.tools.pins.extend(layer.tool_pins);
         self.tools.args.extend(layer.tool_args);
@@ -232,8 +248,30 @@ mod tests {
         );
         assert!(config.lint.exclude.is_empty());
         assert_eq!(config.sql.dialect, "bigquery");
+        assert_eq!(config.audit.stale_days, 90);
         assert!(config.tools.pins.is_empty());
         assert!(config.tools.args.is_empty());
+    }
+
+    #[test]
+    fn audit_stale_days_layers_like_any_other_key() {
+        let user = Layer {
+            audit_stale_days: Some(30),
+            ..Layer::default()
+        };
+        let project = Layer {
+            audit_stale_days: Some(45),
+            ..Layer::default()
+        };
+
+        let mut config = Config::default();
+        config.apply(user);
+        assert_eq!(config.audit.stale_days, 30);
+        config.apply(project);
+        assert_eq!(config.audit.stale_days, 45);
+        // a layer that does not set the key leaves it alone
+        config.apply(Layer::default());
+        assert_eq!(config.audit.stale_days, 45);
     }
 
     #[test]

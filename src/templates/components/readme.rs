@@ -16,6 +16,16 @@ pub static COMPONENT: Component = Component {
     run,
 };
 
+/// The lab-manual minimum README sections, as heading text (the templates
+/// render each as `## <section>`). The audit's readme check enforces the
+/// same list, so it lives in exactly one place.
+pub const LAB_MANUAL_SECTIONS: &[&str] = &[
+    "Description",
+    "File structure",
+    "How to run",
+    "Dependencies",
+];
+
 /// Render the README template for the project's language into the
 /// project root.
 fn run(ctx: &ComponentCtx) -> anyhow::Result<Vec<FileOutcome>> {
@@ -115,13 +125,9 @@ mod tests {
                 "README.md"
             };
             let text = fs::read_to_string(tmp.path().join(file)).unwrap();
-            for section in [
-                "## Description",
-                "## File structure",
-                "## How to run",
-                "## Dependencies",
-            ] {
-                assert!(text.contains(section), "{file} for {language}: {section}");
+            for section in LAB_MANUAL_SECTIONS {
+                let heading = format!("## {section}");
+                assert!(text.contains(&heading), "{file} for {language}: {heading}");
             }
         }
     }

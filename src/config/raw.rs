@@ -25,6 +25,7 @@ struct RawConfig {
     format: Option<RawSelection>,
     lint: Option<RawSelection>,
     sql: Option<RawSql>,
+    audit: Option<RawAudit>,
     tools: Option<toml::Table>,
     #[serde(flatten)]
     unknown: toml::Table,
@@ -52,6 +53,14 @@ struct RawSelection {
 #[serde(rename_all = "kebab-case")]
 struct RawSql {
     dialect: Option<String>,
+    #[serde(flatten)]
+    unknown: toml::Table,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+struct RawAudit {
+    stale_days: Option<u32>,
     #[serde(flatten)]
     unknown: toml::Table,
 }
@@ -88,6 +97,10 @@ pub(crate) fn parse(text: &str) -> anyhow::Result<Parsed> {
     if let Some(sql) = raw.sql {
         layer.sql_dialect = sql.dialect;
         unknown_keys.extend(note_unknown(&sql.unknown, "sql"));
+    }
+    if let Some(audit) = raw.audit {
+        layer.audit_stale_days = audit.stale_days;
+        unknown_keys.extend(note_unknown(&audit.unknown, "audit"));
     }
     if let Some(tools) = raw.tools {
         parse_tools(tools, &mut layer, &mut unknown_keys)?;
@@ -215,6 +228,26 @@ mod tests {
         assert_eq!(layer.sql_dialect.as_deref(), Some("bigquery"));
         assert_eq!(layer.tool_pins["ruff"], "0.14.0");
         assert_eq!(layer.tool_args["air"], vec!["--verbose".to_string()]);
+    }
+
+    #[test]
+    fn audit_stale_days_parses() {
+        let parsed = parse("[audit]\nstale-days = 30\n").expect("valid audit table");
+        assert_no_unknown(&parsed);
+        assert_eq!(parsed.layer.audit_stale_days, Some(30));
+    }
+
+    #[test]
+    fn audit_unknown_keys_are_collected() {
+        let parsed = parse("[audit]\nstale-days = 30\nshiny = true\n").expect("unknown keys warn");
+        assert_eq!(parsed.unknown_keys, vec!["audit.shiny"]);
+        assert_eq!(parsed.layer.audit_stale_days, Some(30));
+    }
+
+    #[test]
+    fn audit_stale_days_wrong_types_are_errors() {
+        assert!(parse("[audit]\nstale-days = \"soon\"\n").is_err());
+        assert!(parse("[audit]\nstale-days = -1\n").is_err());
     }
 
     #[test]

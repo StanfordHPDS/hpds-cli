@@ -7,6 +7,7 @@
 pub mod repo;
 mod vaccinate;
 
+pub(crate) use vaccinate::{PYTHON_PATTERNS, R_PATTERNS};
 pub use vaccinate::{VaccinateReport, vaccinate_global, vaccinate_project};
 
 use std::ffi::OsStr;
