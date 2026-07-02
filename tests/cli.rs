@@ -56,13 +56,7 @@ help_snapshot!(help_upgrade, "upgrade");
 /// stderr, says what to do next, and exits 2.
 #[test]
 fn stub_commands_exit_2_with_not_yet_implemented_error() {
-    let stubs: &[&[&str]] = &[
-        &["format"],
-        &["lint"],
-        &["setup"],
-        &["audit", "report-github"],
-        &["upgrade"],
-    ];
+    let stubs: &[&[&str]] = &[&["format"], &["lint"], &["setup"], &["upgrade"]];
     for args in stubs {
         hpds()
             .args(*args)

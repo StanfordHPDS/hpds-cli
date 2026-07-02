@@ -7,7 +7,9 @@
 //! without a network or a `gh` binary.
 
 mod checks;
-mod model;
+// The typed gh JSON views are shared with the bot (`super::report_github`),
+// which reads the same endpoints' output shapes.
+pub(super) mod model;
 
 use std::cell::RefCell;
 use std::collections::BTreeMap;

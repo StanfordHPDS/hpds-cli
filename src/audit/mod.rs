@@ -8,12 +8,13 @@ pub mod all;
 mod checks;
 pub mod github;
 mod report;
+pub mod report_github;
 
 pub use report::{Summary, render_json, render_text, summarize};
 
 use std::path::PathBuf;
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::config::Config;
 
@@ -33,8 +34,9 @@ pub struct AuditCtx {
 /// How serious a finding is.
 ///
 /// Serialized (stable, consumed by the audit bot): `"error"`, `"warn"`,
-/// `"info"`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+/// `"info"`. Deserialization is the bot side (`report_github`) reading
+/// that same schema back.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Severity {
     /// Must be fixed; fails the audit (exit 1).
@@ -49,7 +51,9 @@ pub enum Severity {
 ///
 /// Serialized field names are a STABLE schema consumed by the audit bot:
 /// `check_id`, `severity` (see [`Severity`]), `message`, `remediation`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+/// Deserialization is the bot side (`report_github`) reading that same
+/// schema back.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Finding {
     /// Id of the check that produced this finding (e.g. `"dirty-files"`).
     pub check_id: String,

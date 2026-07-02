@@ -1,0 +1,38 @@
+[
+  {
+    "id": 200,
+    "node_id": "IC_kwDOAbc123",
+    "user": {
+      "login": "researcher1",
+      "type": "User"
+    },
+    "created_at": "2025-05-01T09:00:00Z",
+    "updated_at": "2025-05-01T09:00:00Z",
+    "author_association": "MEMBER",
+    "body": "LGTM once the audit comes back green."
+  },
+  {
+    "id": 201,
+    "node_id": "IC_kwDOAbc124",
+    "user": {
+      "login": "github-actions[bot]",
+      "type": "Bot"
+    },
+    "created_at": "2025-05-01T09:05:00Z",
+    "updated_at": "2025-05-02T09:05:00Z",
+    "author_association": "NONE",
+    "body": "<!-- hpds-audit -->\n### hpds audit: `demo`\n\n| severity | check | finding | fix |\n| --- | --- | --- | --- |\n| error | `dirty-files` | 2 tracked files have uncommitted changes | commit or stash them |\n\n1 error, 0 warnings, 0 info\n\n_Posted by `hpds audit report-github`; this comment is updated in place on every run._"
+  },
+  {
+    "id": 202,
+    "node_id": "IC_kwDOAbc125",
+    "user": {
+      "login": "malcolmbarrett",
+      "type": "User"
+    },
+    "created_at": "2025-05-02T10:00:00Z",
+    "updated_at": "2025-05-02T10:00:00Z",
+    "author_association": "OWNER",
+    "body": "On it."
+  }
+]

@@ -1,0 +1,59 @@
+[
+  {
+    "number": 31,
+    "node_id": "I_kwDOAbc201",
+    "title": "hpds audit: dirty-files",
+    "state": "open",
+    "labels": [
+      {
+        "name": "hpds-audit",
+        "color": "d73a4a"
+      }
+    ],
+    "user": {
+      "login": "github-actions[bot]",
+      "type": "Bot"
+    },
+    "created_at": "2025-04-21T06:00:00Z",
+    "updated_at": "2025-04-21T06:00:00Z",
+    "body": "<!-- hpds-audit:fingerprint:0bc36597da4cb3e1 -->\nThe scheduled `hpds audit` of `acme/demo` reported an error:\n\n- **check:** `dirty-files`\n- **finding:** 2 tracked files have uncommitted changes\n- **fix:** commit or stash them\n\n_Filed by `hpds audit report-github`; it will be closed automatically once a scheduled audit no longer reports this finding._"
+  },
+  {
+    "number": 32,
+    "node_id": "I_kwDOAbc202",
+    "title": "hpds audit: junk-files",
+    "state": "open",
+    "labels": [
+      {
+        "name": "hpds-audit",
+        "color": "d73a4a"
+      }
+    ],
+    "user": {
+      "login": "github-actions[bot]",
+      "type": "Bot"
+    },
+    "created_at": "2025-04-21T06:00:00Z",
+    "updated_at": "2025-04-21T06:00:00Z",
+    "body": "<!-- hpds-audit:fingerprint:289517ebc7c6672e -->\nThe scheduled `hpds audit` of `acme/demo` reported an error:\n\n- **check:** `junk-files`\n- **finding:** .DS_Store is committed\n- **fix:** remove it and add it to .gitignore\n\n_Filed by `hpds audit report-github`; it will be closed automatically once a scheduled audit no longer reports this finding._"
+  },
+  {
+    "number": 33,
+    "node_id": "I_kwDOAbc203",
+    "title": "Tracking: overall repo hygiene",
+    "state": "open",
+    "labels": [
+      {
+        "name": "hpds-audit",
+        "color": "d73a4a"
+      }
+    ],
+    "user": {
+      "login": "malcolmbarrett",
+      "type": "User"
+    },
+    "created_at": "2025-04-01T12:00:00Z",
+    "updated_at": "2025-04-01T12:00:00Z",
+    "body": "A human filed this under the hpds-audit label; the bot must leave it alone."
+  }
+]
