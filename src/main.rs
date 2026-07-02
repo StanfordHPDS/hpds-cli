@@ -2,6 +2,7 @@
 //!
 //! Thin entry point: parse the CLI, dispatch, render top-level errors.
 
+mod audit;
 mod cli;
 mod config;
 mod fsx;

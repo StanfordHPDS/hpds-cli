@@ -12,8 +12,10 @@ Commands:
   help           Print this message or the help of the given subcommand(s)
 
 Options:
-  -v, --verbose        Show more detail (underlying commands, tool names)
-  -q, --quiet          Suppress all output except errors
-      --no-color       Disable colored output
-      --config <PATH>  Use this config file instead of discovering hpds.toml
-  -h, --help           Print help
+  -v, --verbose          Show more detail (underlying commands, tool names)
+  -q, --quiet            Suppress all output except errors
+      --format <FORMAT>  Output format [default: text] [possible values: text, json]
+      --no-color         Disable colored output
+      --config <PATH>    Use this config file instead of discovering hpds.toml
+      --strict           Exit 1 on warnings too (they stay warnings in the report)
+  -h, --help             Print help

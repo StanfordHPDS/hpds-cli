@@ -108,10 +108,10 @@ pub(crate) fn stderr_colors() -> bool {
 pub(crate) const ERROR_STYLE: anstyle::Style = anstyle::Style::new()
     .bold()
     .fg_color(Some(anstyle::Color::Ansi(anstyle::AnsiColor::Red)));
-const WARN_STYLE: anstyle::Style = anstyle::Style::new()
+pub(crate) const WARN_STYLE: anstyle::Style = anstyle::Style::new()
     .bold()
     .fg_color(Some(anstyle::Color::Ansi(anstyle::AnsiColor::Yellow)));
-const SUCCESS_STYLE: anstyle::Style =
+pub(crate) const SUCCESS_STYLE: anstyle::Style =
     anstyle::Style::new().fg_color(Some(anstyle::Color::Ansi(anstyle::AnsiColor::Green)));
 pub(crate) const HINT_STYLE: anstyle::Style =
     anstyle::Style::new().fg_color(Some(anstyle::Color::Ansi(anstyle::AnsiColor::Cyan)));
