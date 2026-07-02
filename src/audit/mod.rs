@@ -75,6 +75,13 @@ pub trait Check {
     /// Inspect the repo and report zero or more findings. An empty vec
     /// means the check passed.
     fn run(&self, ctx: &AuditCtx) -> Vec<Finding>;
+
+    /// Whether the check asks git about the repo. When the audited
+    /// directory is not a repository, the command layer skips these and
+    /// reports one [`not_a_repo_finding`] instead of a git error per check.
+    fn needs_repo(&self) -> bool {
+        true
+    }
 }
 
 /// All registered local checks, in the order they run and report. The
@@ -86,9 +93,24 @@ pub fn registry() -> Vec<Box<dyn Check>> {
 
 /// The repository root containing `dir` (so an audit started in a subdir
 /// inspects the whole repo). `None` when `dir` is not inside a git repo —
-/// the checks then report that state themselves.
+/// the command layer then skips the git-backed checks and reports
+/// [`not_a_repo_finding`].
 pub fn repo_root(dir: &std::path::Path) -> Option<PathBuf> {
     checks::repo_root(dir)
+}
+
+/// The one Error finding reported when the audited directory is not a git
+/// repository (in place of a near-identical git error from every
+/// git-backed check).
+pub fn not_a_repo_finding() -> Finding {
+    Finding {
+        check_id: "git".to_string(),
+        severity: Severity::Error,
+        message: "not a git repository (the checks that inspect git were skipped)".to_string(),
+        remediation: "run `git init` to make this directory a repository, then re-run \
+                      `hpds audit`"
+            .to_string(),
+    }
 }
 
 /// Run every check against `ctx`, collecting findings in registry order.
@@ -182,6 +204,27 @@ mod tests {
             },
         );
         assert_eq!(findings, Vec::new());
+    }
+
+    #[test]
+    fn only_the_git_free_checks_run_outside_a_repo() {
+        let ids: Vec<String> = registry()
+            .iter()
+            .filter(|check| !check.needs_repo())
+            .map(|check| check.id().to_string())
+            .collect();
+        assert_eq!(ids, ["readme", "lifecycle-metadata"]);
+    }
+
+    #[test]
+    fn not_a_repo_finding_is_one_error_pointing_at_git_init() {
+        let finding = not_a_repo_finding();
+        assert_eq!(finding.severity, Severity::Error);
+        assert!(
+            finding.message.contains("not a git repository"),
+            "{finding:?}"
+        );
+        assert!(finding.remediation.contains("git init"), "{finding:?}");
     }
 
     #[test]

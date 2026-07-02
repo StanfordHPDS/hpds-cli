@@ -173,6 +173,22 @@ pub fn gh_auth() -> anyhow::Result<GhAuth> {
     }
 }
 
+/// The GitHub login of the user `gh` is authenticated as, via
+/// `gh api user -q .login`. `None` when gh is missing, unauthenticated,
+/// offline, or otherwise cannot answer — callers treat the login as a
+/// best-effort default, never a hard requirement.
+pub fn gh_login() -> Option<String> {
+    let output = Command::new("gh")
+        .args(["api", "user", "-q", ".login"])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let login = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    (!login.is_empty()).then_some(login)
+}
+
 /// The user's home directory, from `HOME` (or `USERPROFILE` on Windows).
 fn home_dir() -> Result<PathBuf, GitxError> {
     ["HOME", "USERPROFILE"]

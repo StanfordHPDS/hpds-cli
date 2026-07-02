@@ -40,11 +40,17 @@ impl Kind {
     }
 
     fn parse(value: &str) -> anyhow::Result<Kind> {
+        // An unknown --kind value is a usage error (exit 2), like an
+        // unknown component name.
         Kind::ALL
             .into_iter()
             .find(|k| k.name() == value)
-            .ok_or_else(|| anyhow::anyhow!("`{value}` is not a container kind"))
-            .hint("pass --kind docker, --kind apptainer, or --kind both")
+            .ok_or_else(|| {
+                crate::cli::usage_error(
+                    format!("`{value}` is not a container kind"),
+                    "pass --kind docker, --kind apptainer, or --kind both",
+                )
+            })
     }
 
     /// The container formats this kind renders, in order. Each format is
@@ -112,15 +118,15 @@ mod tests {
     }
 
     #[test]
-    fn unknown_kind_errors_and_lists_the_valid_kinds() {
+    fn unknown_kind_is_a_usage_error_listing_the_valid_kinds() {
         let err = Kind::parse("podman").unwrap_err();
-        let rendered = ui::render_error(&err, false);
-        assert!(
-            rendered.contains("podman"),
-            "names the bad kind: {rendered}"
-        );
+        let usage = err
+            .downcast_ref::<crate::cli::UsageError>()
+            .expect("an unknown --kind value is a usage error (exit 2)");
+        let out = format!("{usage}\nhint: {}", usage.hint());
+        assert!(out.contains("podman"), "names the bad kind: {out}");
         for valid in ["docker", "apptainer", "both"] {
-            assert!(rendered.contains(valid), "lists `{valid}`: {rendered}");
+            assert!(out.contains(valid), "lists `{valid}`: {out}");
         }
     }
 

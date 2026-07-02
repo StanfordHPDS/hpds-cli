@@ -16,6 +16,11 @@ impl Check for LifecycleMetadata {
         "lifecycle-metadata"
     }
 
+    /// Reads files only, never git — it runs even outside a repository.
+    fn needs_repo(&self) -> bool {
+        false
+    }
+
     fn run(&self, ctx: &AuditCtx) -> Vec<Finding> {
         let path = ctx.repo.join("hpds.toml");
         let text = match std::fs::read_to_string(&path) {

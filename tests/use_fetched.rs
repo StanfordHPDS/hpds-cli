@@ -90,6 +90,41 @@ fn poster_rejects_the_workflows_flag_without_fetching() {
     assert!(!sandbox.path("hpds-poster").exists(), "nothing was fetched");
 }
 
+/// A successful fetch prints `✓ created <dir>` first, then the `next:`
+/// guidance — the outcome before the advice. Driven with a fake `quarto`
+/// on PATH so no network is touched. Unix-only: a script shim cannot
+/// intercept `Command::new` on Windows, which resolves only `.exe`.
+#[cfg(unix)]
+#[test]
+fn successful_fetch_prints_created_before_the_next_steps() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let sandbox = Sandbox::new();
+    let shim_dir = sandbox.home.path().join("bin");
+    fs::create_dir(&shim_dir).expect("create shim dir");
+    let quarto = shim_dir.join("quarto");
+    fs::write(&quarto, "#!/bin/sh\nexit 0\n").expect("write quarto shim");
+    fs::set_permissions(&quarto, fs::Permissions::from_mode(0o755)).expect("chmod quarto shim");
+
+    let assert = sandbox
+        .hpds_use(&["slides"])
+        .env("PATH", &shim_dir)
+        .assert()
+        .success();
+    let stdout =
+        String::from_utf8(assert.get_output().stdout.clone()).expect("stdout should be UTF-8");
+    let created_at = stdout
+        .find("created hpds-slides-theme")
+        .unwrap_or_else(|| panic!("reports the created directory:\n{stdout}"));
+    let next_at = stdout
+        .find("next:")
+        .unwrap_or_else(|| panic!("prints the next steps:\n{stdout}"));
+    assert!(
+        created_at < next_at,
+        "`created` comes before `next:`:\n{stdout}"
+    );
+}
+
 #[test]
 fn existing_destination_errors_before_any_fetch_and_says_how_to_proceed() {
     let sandbox = Sandbox::new();

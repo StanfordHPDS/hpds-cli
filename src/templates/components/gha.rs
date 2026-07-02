@@ -81,20 +81,24 @@ fn run(ctx: &ComponentCtx) -> anyhow::Result<Vec<FileOutcome>> {
     Ok(outcomes)
 }
 
-/// Map `--workflows` names to workflows, rejecting unknown names.
+/// Map `--workflows` names to workflows, rejecting unknown names. Bad
+/// values are usage errors (exit 2), like an unknown component name.
 fn resolve(names: &[String]) -> anyhow::Result<Vec<&'static Workflow>> {
     if names.is_empty() {
-        return Err(anyhow::anyhow!("no workflows given"))
-            .hint(format!("pass --workflows with any of: {}", available()));
+        return Err(crate::cli::usage_error(
+            "no workflows given",
+            format!("pass --workflows with any of: {}", available()),
+        ));
     }
     names
         .iter()
         .map(|name| {
-            WORKFLOWS
-                .iter()
-                .find(|w| w.name == name)
-                .ok_or_else(|| anyhow::anyhow!("unknown gha workflow `{name}`"))
-                .hint(format!("available workflows: {}", available()))
+            WORKFLOWS.iter().find(|w| w.name == name).ok_or_else(|| {
+                crate::cli::usage_error(
+                    format!("unknown gha workflow `{name}`"),
+                    format!("available workflows: {}", available()),
+                )
+            })
         })
         .collect()
 }
@@ -128,7 +132,6 @@ mod tests {
     use super::super::test_ctx;
     use super::*;
     use crate::templates::{Vars, WriteOutcome};
-    use crate::ui::render_error;
     use std::fs;
 
     #[test]
@@ -167,10 +170,19 @@ mod tests {
         assert_eq!(resolved.len(), WORKFLOWS.len());
     }
 
+    /// Message + hint of a usage error, the way `main` renders them (the
+    /// hint rides on the type, not the anyhow chain).
+    fn usage_parts(err: &anyhow::Error) -> String {
+        let usage = err
+            .downcast_ref::<crate::cli::UsageError>()
+            .expect("a bad --workflows value is a usage error (exit 2)");
+        format!("{usage}\nhint: {}", usage.hint())
+    }
+
     #[test]
-    fn resolve_rejects_an_unknown_workflow_and_names_the_real_ones() {
+    fn resolve_rejects_an_unknown_workflow_as_usage_error_naming_the_real_ones() {
         let err = resolve(&["definitely-not-a-workflow".to_string()]).unwrap_err();
-        let out = render_error(&err, false);
+        let out = usage_parts(&err);
         assert!(out.contains("definitely-not-a-workflow"), "out: {out}");
         assert!(out.contains("pr-template"), "out: {out}");
         assert!(out.contains("lint"), "out: {out}");
@@ -179,7 +191,7 @@ mod tests {
     #[test]
     fn resolve_rejects_an_empty_selection_with_a_flag_hint() {
         let err = resolve(&[]).unwrap_err();
-        let out = render_error(&err, false);
+        let out = usage_parts(&err);
         assert!(out.contains("--workflows"), "out: {out}");
         assert!(out.contains("pr-template, lint"), "out: {out}");
     }

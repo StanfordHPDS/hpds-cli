@@ -81,18 +81,21 @@ fn unknown_component_exits_2_with_hint_listing_valid_names() {
 // --- pipeline: kind resolution -------------------------------------------
 
 #[test]
-fn pipeline_invalid_kind_fails_and_lists_valid_kinds() {
+fn pipeline_invalid_kind_exits_2_and_lists_valid_kinds() {
+    // An unknown --kind value is a usage error, exactly like an unknown
+    // component name: both exit 2.
     let tmp = tempfile::tempdir().expect("tempdir");
     hpds()
         .args(["use", "pipeline", "--kind", "cmake"])
         .current_dir(tmp.path())
         .assert()
-        .failure()
+        .code(2)
         .stderr(
             predicate::str::contains("cmake")
                 .and(predicate::str::contains("make"))
                 .and(predicate::str::contains("targets"))
-                .and(predicate::str::contains("both")),
+                .and(predicate::str::contains("both"))
+                .and(predicate::str::contains("hint:")),
         );
 }
 

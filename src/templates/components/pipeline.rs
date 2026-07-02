@@ -42,11 +42,17 @@ impl Kind {
     }
 
     fn parse(value: &str) -> anyhow::Result<Kind> {
+        // An unknown --kind value is a usage error (exit 2), like an
+        // unknown component name.
         Kind::ALL
             .into_iter()
             .find(|k| k.name() == value)
-            .ok_or_else(|| anyhow::anyhow!("`{value}` is not a pipeline kind"))
-            .hint("pass --kind make, --kind targets, or --kind both")
+            .ok_or_else(|| {
+                crate::cli::usage_error(
+                    format!("`{value}` is not a pipeline kind"),
+                    "pass --kind make, --kind targets, or --kind both",
+                )
+            })
     }
 
     /// The embedded template directories this kind renders, in order.
@@ -108,12 +114,15 @@ mod tests {
     }
 
     #[test]
-    fn unknown_kind_errors_and_lists_the_valid_kinds() {
+    fn unknown_kind_is_a_usage_error_listing_the_valid_kinds() {
         let err = Kind::parse("cmake").unwrap_err();
-        let rendered = ui::render_error(&err, false);
-        assert!(rendered.contains("cmake"), "names the bad kind: {rendered}");
+        let usage = err
+            .downcast_ref::<crate::cli::UsageError>()
+            .expect("an unknown --kind value is a usage error (exit 2)");
+        let out = format!("{usage}\nhint: {}", usage.hint());
+        assert!(out.contains("cmake"), "names the bad kind: {out}");
         for valid in ["make", "targets", "both"] {
-            assert!(rendered.contains(valid), "lists `{valid}`: {rendered}");
+            assert!(out.contains(valid), "lists `{valid}`: {out}");
         }
     }
 

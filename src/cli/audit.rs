@@ -181,17 +181,25 @@ fn audit_current_repo(args: &AuditArgs, global: &super::GlobalArgs) -> anyhow::R
     }
 
     // Audit the whole repo even when started from a subdirectory; outside
-    // any repo, fall back to the cwd and let the checks report that state.
-    let root = audit::repo_root(&cwd).unwrap_or(cwd);
+    // any repo, fall back to the cwd, run only the checks that never ask
+    // git, and report the missing repository once.
+    let (root, is_repo) = match audit::repo_root(&cwd) {
+        Some(root) => (root, true),
+        None => (cwd, false),
+    };
     let repo = repo_display_name(&root);
 
     // GitHub checks run only against a github.com origin with an
     // authenticated gh; when they apply but cannot run, the report carries
-    // an Info notice saying so.
-    let (github, notice) = match audit::github::probe(&root) {
-        audit::github::GithubStatus::Ready(ctx) => (Some(ctx), None),
-        audit::github::GithubStatus::NoRemote => (None, None),
-        audit::github::GithubStatus::Skipped(finding) => (None, Some(finding)),
+    // an Info notice saying so. Without a repo there is no origin to probe.
+    let (github, notice) = if is_repo {
+        match audit::github::probe(&root) {
+            audit::github::GithubStatus::Ready(ctx) => (Some(ctx), None),
+            audit::github::GithubStatus::NoRemote => (None, None),
+            audit::github::GithubStatus::Skipped(finding) => (None, Some(finding)),
+        }
+    } else {
+        (None, None)
     };
     let ctx = AuditCtx {
         repo: root,
@@ -199,13 +207,22 @@ fn audit_current_repo(args: &AuditArgs, global: &super::GlobalArgs) -> anyhow::R
         github,
     };
     let mut checks = audit::registry();
+    if !is_repo {
+        // One "not a git repository" finding stands in for the git-backed
+        // checks; running them would only repeat it per check.
+        checks.retain(|check| !check.needs_repo());
+    }
     if ctx.github.is_some() {
         checks.extend(audit::github::registry());
     }
-    // The summary line counts checks actually run; the appended gh-skip
-    // notice is a finding about the run, not a check.
+    // The summary line counts checks actually run; the appended not-a-repo
+    // and gh-skip notices are findings about the run, not checks.
     let checks_run = checks.len();
-    let mut findings = audit::run_checks(&checks, &ctx);
+    let mut findings = Vec::new();
+    if !is_repo {
+        findings.push(audit::not_a_repo_finding());
+    }
+    findings.extend(audit::run_checks(&checks, &ctx));
     findings.extend(notice);
 
     match args.format {

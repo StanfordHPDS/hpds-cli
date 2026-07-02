@@ -38,6 +38,10 @@ pub struct ComponentCtx<'a> {
     pub dest: &'a Path,
     /// Standard substitution variables (project, language, year, author).
     pub vars: Vars,
+    /// What-to-do-next lines collected by the component. The command layer
+    /// prints them after the file outcomes, so the guidance always follows
+    /// the `created ...` report it refers to.
+    pub guidance: std::cell::RefCell<Vec<String>>,
 }
 
 /// One `hpds use` component.
@@ -130,6 +134,7 @@ pub(crate) fn test_ctx<'a>(dest: &'a Path, language: &str) -> ComponentCtx<'a> {
         force: false,
         dest,
         vars: Vars::standard("malaria-icu", Some(language), "HPDS Lab"),
+        guidance: std::cell::RefCell::new(Vec::new()),
     }
 }
 

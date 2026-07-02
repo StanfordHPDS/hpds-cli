@@ -17,6 +17,11 @@ impl Check for Readme {
         "readme"
     }
 
+    /// Reads files only, never git — it runs even outside a repository.
+    fn needs_repo(&self) -> bool {
+        false
+    }
+
     fn run(&self, ctx: &AuditCtx) -> Vec<Finding> {
         let Some(name) = README_NAMES
             .iter()

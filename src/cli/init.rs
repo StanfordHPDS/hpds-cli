@@ -1,14 +1,15 @@
 //! `hpds init` — project setup wizard. Also reachable as
 //! `hpds project init`.
 //!
-//! Interactive: prompts for name, description, language, primary author,
-//! and a multi-select of template components, then offers `git init`,
+//! Interactive: prompts for name, description, language, a multi-select
+//! of template components, and the primary author, then offers `git init`,
 //! project `.gitignore` vaccination, and GitHub repo creation. Every
 //! prompt has a flag-driven equivalent, so `--yes` (plus flags) runs the
 //! whole thing without asking anything: defaults are the directory name,
-//! an empty description, the detected language, the git-config author,
-//! and no components. Under `--yes` the git-forward steps run only when
-//! their flags (`--git-init`, `--vaccinate`, `--repo-create`) ask for them.
+//! an empty description, the detected language, the GitHub login gh is
+//! authenticated as (else an empty author), and no components. Under
+//! `--yes` the git-forward steps run only when their flags (`--git-init`,
+//! `--vaccinate`, `--repo-create`) ask for them.
 //!
 //! Components come from the `hpds use` registry; `--use` accepts an
 //! optional `:variant` per component (e.g. `pipeline:targets`). Without a
@@ -54,8 +55,8 @@ pub struct InitArgs {
     #[arg(long = "use", value_delimiter = ',', value_name = "COMPONENTS")]
     pub components: Option<Vec<String>>,
 
-    /// Primary author (GitHub username) for hpds.toml [default: git config
-    /// github.user, then user.name]
+    /// Primary author (GitHub username) for hpds.toml [default: the login
+    /// gh is authenticated as, else empty]
     #[arg(long, value_name = "AUTHOR")]
     pub author: Option<String>,
 
@@ -100,11 +101,14 @@ pub fn run(args: InitArgs) -> anyhow::Result<()> {
         |d| ui::text("Project description (one line)", d),
     )?;
     let language = resolve_language(args.language.clone(), args.yes, &cwd)?;
+    // Selections are validated before the author is resolved: bad flags
+    // should fail fast, and the author default may ask gh (a subprocess,
+    // possibly the network) for the login.
+    let selections = resolve_selections(args.components.as_deref(), args.yes)?;
+    ensure_language_for(&selections, language.as_deref())?;
     let author = gitx::repo::resolve_with(args.author.clone(), args.yes, default_author, |d| {
         ui::text("Primary author (GitHub username)", d)
     })?;
-    let selections = resolve_selections(args.components.as_deref(), args.yes)?;
-    ensure_language_for(&selections, language.as_deref())?;
 
     let vars = Vars::standard(&name, language.as_deref(), &author);
 
@@ -130,8 +134,12 @@ pub fn run(args: InitArgs) -> anyhow::Result<()> {
             force: args.force,
             dest: &cwd,
             vars: vars.clone(),
+            guidance: std::cell::RefCell::new(Vec::new()),
         };
         conflicts += r#use::report_outcomes(&(component.run)(&ctx)?);
+        for line in ctx.guidance.borrow().iter() {
+            ui::println(line);
+        }
     }
     if conflicts > 0 {
         let plural = if conflicts == 1 { "file" } else { "files" };
@@ -157,14 +165,12 @@ fn default_project_name(cwd: &Path) -> anyhow::Result<String> {
     }
 }
 
-/// Default primary author: `github.user` from the global git config (it is
-/// a GitHub username the audit checks), falling back to `user.name`, then
-/// to empty (the key is optional in hpds.toml).
+/// Default primary author: the login `gh` is authenticated as. The audit
+/// watchers check needs a GitHub LOGIN — git's `user.name` is a display
+/// name, so it is never used. Without a usable gh, the author stays empty
+/// (and the generated hpds.toml says to fill it in).
 fn default_author() -> anyhow::Result<String> {
-    if let Some(user) = gitx::global_config_get("github.user")? {
-        return Ok(user);
-    }
-    Ok(gitx::global_config_get("user.name")?.unwrap_or_default())
+    Ok(gitx::gh_login().unwrap_or_default())
 }
 
 /// The project language: the flag wins; `--yes` falls back to detection
@@ -431,10 +437,11 @@ fn hpds_toml(name: &str, description: &str, author: &str) -> String {
     out.push_str("# active | submitted | published | retired\n");
     out.push_str("status = \"active\"\n");
     out.push_str("# GitHub username; `hpds audit` checks they watch the repo\n");
-    out.push_str(&format!(
-        "primary-author = {}\n",
-        toml_string(&one_line(author))
-    ));
+    let author = one_line(author);
+    if author.is_empty() {
+        out.push_str("# fill in your GitHub username (no gh login was detected)\n");
+    }
+    out.push_str(&format!("primary-author = {}\n", toml_string(&author)));
     out
 }
 
@@ -690,6 +697,22 @@ mod tests {
             Some("malcolm")
         );
         assert_eq!(parsed["project"]["status"].as_str(), Some("active"));
+    }
+
+    #[test]
+    fn hpds_toml_with_an_empty_author_says_to_fill_in_the_username() {
+        let toml = hpds_toml("p", "", "");
+        assert!(
+            toml.contains("fill in your GitHub username"),
+            "says what to do: {toml}"
+        );
+        assert!(toml.contains("primary-author = \"\""), "{toml}");
+    }
+
+    #[test]
+    fn hpds_toml_with_an_author_has_no_fill_in_comment() {
+        let toml = hpds_toml("p", "", "octocat");
+        assert!(!toml.contains("fill in"), "{toml}");
     }
 
     #[test]

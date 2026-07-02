@@ -13,8 +13,8 @@
 //! running quarto at the project root would always fail.
 //!
 //! A successful fetch is reported as one `Created` [`FileOutcome`] for the
-//! new subdirectory; the what-to-do-next lines are printed here through
-//! `ui/` because they are guidance, not file outcomes.
+//! new subdirectory; the what-to-do-next lines go into the context's
+//! guidance buffer, which the command layer prints after the outcomes.
 
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
@@ -217,6 +217,63 @@ fn render_stderr(stderr: &str) -> String {
     }
 }
 
+/// Reduce a tool's stderr dump to its one meaningful line: strip ANSI
+/// escape codes, prefer the first line that mentions an error, and fall
+/// back to the first non-empty line. Quarto failures arrive as multi-line
+/// Deno stack traces with color codes; only the error line helps the user.
+fn first_error_line(stderr: &str) -> String {
+    let cleaned = strip_ansi(stderr);
+    let mut lines = cleaned
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty());
+    let first = lines.next().unwrap_or_default();
+    std::iter::once(first)
+        .chain(lines)
+        .find(|line| line.to_lowercase().contains("error"))
+        .unwrap_or(first)
+        .to_string()
+}
+
+/// Remove ANSI escape sequences (CSI like `\x1b[31m`, OSC like terminal
+/// hyperlinks, and lone two-byte escapes), keeping the plain text.
+fn strip_ansi(input: &str) -> String {
+    let mut out = String::with_capacity(input.len());
+    let mut chars = input.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c != '\x1b' {
+            out.push(c);
+            continue;
+        }
+        match chars.next() {
+            // CSI: parameters and intermediates, then one final byte in @..~.
+            Some('[') => {
+                for next in chars.by_ref() {
+                    if ('\u{40}'..='\u{7e}').contains(&next) {
+                        break;
+                    }
+                }
+            }
+            // OSC: runs to a BEL or an ESC-backslash string terminator.
+            Some(']') => {
+                while let Some(next) = chars.next() {
+                    match next {
+                        '\x07' => break,
+                        '\x1b' => {
+                            chars.next_if_eq(&'\\');
+                            break;
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            // Any other two-byte escape (or a trailing lone ESC): dropped.
+            _ => {}
+        }
+    }
+    out
+}
+
 /// Fetch `template` into a fresh subdirectory of the project at `ctx.dest`,
 /// using the tools found on `path_var` (the run functions pass the live
 /// `PATH`; tests pass a fake one).
@@ -242,11 +299,12 @@ fn fetch(
             clone_and_strip(tool, &program, template.slug(), &template.url(), &dest)?;
         }
     }
-    // Guidance, not a file outcome; print it here. The relative path keeps
-    // the advice short — `hpds use` runs from the project root.
-    for step in template.next_steps(&rel_dest, strategy) {
-        ui::println(&step);
-    }
+    // Guidance, not a file outcome: hand it to the command layer, which
+    // prints it after the `created ...` report it refers to. The relative
+    // path keeps the advice short — `hpds use` runs from the project root.
+    ctx.guidance
+        .borrow_mut()
+        .extend(template.next_steps(&rel_dest, strategy));
     Ok(vec![FileOutcome {
         path: rel_dest,
         outcome: WriteOutcome::Created,
@@ -381,9 +439,11 @@ fn quarto_use_template(
     if output.status.success() {
         Ok(())
     } else {
+        // Quarto fails with a whole ANSI-colored stack trace on stderr;
+        // keep only the line that says what went wrong.
         Err(FetchError::FetchFailed {
             url: template.url(),
-            stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
+            stderr: first_error_line(&String::from_utf8_lossy(&output.stderr)),
         })
     }
 }
@@ -666,6 +726,88 @@ mod tests {
         ensure_dest_absent(&dest, "slides").expect("a retry passes the pre-check");
     }
 
+    /// Regression: an offline `quarto use template` dies with a multi-line
+    /// Deno stack trace full of raw ANSI codes. The hpds error must keep
+    /// only the first meaningful error line (ANSI stripped) alongside the
+    /// repo URL and the connectivity hint — not the whole dump.
+    #[cfg(unix)]
+    #[test]
+    fn failed_quarto_fetch_truncates_stderr_to_the_first_error_line_without_ansi() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = tempfile::tempdir().expect("create tempdir");
+        let shim = tmp.path().join("quarto");
+        fs::write(
+            &shim,
+            concat!(
+                "#!/bin/sh\n",
+                "printf '\\033[2K\\r[1/2] downloading template\\n' >&2\n",
+                "printf '\\033[31mERROR: error sending request for url ",
+                "(https://api.github.com/repos/StanfordHPDS/hpds-slides-theme/tarball): ",
+                "dns error\\033[0m\\n' >&2\n",
+                "printf 'Stack trace:\\n' >&2\n",
+                "printf '    at async fetch (ext:deno_fetch/26_fetch.js:170:7)\\n' >&2\n",
+                "printf '    at async mainFetch (ext:deno_fetch/26_fetch.js:181:5)\\n' >&2\n",
+                "exit 1\n"
+            ),
+        )
+        .expect("write shim");
+        fs::set_permissions(&shim, fs::Permissions::from_mode(0o755)).expect("chmod shim");
+        let dest = tmp.path().join("hpds-slides-theme");
+
+        let err =
+            fetch_via_quarto(&shim, FetchedTemplate::Slides, &dest).expect_err("shim exits 1");
+
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("ERROR: error sending request"),
+            "keeps the meaningful error line: {msg}"
+        );
+        assert!(!msg.contains('\x1b'), "ANSI codes are stripped: {msg}");
+        assert!(
+            !msg.contains("Stack trace") && !msg.contains("at async fetch"),
+            "the stack trace is dropped: {msg}"
+        );
+        assert!(
+            msg.contains("https://github.com/StanfordHPDS/hpds-slides-theme"),
+            "names the repo URL: {msg}"
+        );
+        assert!(
+            msg.contains("network connectivity"),
+            "keeps the connectivity hint: {msg}"
+        );
+    }
+
+    #[test]
+    fn first_error_line_prefers_the_line_mentioning_an_error() {
+        let stderr = "[1/2] downloading\nERROR: dns error\nStack trace:\n  at foo\n";
+        assert_eq!(first_error_line(stderr), "ERROR: dns error");
+    }
+
+    #[test]
+    fn first_error_line_falls_back_to_the_first_non_empty_line() {
+        assert_eq!(
+            first_error_line("\n\n  fatal problem  \nmore\n"),
+            "fatal problem"
+        );
+    }
+
+    #[test]
+    fn first_error_line_of_nothing_is_empty() {
+        assert_eq!(first_error_line(""), "");
+        assert_eq!(first_error_line("\x1b[31m\x1b[0m \n"), "");
+    }
+
+    #[test]
+    fn strip_ansi_removes_csi_and_osc_sequences() {
+        assert_eq!(strip_ansi("\x1b[31mred\x1b[0m plain"), "red plain");
+        assert_eq!(strip_ansi("\x1b[2K\rline"), "\rline");
+        assert_eq!(
+            strip_ansi("\x1b]8;;https://x\x1b\\link\x1b]8;;\x1b\\"),
+            "link"
+        );
+        assert_eq!(strip_ansi("no escapes"), "no escapes");
+    }
+
     /// Pin the exact gh invocation: `repo clone <slug> <dest> -- --depth 1`
     /// (everything after `--` is passed through to git, so the placement
     /// matters).
@@ -915,6 +1057,12 @@ mod tests {
         assert!(
             tmp.path().join("hpds-slides-theme").is_dir(),
             "the subdirectory was created for quarto to fill"
+        );
+        let guidance = ctx.guidance.borrow();
+        assert_eq!(guidance.len(), 1, "{guidance:?}");
+        assert!(
+            guidance[0].starts_with("next:"),
+            "the next steps land in the guidance buffer: {guidance:?}"
         );
     }
 

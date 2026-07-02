@@ -11,8 +11,9 @@
 //! #  1. "Project name" defaults to smoke-hpds-init — accept it
 //! #  2. "Project description" — type anything
 //! #  3. "Project language" — pick r
-//! #  4. "Primary author (GitHub username)" — defaults from git config; accept
-//! #  5. Component multi-select — pick pipeline and readme
+//! #  4. Component multi-select — pick pipeline and readme
+//! #  5. "Primary author (GitHub username)" — defaults to the login gh is
+//! #     authenticated as (empty without gh); accept
 //! #  6. "Which pipeline kind?" — pick make
 //! #  7. "Initialize a git repository here?" — answer yes
 //! #  8. "Add the lab ignore patterns ...?" — answer yes
@@ -85,7 +86,9 @@ fn init_yes_full_options_produces_a_complete_project() {
 fn project_init_alias_accepts_the_same_flags() {
     let tmp = tempfile::tempdir().expect("tempdir");
     hpds()
-        .args(["project", "init", "--yes", "--name", "aliased"])
+        .args([
+            "project", "init", "--yes", "--name", "aliased", "--author", "malcolm",
+        ])
         .current_dir(tmp.path())
         .assert()
         .success();
@@ -128,7 +131,7 @@ fn init_yes_name_defaults_to_the_directory_name() {
 fn init_yes_pipeline_without_variant_defaults_to_make() {
     let tmp = tempfile::tempdir().expect("tempdir");
     hpds()
-        .args(["init", "--yes", "--use", "pipeline"])
+        .args(["init", "--yes", "--author", "malcolm", "--use", "pipeline"])
         .current_dir(tmp.path())
         .assert()
         .success();
@@ -144,7 +147,14 @@ fn init_yes_pipeline_without_variant_defaults_to_make() {
 fn init_yes_pipeline_variant_targets_is_honored() {
     let tmp = tempfile::tempdir().expect("tempdir");
     hpds()
-        .args(["init", "--yes", "--use", "pipeline:targets"])
+        .args([
+            "init",
+            "--yes",
+            "--author",
+            "malcolm",
+            "--use",
+            "pipeline:targets",
+        ])
         .current_dir(tmp.path())
         .assert()
         .success();
@@ -156,7 +166,7 @@ fn init_yes_pipeline_variant_targets_is_honored() {
 fn init_yes_gha_without_variant_applies_every_workflow() {
     let tmp = tempfile::tempdir().expect("tempdir");
     hpds()
-        .args(["init", "--yes", "--use", "gha"])
+        .args(["init", "--yes", "--author", "malcolm", "--use", "gha"])
         .current_dir(tmp.path())
         .assert()
         .success();
@@ -168,7 +178,14 @@ fn init_yes_gha_without_variant_applies_every_workflow() {
 fn init_yes_gha_variant_selects_workflows_with_plus() {
     let tmp = tempfile::tempdir().expect("tempdir");
     hpds()
-        .args(["init", "--yes", "--use", "gha:pr-template"])
+        .args([
+            "init",
+            "--yes",
+            "--author",
+            "malcolm",
+            "--use",
+            "gha:pr-template",
+        ])
         .current_dir(tmp.path())
         .assert()
         .success();
@@ -183,12 +200,98 @@ fn init_yes_gha_variant_selects_workflows_with_plus() {
 fn init_yes_python_project_gets_readme_md() {
     let tmp = tempfile::tempdir().expect("tempdir");
     hpds()
-        .args(["init", "--yes", "--language", "python", "--use", "readme"])
+        .args([
+            "init",
+            "--yes",
+            "--author",
+            "malcolm",
+            "--language",
+            "python",
+            "--use",
+            "readme",
+        ])
         .current_dir(tmp.path())
         .assert()
         .success();
     assert!(tmp.path().join("README.md").exists());
     assert!(!tmp.path().join("README.qmd").exists());
+}
+
+// --- primary-author default: a GitHub login, never git user.name ------------
+
+/// The default primary author must be the login `gh` is authenticated as
+/// (`gh api user -q .login`) — the audit watchers check needs a GitHub
+/// LOGIN, and git's user.name is a display name. Driven with a fake `gh`
+/// on PATH. Unix-only: a script shim cannot intercept `Command::new` on
+/// Windows, which resolves only `.exe`.
+#[cfg(unix)]
+#[test]
+fn init_yes_author_defaults_to_the_gh_login() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let shim_dir = tmp.path().join("bin");
+    let project = tmp.path().join("proj");
+    fs::create_dir_all(&shim_dir).expect("create shim dir");
+    fs::create_dir_all(&project).expect("create project dir");
+    let log = tmp.path().join("gh.log");
+    let gh = shim_dir.join("gh");
+    fs::write(
+        &gh,
+        format!(
+            "#!/bin/sh\nprintf 'gh %s\\n' \"$*\" >> '{}'\necho octocat\n",
+            log.display()
+        ),
+    )
+    .expect("write gh shim");
+    fs::set_permissions(&gh, fs::Permissions::from_mode(0o755)).expect("chmod gh shim");
+
+    hpds()
+        .args(["init", "--yes"])
+        .current_dir(&project)
+        .env("PATH", &shim_dir)
+        .assert()
+        .success();
+
+    let toml = fs::read_to_string(project.join("hpds.toml")).expect("hpds.toml");
+    assert!(
+        toml.contains("primary-author = \"octocat\""),
+        "the gh login is the default author: {toml}"
+    );
+    let recorded = fs::read_to_string(&log).expect("the shim was invoked");
+    assert!(
+        recorded.contains("gh api user -q .login"),
+        "the login comes from `gh api user`: {recorded}"
+    );
+}
+
+#[test]
+fn init_yes_author_stays_empty_without_gh_and_the_toml_says_to_fill_it_in() {
+    // No gh on PATH (and no fallback to git user.name): primary-author is
+    // left blank, and the generated hpds.toml tells the user to fill in
+    // their GitHub username.
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let empty_path = tmp.path().join("empty-bin");
+    let project = tmp.path().join("proj");
+    fs::create_dir_all(&empty_path).expect("create empty PATH dir");
+    fs::create_dir_all(&project).expect("create project dir");
+
+    hpds()
+        .args(["init", "--yes"])
+        .current_dir(&project)
+        .env("PATH", &empty_path)
+        .assert()
+        .success();
+
+    let toml = fs::read_to_string(project.join("hpds.toml")).expect("hpds.toml");
+    assert!(
+        toml.contains("primary-author = \"\""),
+        "the author stays empty: {toml}"
+    );
+    assert!(
+        toml.contains("fill in your GitHub username"),
+        "the toml says what to do: {toml}"
+    );
 }
 
 // --- errors: every one says what to do next ---------------------------------
@@ -312,7 +415,7 @@ fn init_yes_vaccinate_outside_a_repo_points_at_git_init_flag() {
     // which init does not have; init's hint must point at --git-init.
     let tmp = tempfile::tempdir().expect("tempdir");
     hpds()
-        .args(["init", "--yes", "--vaccinate"])
+        .args(["init", "--yes", "--author", "malcolm", "--vaccinate"])
         .current_dir(tmp.path())
         .assert()
         .failure()
@@ -396,7 +499,14 @@ fn init_is_idempotent_on_a_second_run() {
 fn init_yes_git_init_and_vaccinate_flags_run_both_steps() {
     let tmp = tempfile::tempdir().expect("tempdir");
     hpds()
-        .args(["init", "--yes", "--git-init", "--vaccinate"])
+        .args([
+            "init",
+            "--yes",
+            "--author",
+            "malcolm",
+            "--git-init",
+            "--vaccinate",
+        ])
         .current_dir(tmp.path())
         .assert()
         .success();
@@ -418,7 +528,7 @@ fn init_yes_git_init_in_an_existing_repo_is_a_friendly_no_op() {
         .expect("git init");
     assert!(out.status.success());
     hpds()
-        .args(["init", "--yes", "--git-init"])
+        .args(["init", "--yes", "--author", "malcolm", "--git-init"])
         .current_dir(tmp.path())
         .assert()
         .success()

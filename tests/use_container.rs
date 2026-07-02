@@ -347,17 +347,20 @@ fn undetectable_language_fails_and_says_to_pass_the_flag() {
 }
 
 #[test]
-fn invalid_kind_errors_listing_the_valid_values() {
+fn invalid_kind_exits_2_listing_the_valid_values() {
+    // An unknown --kind value is a usage error, exactly like an unknown
+    // component name: both exit 2.
     let sandbox = Sandbox::new();
     sandbox
         .use_container(&["--kind", "podman", "--language", "r"])
         .assert()
-        .failure()
+        .code(2)
         .stderr(
             predicate::str::contains("podman")
                 .and(predicate::str::contains("docker"))
                 .and(predicate::str::contains("apptainer"))
-                .and(predicate::str::contains("both")),
+                .and(predicate::str::contains("both"))
+                .and(predicate::str::contains("hint:")),
         );
     assert!(!sandbox.path("Dockerfile").exists());
 }

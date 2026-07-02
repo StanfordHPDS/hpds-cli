@@ -192,12 +192,14 @@ fn which_actionlint() -> Result<PathBuf, ()> {
 }
 
 #[test]
-fn unknown_workflow_errors_and_names_the_available_ones() {
+fn unknown_workflow_exits_2_and_names_the_available_ones() {
+    // An unknown --workflows value is a usage error, exactly like an
+    // unknown component name: both exit 2.
     let sandbox = Sandbox::new();
     sandbox
         .hpds_use(&["gha", "--workflows", "does-not-exist"])
         .assert()
-        .code(1)
+        .code(2)
         .stderr(
             predicate::str::contains("does-not-exist")
                 .and(predicate::str::contains("pr-template"))

@@ -16,7 +16,7 @@ Options:
       --config <PATH>        Use this config file instead of discovering hpds.toml
       --language <LANGUAGE>  Project language(s) [default under --yes: detected from project files, e.g. renv.lock or pyproject.toml] [possible values: r, python, both]
       --use <COMPONENTS>     Components to apply (comma-separated): pipeline, readme, container, slurm, gha. Attach a variant with `:` — pipeline:make|targets|both, container:docker|apptainer|both, gha:pr-template+lint. Without a variant, --yes defaults pipeline to make, container to docker, and gha to every workflow
-      --author <AUTHOR>      Primary author (GitHub username) for hpds.toml [default: git config github.user, then user.name]
+      --author <AUTHOR>      Primary author (GitHub username) for hpds.toml [default: the login gh is authenticated as, else empty]
       --force                Overwrite existing files that differ from what init would write
       --git-init             Initialize a git repository without asking (--yes otherwise skips it)
       --vaccinate            Add the lab ignore patterns to the repo's .gitignore without asking, like `hpds git vaccinate --project` (--yes otherwise skips it)

@@ -67,6 +67,7 @@ pub fn run(args: UseArgs, global: &GlobalArgs) -> anyhow::Result<()> {
         force: args.force,
         dest: &cwd,
         vars: standard_vars(&cwd, global, language.as_deref())?,
+        guidance: std::cell::RefCell::new(Vec::new()),
     };
     let outcomes = (component.run)(&ctx)?;
     let conflicts = report_outcomes(&outcomes);
@@ -75,6 +76,11 @@ pub fn run(args: UseArgs, global: &GlobalArgs) -> anyhow::Result<()> {
         ui::println(&format!(
             "re-run `hpds use {name} --force` to overwrite the {conflicts} skipped {plural}"
         ));
+    }
+    // What-to-do-next lines the component collected; after the outcomes,
+    // so the advice follows the `created ...` report it refers to.
+    for line in ctx.guidance.borrow().iter() {
+        ui::println(line);
     }
     Ok(())
 }

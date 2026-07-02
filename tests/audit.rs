@@ -226,6 +226,60 @@ fn audit_reads_the_project_config() {
 }
 
 #[test]
+fn audit_outside_a_git_repo_reports_one_not_a_repo_error() {
+    // Regression: every git-backed check used to report its own
+    // "could not inspect the repo" error — seven near-identical findings.
+    // Outside a repo the report must carry exactly one Error saying so.
+    let root = tempfile::tempdir().expect("create tempdir");
+    let dir = root.path().join("plain-dir");
+    let user_dir = root.path().join("user-config");
+    fs::create_dir_all(&dir).expect("create plain dir");
+    fs::create_dir_all(&user_dir).expect("create user config dir");
+
+    let mut cmd = Command::cargo_bin("hpds").expect("hpds binary should build");
+    let assert = cmd
+        .current_dir(&dir)
+        .env("HPDS_CONFIG_DIR", &user_dir)
+        .arg("audit")
+        .assert()
+        .code(1);
+    let stdout =
+        String::from_utf8(assert.get_output().stdout.clone()).expect("stdout should be UTF-8");
+    assert_eq!(
+        stdout.matches("not a git repository").count(),
+        1,
+        "exactly one not-a-repo finding:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("git init"),
+        "remediation points at git init:\n{stdout}"
+    );
+    assert!(
+        !stdout.contains("could not inspect the repo"),
+        "the git-backed checks are skipped, not failed:\n{stdout}"
+    );
+}
+
+#[test]
+fn audit_outside_a_git_repo_still_runs_the_git_free_checks() {
+    // The checks that never touch git (README, lifecycle metadata) still
+    // inspect the directory.
+    let root = tempfile::tempdir().expect("create tempdir");
+    let dir = root.path().join("plain-dir");
+    let user_dir = root.path().join("user-config");
+    fs::create_dir_all(&dir).expect("create plain dir");
+    fs::create_dir_all(&user_dir).expect("create user config dir");
+
+    let mut cmd = Command::cargo_bin("hpds").expect("hpds binary should build");
+    cmd.current_dir(&dir)
+        .env("HPDS_CONFIG_DIR", &user_dir)
+        .arg("audit")
+        .assert()
+        .code(1)
+        .stdout(predicate::str::contains("readme").and(predicate::str::contains("lifecycle")));
+}
+
+#[test]
 fn audit_rejects_an_unknown_format_value() {
     let sb = Sandbox::new();
     sb.audit_cmd(&["--format", "yaml"]).assert().code(2);
