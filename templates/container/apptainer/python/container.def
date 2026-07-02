@@ -1,0 +1,28 @@
+# Apptainer image for {{project}} (Python).
+#
+# Build:  apptainer build container.sif container.def
+# Run:    apptainer run container.sif
+
+Bootstrap: docker
+From: stanfordhpds/python-uv:latest
+
+%files
+    pyproject.toml /project/pyproject.toml
+    uv.lock /project/uv.lock
+
+%post
+    # uv package-manager configuration: compile bytecode for faster startup
+    # and copy (rather than hardlink) packages across filesystem boundaries.
+    export UV_COMPILE_BYTECODE=1
+    export UV_LINK_MODE=copy
+    cd /project
+    uv sync --locked --no-install-project
+
+%environment
+    export PATH="/project/.venv/bin:$PATH"
+
+%runscript
+    exec python "$@"
+
+%labels
+    Project {{project}}

@@ -1,0 +1,25 @@
+# Apptainer image for {{project}} (R).
+#
+# Build:  apptainer build container.sif container.def
+# Run:    apptainer run container.sif
+
+Bootstrap: docker
+From: stanfordhpds/r-renv:latest
+
+%files
+    renv.lock /project/renv.lock
+
+%post
+    # Install R packages as prebuilt Linux binaries from Posit Package Manager.
+    export RENV_CONFIG_REPOS_OVERRIDE=https://packagemanager.posit.co/cran/__linux__/noble/latest
+    cd /project
+    R -q -e 'renv::restore()'
+
+%environment
+    export RENV_CONFIG_REPOS_OVERRIDE=https://packagemanager.posit.co/cran/__linux__/noble/latest
+
+%runscript
+    exec R "$@"
+
+%labels
+    Project {{project}}

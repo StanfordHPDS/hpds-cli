@@ -9,6 +9,7 @@
 //! To add a component: create its module here, give it a
 //! `pub static COMPONENT: Component`, and append one line to [`COMPONENTS`].
 
+pub mod container;
 pub mod pipeline;
 pub mod readme;
 pub mod slurm;
@@ -47,6 +48,7 @@ pub struct Component {
 
 /// All registered components, in listing order.
 pub static COMPONENTS: &[Component] = &[
+    container::COMPONENT,
     pipeline::COMPONENT,
     readme::COMPONENT,
     slurm::COMPONENT,
@@ -119,8 +121,8 @@ mod tests {
     }
 
     #[test]
-    fn find_returns_the_readme_and_slurm_components() {
-        for name in ["readme", "slurm"] {
+    fn find_returns_the_readme_slurm_and_container_components() {
+        for name in ["readme", "slurm", "container"] {
             let component = find(name).unwrap_or_else(|| panic!("{name} is registered"));
             assert_eq!(component.name, name);
         }

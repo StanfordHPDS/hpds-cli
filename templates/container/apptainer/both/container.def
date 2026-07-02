@@ -1,0 +1,33 @@
+# Apptainer image for {{project}} (R + Python).
+#
+# Build:  apptainer build container.sif container.def
+# Run:    apptainer run container.sif <command>
+
+Bootstrap: docker
+From: stanfordhpds/base:latest
+
+%files
+    renv.lock /project/renv.lock
+    pyproject.toml /project/pyproject.toml
+    uv.lock /project/uv.lock
+
+%post
+    # Package-manager configuration: R packages come as prebuilt Linux
+    # binaries from Posit Package Manager; uv compiles bytecode and copies
+    # (rather than hardlinks) packages across filesystem boundaries.
+    export RENV_CONFIG_REPOS_OVERRIDE=https://packagemanager.posit.co/cran/__linux__/noble/latest
+    export UV_COMPILE_BYTECODE=1
+    export UV_LINK_MODE=copy
+    cd /project
+    R -q -e 'renv::restore()'
+    uv sync --locked --no-install-project
+
+%environment
+    export RENV_CONFIG_REPOS_OVERRIDE=https://packagemanager.posit.co/cran/__linux__/noble/latest
+    export PATH="/project/.venv/bin:$PATH"
+
+%runscript
+    exec "$@"
+
+%labels
+    Project {{project}}

@@ -108,6 +108,7 @@ mod tests {
     fn production_templates_embed_the_shipped_components() {
         assert!(TEMPLATES.get_dir("readme").is_some());
         assert!(TEMPLATES.get_dir("slurm").is_some());
+        assert!(TEMPLATES.get_dir("container").is_some());
     }
 
     #[test]
