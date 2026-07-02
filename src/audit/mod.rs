@@ -5,6 +5,7 @@
 //! The command layer (`cli::audit`) does all terminal output through `ui/`.
 
 mod checks;
+pub mod github;
 mod report;
 
 pub use report::{Summary, render_json, render_text, summarize};
@@ -15,15 +16,17 @@ use serde::Serialize;
 
 use crate::config::Config;
 
-/// Everything a check may inspect: the repo root and the resolved config.
-///
-/// GitHub-side context (auth state, `gh` availability) is added here when
-/// the remote checks land; local checks need only these two fields.
+/// Everything a check may inspect: the repo root, the resolved config, and
+/// (when available) the GitHub side of the repo.
 pub struct AuditCtx {
     /// Root of the repository being audited.
     pub repo: PathBuf,
     /// Fully layered configuration (checks read `[project]` metadata).
     pub config: Config,
+    /// GitHub context (repo slug + `gh` access), present only when the
+    /// repo has a github.com `origin` and `gh` is authenticated. The
+    /// GitHub checks no-op without it.
+    pub github: Option<github::GithubCtx>,
 }
 
 /// How serious a finding is.
@@ -69,7 +72,9 @@ pub trait Check {
     fn run(&self, ctx: &AuditCtx) -> Vec<Finding>;
 }
 
-/// All registered checks, in the order they run and report.
+/// All registered local checks, in the order they run and report. The
+/// GitHub-side checks live in [`github::registry`]; the command layer
+/// appends them when the repo's GitHub context is available.
 pub fn registry() -> Vec<Box<dyn Check>> {
     checks::all()
 }
@@ -132,6 +137,7 @@ mod tests {
         AuditCtx {
             repo: PathBuf::from("/tmp/demo"),
             config: Config::default(),
+            github: None,
         }
     }
 
@@ -167,6 +173,7 @@ mod tests {
             &AuditCtx {
                 repo,
                 config: Config::default(),
+                github: None,
             },
         );
         assert_eq!(findings, Vec::new());

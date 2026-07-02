@@ -61,6 +61,7 @@ struct RawSql {
 #[serde(rename_all = "kebab-case")]
 struct RawAudit {
     stale_days: Option<u32>,
+    required_watchers: Option<Vec<String>>,
     #[serde(flatten)]
     unknown: toml::Table,
 }
@@ -100,6 +101,7 @@ pub(crate) fn parse(text: &str) -> anyhow::Result<Parsed> {
     }
     if let Some(audit) = raw.audit {
         layer.audit_stale_days = audit.stale_days;
+        layer.audit_required_watchers = audit.required_watchers;
         unknown_keys.extend(note_unknown(&audit.unknown, "audit"));
     }
     if let Some(tools) = raw.tools {
@@ -231,23 +233,44 @@ mod tests {
     }
 
     #[test]
-    fn audit_stale_days_parses() {
+    fn parses_the_audit_table() {
+        let parsed = parse(
+            r#"
+            [audit]
+            stale-days = 30
+            required-watchers = ["lead1", "lead2"]
+            "#,
+        )
+        .expect("audit table must parse");
+        assert_no_unknown(&parsed);
+        assert_eq!(parsed.layer.audit_stale_days, Some(30));
+        assert_eq!(
+            parsed.layer.audit_required_watchers,
+            Some(vec!["lead1".to_string(), "lead2".to_string()])
+        );
+    }
+
+    #[test]
+    fn audit_stale_days_parses_alone() {
         let parsed = parse("[audit]\nstale-days = 30\n").expect("valid audit table");
         assert_no_unknown(&parsed);
         assert_eq!(parsed.layer.audit_stale_days, Some(30));
+        assert_eq!(parsed.layer.audit_required_watchers, None);
     }
 
     #[test]
-    fn audit_unknown_keys_are_collected() {
-        let parsed = parse("[audit]\nstale-days = 30\nshiny = true\n").expect("unknown keys warn");
-        assert_eq!(parsed.unknown_keys, vec!["audit.shiny"]);
-        assert_eq!(parsed.layer.audit_stale_days, Some(30));
-    }
-
-    #[test]
-    fn audit_stale_days_wrong_types_are_errors() {
+    fn audit_table_wrong_types_are_errors() {
         assert!(parse("[audit]\nstale-days = \"soon\"\n").is_err());
         assert!(parse("[audit]\nstale-days = -1\n").is_err());
+        assert!(parse("[audit]\nrequired-watchers = \"malcolm\"\n").is_err());
+    }
+
+    #[test]
+    fn audit_table_unknown_keys_warn() {
+        let parsed = parse("[audit]\nstale-days = 30\nfrobnicate = 1\n")
+            .expect("unknown audit keys must not fail the parse");
+        assert_eq!(parsed.unknown_keys, vec!["audit.frobnicate"]);
+        assert_eq!(parsed.layer.audit_stale_days, Some(30));
     }
 
     #[test]

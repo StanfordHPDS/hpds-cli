@@ -72,7 +72,9 @@ fn git(repo: &Path, args: &[&str]) -> Result<String, GitError> {
 
 /// Like [`git`], but a failure is a legitimate answer (e.g. asking about
 /// `HEAD` in a repo with no commits yet): `None` instead of an error.
-fn git_maybe(repo: &Path, args: &[&str]) -> Option<String> {
+/// Shared with the GitHub checks, which ask git about remotes and branch
+/// tips the same way.
+pub(super) fn git_maybe(repo: &Path, args: &[&str]) -> Option<String> {
     git(repo, args).ok()
 }
 
@@ -213,6 +215,7 @@ pub(crate) mod testutil {
         AuditCtx {
             repo: repo.to_path_buf(),
             config: Config::default(),
+            github: None,
         }
     }
 

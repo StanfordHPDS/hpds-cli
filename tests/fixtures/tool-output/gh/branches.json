@@ -1,0 +1,27 @@
+[
+  {
+    "name": "main",
+    "commit": {
+      "sha": "d6f2e5a9c0b1d2e3f4a5b6c7d8e9f0a1b2c3d4e5",
+      "url": "https://api.github.com/repos/acme/demo/commits/d6f2e5a9c0b1d2e3f4a5b6c7d8e9f0a1b2c3d4e5"
+    },
+    "protected": true
+  }
+][
+  {
+    "name": "old-analysis",
+    "commit": {
+      "sha": "9c1e77aa4b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e",
+      "url": "https://api.github.com/repos/acme/demo/commits/9c1e77aa4b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e"
+    },
+    "protected": false
+  },
+  {
+    "name": "fresh-idea",
+    "commit": {
+      "sha": "0a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b",
+      "url": "https://api.github.com/repos/acme/demo/commits/0a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b"
+    },
+    "protected": false
+  }
+]

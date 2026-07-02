@@ -162,6 +162,46 @@ fn unknown_keys_warn_but_do_not_error() {
 }
 
 #[test]
+fn project_config_cannot_set_audit_required_watchers() {
+    // `[audit].required-watchers` is honored only from *user* config: a
+    // repo must not be able to exempt itself from the lab-lead watcher
+    // requirement for everyone who audits it.
+    let sb = Sandbox::new();
+    sb.write_project_config("[audit]\nrequired-watchers = []\n");
+
+    sb.config_cmd().assert().success().stderr(
+        predicate::str::contains("warning:")
+            .and(predicate::str::contains("audit.required-watchers"))
+            .and(predicate::str::contains("hpds.toml"))
+            .and(predicate::str::contains("user config")),
+    );
+}
+
+#[test]
+fn user_config_may_set_audit_required_watchers_without_warning() {
+    let sb = Sandbox::new();
+    sb.write_user_config("[audit]\nrequired-watchers = [\"lead1\"]\n");
+
+    sb.config_cmd()
+        .assert()
+        .success()
+        .stderr(predicate::str::is_empty());
+}
+
+#[test]
+fn project_config_may_still_set_audit_stale_days() {
+    // Only required-watchers is user-only; the staleness threshold is an
+    // ordinary per-project knob that any repo may tune for itself.
+    let sb = Sandbox::new();
+    sb.write_project_config("[audit]\nstale-days = 30\n");
+
+    sb.config_cmd()
+        .assert()
+        .success()
+        .stderr(predicate::str::is_empty());
+}
+
+#[test]
 fn invalid_toml_errors_with_path_and_hint() {
     let sb = Sandbox::new();
     sb.write_project_config("[sql\ndialect = \"bigquery\"\n");

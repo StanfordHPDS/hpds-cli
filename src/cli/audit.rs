@@ -64,11 +64,26 @@ fn audit_current_repo(args: &AuditArgs, global: &super::GlobalArgs) -> anyhow::R
     // any repo, fall back to the cwd and let the checks report that state.
     let root = audit::repo_root(&cwd).unwrap_or(cwd);
     let repo = repo_display_name(&root);
+
+    // GitHub checks run only against a github.com origin with an
+    // authenticated gh; when they apply but cannot run, the report carries
+    // an Info notice saying so.
+    let (github, notice) = match audit::github::probe(&root) {
+        audit::github::GithubStatus::Ready(ctx) => (Some(ctx), None),
+        audit::github::GithubStatus::NoRemote => (None, None),
+        audit::github::GithubStatus::Skipped(finding) => (None, Some(finding)),
+    };
     let ctx = AuditCtx {
         repo: root,
         config: loaded.config,
+        github,
     };
-    let findings = audit::run_checks(&audit::registry(), &ctx);
+    let mut checks = audit::registry();
+    if ctx.github.is_some() {
+        checks.extend(audit::github::registry());
+    }
+    let mut findings = audit::run_checks(&checks, &ctx);
+    findings.extend(notice);
 
     match args.format {
         OutputFormat::Text => {

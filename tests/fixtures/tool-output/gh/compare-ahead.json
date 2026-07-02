@@ -1,0 +1,44 @@
+{
+  "url": "https://api.github.com/repos/acme/demo/compare/main...old-analysis",
+  "html_url": "https://github.com/acme/demo/compare/main...old-analysis",
+  "status": "ahead",
+  "ahead_by": 3,
+  "behind_by": 0,
+  "total_commits": 3,
+  "commits": [
+    {
+      "sha": "1111111111111111111111111111111111111111",
+      "commit": {
+        "author": {
+          "name": "Researcher One",
+          "email": "r1@example.org",
+          "date": "2023-01-13T09:00:00Z"
+        },
+        "message": "Refit with splines"
+      }
+    },
+    {
+      "sha": "2222222222222222222222222222222222222222",
+      "commit": {
+        "author": {
+          "name": "Researcher One",
+          "email": "r1@example.org",
+          "date": "2023-01-14T09:30:00Z"
+        },
+        "message": "Add sensitivity analysis"
+      }
+    },
+    {
+      "sha": "9c1e77aa4b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e",
+      "commit": {
+        "author": {
+          "name": "Researcher One",
+          "email": "r1@example.org",
+          "date": "2023-01-15T10:12:00Z"
+        },
+        "message": "Try alternative model specification"
+      }
+    }
+  ],
+  "files": []
+}

@@ -1,0 +1,31 @@
+{
+  "name": "fresh-idea",
+  "commit": {
+    "sha": "0a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b",
+    "node_id": "C_kwDOHomYztoAKDBhMWIyYzNkNGU1ZjZhN2I4YzlkMGUxZjJhM2I0YzVkNmU3ZjhhOWI",
+    "commit": {
+      "author": {
+        "name": "Researcher One",
+        "email": "r1@example.org",
+        "date": "2099-01-01T00:00:00Z"
+      },
+      "committer": {
+        "name": "Researcher One",
+        "email": "r1@example.org",
+        "date": "2099-01-01T00:00:00Z"
+      },
+      "message": "Sketch a fresh idea",
+      "comment_count": 0
+    },
+    "url": "https://api.github.com/repos/acme/demo/commits/0a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b",
+    "html_url": "https://github.com/acme/demo/commit/0a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b"
+  },
+  "protected": false,
+  "protection": {
+    "enabled": false,
+    "required_status_checks": {
+      "enforcement_level": "off",
+      "contexts": []
+    }
+  }
+}

@@ -1,0 +1,35 @@
+[
+  {
+    "login": "researcher1",
+    "id": 555001,
+    "node_id": "MDQ6VXNlcjU1NTAwMQ==",
+    "avatar_url": "https://avatars.githubusercontent.com/u/555001?v=4",
+    "url": "https://api.github.com/users/researcher1",
+    "html_url": "https://github.com/researcher1",
+    "type": "User",
+    "site_admin": false,
+    "contributions": 182
+  },
+  {
+    "login": "malcolmbarrett",
+    "id": 8461552,
+    "node_id": "MDQ6VXNlcjg0NjE1NTI=",
+    "avatar_url": "https://avatars.githubusercontent.com/u/8461552?v=4",
+    "url": "https://api.github.com/users/malcolmbarrett",
+    "html_url": "https://github.com/malcolmbarrett",
+    "type": "User",
+    "site_admin": false,
+    "contributions": 41
+  },
+  {
+    "login": "dependabot[bot]",
+    "id": 49699333,
+    "node_id": "MDM6Qm90NDk2OTkzMzM=",
+    "avatar_url": "https://avatars.githubusercontent.com/in/29110?v=4",
+    "url": "https://api.github.com/users/dependabot%5Bbot%5D",
+    "html_url": "https://github.com/apps/dependabot",
+    "type": "Bot",
+    "site_admin": false,
+    "contributions": 3
+  }
+]

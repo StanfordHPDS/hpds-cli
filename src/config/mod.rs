@@ -41,6 +41,17 @@ pub struct ProjectConfig {
     pub primary_author: String,
 }
 
+/// `[audit]`: knobs for `hpds audit`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AuditConfig {
+    /// Branches with no commits in more than this many days count as stale.
+    pub stale_days: u32,
+    /// GitHub logins that must watch every lab repo (the project's
+    /// primary author is required in addition to these). Overridable via
+    /// *user* config only — see [`strip_user_only_keys`].
+    pub required_watchers: Vec<String>,
+}
+
 /// `[format]` / `[lint]`: which languages to include and what to skip.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FileSelection {
@@ -53,13 +64,6 @@ pub struct FileSelection {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SqlConfig {
     pub dialect: String,
-}
-
-/// `[audit]`: knobs for `hpds audit`.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct AuditConfig {
-    /// A branch with no commits in more than this many days is stale.
-    pub stale_days: u32,
 }
 
 /// `[tools]`: version pins plus per-tool passthrough args.
@@ -93,7 +97,10 @@ impl Default for Config {
             sql: SqlConfig {
                 dialect: "bigquery".to_string(),
             },
-            audit: AuditConfig { stale_days: 90 },
+            audit: AuditConfig {
+                stale_days: 90,
+                required_watchers: strings(&["malcolmbarrett", "sherrirose"]),
+            },
             tools: ToolsConfig::default(),
         }
     }
@@ -114,6 +121,7 @@ pub struct Layer {
     pub lint_exclude: Option<Vec<String>>,
     pub sql_dialect: Option<String>,
     pub audit_stale_days: Option<u32>,
+    pub audit_required_watchers: Option<Vec<String>>,
     pub tool_pins: BTreeMap<String, String>,
     pub tool_args: BTreeMap<String, Vec<String>>,
 }
@@ -144,6 +152,9 @@ impl Config {
         }
         if let Some(v) = layer.audit_stale_days {
             self.audit.stale_days = v;
+        }
+        if let Some(v) = layer.audit_required_watchers {
+            self.audit.required_watchers = v;
         }
         self.tools.pins.extend(layer.tool_pins);
         self.tools.args.extend(layer.tool_args);
@@ -197,7 +208,9 @@ pub fn load(cwd: &Path, explicit: Option<&Path>, flags: Layer) -> anyhow::Result
         None => discover::find_project_config(cwd),
     };
     if let Some(path) = &project_path {
-        config.apply(load_file(path, &mut warnings)?);
+        let mut layer = load_file(path, &mut warnings)?;
+        strip_user_only_keys(&mut layer, path, &mut warnings);
+        config.apply(layer);
     }
 
     config.apply(flags);
@@ -208,6 +221,23 @@ pub fn load(cwd: &Path, explicit: Option<&Path>, flags: Layer) -> anyhow::Result
         project_path,
         warnings,
     })
+}
+
+/// Drop keys only the *user* config layer may set, warning about each.
+///
+/// `[audit].required-watchers` is the auditor's requirement, not the
+/// project's: the audited repo must not be able to rewrite the lab-lead
+/// watcher list for everyone who audits it by committing an override in
+/// its own `hpds.toml`, so the key is honored only from user config.
+fn strip_user_only_keys(layer: &mut Layer, path: &Path, warnings: &mut Vec<String>) {
+    if layer.audit_required_watchers.take().is_some() {
+        warnings.push(format!(
+            "ignoring `audit.required-watchers` in {}: project config cannot change \
+             the required watcher list; set it in your user config instead \
+             (`hpds config` shows its path)",
+            path.display()
+        ));
+    }
 }
 
 /// Read and parse one config file into a layer, converting its unknown keys
@@ -313,6 +343,35 @@ mod tests {
     }
 
     #[test]
+    fn audit_defaults_are_ninety_days_and_the_lab_leads() {
+        let config = Config::default();
+        assert_eq!(config.audit.stale_days, 90);
+        assert_eq!(
+            config.audit.required_watchers,
+            strings(&["malcolmbarrett", "sherrirose"])
+        );
+    }
+
+    #[test]
+    fn audit_keys_layer_like_everything_else() {
+        // User config overrides the built-in lab leads; a later layer wins.
+        let user = Layer {
+            audit_required_watchers: Some(strings(&["lead1", "lead2"])),
+            audit_stale_days: Some(30),
+            ..Layer::default()
+        };
+        let project = Layer {
+            audit_stale_days: Some(45),
+            ..Layer::default()
+        };
+        let mut config = Config::default();
+        config.apply(user);
+        config.apply(project);
+        assert_eq!(config.audit.stale_days, 45);
+        assert_eq!(config.audit.required_watchers, strings(&["lead1", "lead2"]));
+    }
+
+    #[test]
     fn user_layer_alone_overrides_defaults() {
         let mut config = Config::default();
         config.apply(Layer {
@@ -354,6 +413,39 @@ mod tests {
         assert_eq!(config.tools.pins["ruff"], "0.14.0");
         // args replace wholesale per tool, they do not concatenate
         assert_eq!(config.tools.args["air"], strings(&["--new"]));
+    }
+
+    #[test]
+    fn strip_user_only_keys_drops_required_watchers_with_a_warning() {
+        let mut layer = Layer {
+            audit_required_watchers: Some(vec![]),
+            audit_stale_days: Some(30),
+            ..Layer::default()
+        };
+        let mut warnings = Vec::new();
+        strip_user_only_keys(&mut layer, Path::new("/repo/hpds.toml"), &mut warnings);
+
+        assert_eq!(layer.audit_required_watchers, None);
+        // stale-days is an ordinary per-project knob and survives.
+        assert_eq!(layer.audit_stale_days, Some(30));
+        assert_eq!(warnings.len(), 1);
+        assert!(
+            warnings[0].contains("audit.required-watchers"),
+            "{warnings:?}"
+        );
+        assert!(warnings[0].contains("/repo/hpds.toml"), "{warnings:?}");
+        assert!(warnings[0].contains("user config"), "{warnings:?}");
+    }
+
+    #[test]
+    fn strip_user_only_keys_is_silent_when_the_key_is_absent() {
+        let mut layer = Layer {
+            audit_stale_days: Some(30),
+            ..Layer::default()
+        };
+        let mut warnings = Vec::new();
+        strip_user_only_keys(&mut layer, Path::new("/repo/hpds.toml"), &mut warnings);
+        assert!(warnings.is_empty(), "{warnings:?}");
     }
 
     #[test]

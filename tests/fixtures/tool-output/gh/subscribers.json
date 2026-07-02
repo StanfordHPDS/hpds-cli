@@ -1,0 +1,22 @@
+[
+  {
+    "login": "malcolmbarrett",
+    "id": 8461552,
+    "node_id": "MDQ6VXNlcjg0NjE1NTI=",
+    "avatar_url": "https://avatars.githubusercontent.com/u/8461552?v=4",
+    "url": "https://api.github.com/users/malcolmbarrett",
+    "html_url": "https://github.com/malcolmbarrett",
+    "type": "User",
+    "site_admin": false
+  },
+  {
+    "login": "SherriRose",
+    "id": 1023456,
+    "node_id": "MDQ6VXNlcjEwMjM0NTY=",
+    "avatar_url": "https://avatars.githubusercontent.com/u/1023456?v=4",
+    "url": "https://api.github.com/users/SherriRose",
+    "html_url": "https://github.com/SherriRose",
+    "type": "User",
+    "site_admin": false
+  }
+]
