@@ -1,7 +1,8 @@
 //! Integration tests for `hpds use gha`.
 //!
 //! The gha component adds GitHub Actions scaffolding: a pull request
-//! template and a lint workflow. Non-interactively the selection comes
+//! template, a lint workflow, and the audit-bot workflow. Non-interactively
+//! the selection comes
 //! from `--workflows`; interactively it is a multi-select (not testable
 //! here — assert_cmd never has a TTY, so the no-flag path must fail with
 //! an actionable error instead).
@@ -64,23 +65,29 @@ impl Sandbox {
 
 const PR_TEMPLATE: &str = ".github/pull_request_template.md";
 const LINT_WORKFLOW: &str = ".github/workflows/hpds-lint.yml";
+const AUDIT_WORKFLOW: &str = ".github/workflows/hpds-audit.yml";
 
 #[test]
-fn use_gha_with_both_workflows_creates_both_files() {
+fn use_gha_with_every_workflow_creates_all_files() {
     let sandbox = Sandbox::new();
     sandbox
-        .hpds_use(&["gha", "--workflows", "pr-template,lint"])
+        .hpds_use(&["gha", "--workflows", "pr-template,lint,audit-bot"])
         .assert()
         .success()
         .stdout(
             predicate::str::contains("pull_request_template.md")
-                .and(predicate::str::contains("hpds-lint.yml")),
+                .and(predicate::str::contains("hpds-lint.yml"))
+                .and(predicate::str::contains("hpds-audit.yml")),
         );
 
     assert!(sandbox.path(PR_TEMPLATE).is_file(), "PR template written");
     assert!(
         sandbox.path(LINT_WORKFLOW).is_file(),
         "lint workflow written"
+    );
+    assert!(
+        sandbox.path(AUDIT_WORKFLOW).is_file(),
+        "audit workflow written"
     );
 }
 
@@ -178,6 +185,94 @@ fn generated_lint_workflow_passes_actionlint_when_available() {
     );
 }
 
+#[test]
+fn generated_audit_workflow_is_valid_yaml_with_the_bot_steps() {
+    let sandbox = Sandbox::new();
+    sandbox
+        .hpds_use(&["gha", "--workflows", "audit-bot"])
+        .assert()
+        .success();
+
+    let body = sandbox.read(AUDIT_WORKFLOW);
+
+    // Binding acceptance criterion: the workflow YAML must parse.
+    let doc: serde_yaml::Value = serde_yaml::from_str(&body).expect("workflow YAML parses");
+    assert!(
+        doc.get("jobs").is_some(),
+        "workflow has a jobs section: {body}"
+    );
+
+    // Triggers: weekly cron + pull_request.
+    let on = doc.get("on").expect("workflow has triggers");
+    assert!(
+        on.get("schedule")
+            .and_then(|s| s.get(0))
+            .and_then(|e| e.get("cron"))
+            .is_some(),
+        "schedule trigger with a cron expression: {body}"
+    );
+    assert!(
+        on.get("pull_request").is_some(),
+        "pull_request trigger: {body}"
+    );
+
+    // The bot's least-privilege permissions block.
+    let perms = doc.get("permissions").expect("permissions block");
+    let perm = |key: &str| perms.get(key).and_then(|v| v.as_str());
+    assert_eq!(perm("contents"), Some("read"), "{body}");
+    assert_eq!(perm("issues"), Some("write"), "{body}");
+    assert_eq!(perm("pull-requests"), Some("write"), "{body}");
+
+    // Steps: install, audit to JSON without dying on findings, report.
+    assert!(
+        body.contains("cargo install --git"),
+        "installs hpds via the cargo fallback: {body}"
+    );
+    assert!(
+        body.contains("release install script"),
+        "comment flags the placeholder install step: {body}"
+    );
+    assert!(
+        body.contains("hpds audit --format json > audit.json"),
+        "writes the audit JSON: {body}"
+    );
+    assert!(
+        body.contains("hpds audit report-github --input audit.json"),
+        "feeds the JSON to the reporter: {body}"
+    );
+    assert!(
+        body.contains("GITHUB_TOKEN"),
+        "reporter step gets the Actions token: {body}"
+    );
+}
+
+#[test]
+fn generated_audit_workflow_passes_actionlint_when_available() {
+    // actionlint is an optional local dependency: run it when it is on
+    // PATH, otherwise skip (CI and dev machines without it stay green).
+    let Ok(found) = which_actionlint() else {
+        eprintln!("skipping: actionlint not found on PATH");
+        return;
+    };
+
+    let sandbox = Sandbox::new();
+    sandbox
+        .hpds_use(&["gha", "--workflows", "audit-bot"])
+        .assert()
+        .success();
+
+    let output = StdCommand::new(found)
+        .arg(sandbox.path(AUDIT_WORKFLOW))
+        .output()
+        .expect("actionlint runs");
+    assert!(
+        output.status.success(),
+        "actionlint reported problems:\n{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+}
+
 fn which_actionlint() -> Result<PathBuf, ()> {
     let path = std::env::var_os("PATH").ok_or(())?;
     for dir in std::env::split_paths(&path) {
@@ -203,7 +298,8 @@ fn unknown_workflow_exits_2_and_names_the_available_ones() {
         .stderr(
             predicate::str::contains("does-not-exist")
                 .and(predicate::str::contains("pr-template"))
-                .and(predicate::str::contains("lint")),
+                .and(predicate::str::contains("lint"))
+                .and(predicate::str::contains("audit-bot")),
         );
 }
 
@@ -315,7 +411,7 @@ fn unknown_component_errors_and_lists_gha_among_the_available_ones() {
 fn gha_only_writes_under_dot_github() {
     let sandbox = Sandbox::new();
     sandbox
-        .hpds_use(&["gha", "--workflows", "pr-template,lint"])
+        .hpds_use(&["gha", "--workflows", "pr-template,lint,audit-bot"])
         .assert()
         .success();
     let entries: Vec<_> = fs::read_dir(sandbox.project())

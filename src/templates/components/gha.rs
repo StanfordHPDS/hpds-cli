@@ -1,8 +1,8 @@
 //! `hpds use gha` — GitHub Actions scaffolding under `.github/`.
 //!
-//! Offers a menu of workflows — a pull request template and a lint
-//! workflow — chosen interactively via multi-select or non-interactively
-//! via `--workflows pr-template,lint`.
+//! Offers a menu of workflows — a pull request template, a lint workflow,
+//! and the audit bot — chosen interactively via multi-select or
+//! non-interactively via `--workflows pr-template,lint,audit-bot`.
 
 use std::fmt;
 
@@ -16,7 +16,7 @@ use super::{Component, ComponentCtx};
 
 pub static COMPONENT: Component = Component {
     name: "gha",
-    description: "GitHub Actions scaffolding: PR template, lint workflow",
+    description: "GitHub Actions scaffolding: PR template, lint workflow, audit bot",
     run,
 };
 
@@ -40,8 +40,13 @@ const WORKFLOWS: &[Workflow] = &[
         description: "workflow running `hpds lint` + `hpds format --check`",
         dir: "gha/lint",
     },
-    // New workflows (e.g. the audit bot) are appended here and picked up
-    // by the menu, `--workflows`, and the tests automatically.
+    Workflow {
+        name: "audit-bot",
+        description: "workflow running `hpds audit` weekly and on PRs, reporting to GitHub",
+        dir: "gha/audit-bot",
+    },
+    // New workflows are appended here and picked up by the menu,
+    // `--workflows`, and the tests automatically.
 ];
 
 /// Every workflow name, in menu order. `hpds init --yes` uses this as the
@@ -164,6 +169,60 @@ mod tests {
     }
 
     #[test]
+    fn audit_workflow_template_is_valid_yaml_with_bot_triggers_and_permissions() {
+        let file = TEMPLATES
+            .get_file("gha/audit-bot/.github/workflows/hpds-audit.yml")
+            .expect("audit workflow template is embedded");
+        let text = file.contents_utf8().expect("workflow template is UTF-8");
+        let rendered =
+            crate::templates::render(text, "hpds-audit.yml", &Vars::standard("p", Some("r"), "a"))
+                .expect("template renders with the standard variables");
+        let doc: serde_yaml::Value =
+            serde_yaml::from_str(&rendered).expect("rendered workflow parses as YAML");
+
+        // Triggers: a weekly cron plus pull_request.
+        let on = doc.get("on").expect("workflow has triggers");
+        let cron = on
+            .get("schedule")
+            .and_then(|s| s.get(0))
+            .and_then(|entry| entry.get("cron"))
+            .and_then(|c| c.as_str())
+            .expect("schedule trigger carries a cron expression");
+        assert_eq!(
+            cron.split_whitespace().count(),
+            5,
+            "cron has five fields: {cron}"
+        );
+        assert!(
+            on.get("pull_request").is_some(),
+            "pull_request trigger present: {rendered}"
+        );
+
+        // The bot needs to comment on PRs and manage issues; nothing more.
+        let perms = doc.get("permissions").expect("permissions block present");
+        let perm = |key: &str| perms.get(key).and_then(|v| v.as_str());
+        assert_eq!(perm("contents"), Some("read"));
+        assert_eq!(perm("issues"), Some("write"));
+        assert_eq!(perm("pull-requests"), Some("write"));
+
+        // Steps: audit to JSON (continuing on findings), then the reporter
+        // with the Actions token.
+        assert!(doc.get("jobs").is_some(), "workflow has jobs: {rendered}");
+        assert!(
+            rendered.contains("hpds audit --format json > audit.json"),
+            "writes the audit JSON: {rendered}"
+        );
+        assert!(
+            rendered.contains("hpds audit report-github --input audit.json"),
+            "feeds the JSON to the reporter: {rendered}"
+        );
+        assert!(
+            rendered.contains("GITHUB_TOKEN"),
+            "reporter step gets the Actions token: {rendered}"
+        );
+    }
+
+    #[test]
     fn resolve_accepts_every_advertised_workflow() {
         let names: Vec<String> = WORKFLOWS.iter().map(|w| w.name.to_string()).collect();
         let resolved = resolve(&names).unwrap();
@@ -186,6 +245,7 @@ mod tests {
         assert!(out.contains("definitely-not-a-workflow"), "out: {out}");
         assert!(out.contains("pr-template"), "out: {out}");
         assert!(out.contains("lint"), "out: {out}");
+        assert!(out.contains("audit-bot"), "out: {out}");
     }
 
     #[test]
@@ -193,7 +253,7 @@ mod tests {
         let err = resolve(&[]).unwrap_err();
         let out = usage_parts(&err);
         assert!(out.contains("--workflows"), "out: {out}");
-        assert!(out.contains("pr-template, lint"), "out: {out}");
+        assert!(out.contains("pr-template, lint, audit-bot"), "out: {out}");
     }
 
     #[test]

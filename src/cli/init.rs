@@ -49,9 +49,9 @@ pub struct InitArgs {
 
     /// Components to apply (comma-separated): pipeline, readme, container,
     /// slurm, gha. Attach a variant with `:` — pipeline:make|targets|both,
-    /// container:docker|apptainer|both, gha:pr-template+lint. Without a
-    /// variant, --yes defaults pipeline to make, container to docker, and
-    /// gha to every workflow
+    /// container:docker|apptainer|both, gha:pr-template+lint+audit-bot.
+    /// Without a variant, --yes defaults pipeline to make, container to
+    /// docker, and gha to every workflow
     #[arg(long = "use", value_delimiter = ',', value_name = "COMPONENTS")]
     pub components: Option<Vec<String>>,
 

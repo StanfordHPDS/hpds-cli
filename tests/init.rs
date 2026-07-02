@@ -172,6 +172,7 @@ fn init_yes_gha_without_variant_applies_every_workflow() {
         .success();
     assert!(tmp.path().join(".github/pull_request_template.md").exists());
     assert!(tmp.path().join(".github/workflows/hpds-lint.yml").exists());
+    assert!(tmp.path().join(".github/workflows/hpds-audit.yml").exists());
 }
 
 #[test]

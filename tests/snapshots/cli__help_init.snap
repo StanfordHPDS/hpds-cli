@@ -1,5 +1,6 @@
 ---
 source: tests/cli.rs
+assertion_line: 32
 expression: "help_output(& [\"init\", \"--help\"])"
 ---
 Set up a new or existing project interactively
@@ -15,7 +16,7 @@ Options:
       --no-color             Disable colored output
       --config <PATH>        Use this config file instead of discovering hpds.toml
       --language <LANGUAGE>  Project language(s) [default under --yes: detected from project files, e.g. renv.lock or pyproject.toml] [possible values: r, python, both]
-      --use <COMPONENTS>     Components to apply (comma-separated): pipeline, readme, container, slurm, gha. Attach a variant with `:` — pipeline:make|targets|both, container:docker|apptainer|both, gha:pr-template+lint. Without a variant, --yes defaults pipeline to make, container to docker, and gha to every workflow
+      --use <COMPONENTS>     Components to apply (comma-separated): pipeline, readme, container, slurm, gha. Attach a variant with `:` — pipeline:make|targets|both, container:docker|apptainer|both, gha:pr-template+lint+audit-bot. Without a variant, --yes defaults pipeline to make, container to docker, and gha to every workflow
       --author <AUTHOR>      Primary author (GitHub username) for hpds.toml [default: the login gh is authenticated as, else empty]
       --force                Overwrite existing files that differ from what init would write
       --git-init             Initialize a git repository without asking (--yes otherwise skips it)

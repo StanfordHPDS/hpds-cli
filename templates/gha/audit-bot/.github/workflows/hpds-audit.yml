@@ -1,0 +1,58 @@
+name: hpds audit
+
+on:
+  schedule:
+    # Weekly, Monday 06:17 UTC. Runs scheduled exactly on the hour are
+    # often delayed or dropped by GitHub; an odd minute avoids the rush.
+    - cron: "17 6 * * 1"
+  pull_request:
+
+# The bot upserts a PR comment and files/closes issues; repository
+# contents stay read-only (checkout only).
+permissions:
+  contents: read
+  issues: write
+  pull-requests: write
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          # Full history: the audit inspects branch ages and compares
+          # rendered outputs against their sources.
+          fetch-depth: 0
+
+      # PLACEHOLDER INSTALL STEP: the hpds release install script lands
+      # later; once it ships, replace these two steps with a single
+      # `curl ... | sh` of that script. Until then, building from source
+      # with `cargo install --git` is the working fallback (slower, but
+      # correct).
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install hpds
+        run: cargo install --git https://github.com/StanfordHPDS/hpds-cli hpds
+
+      # `hpds audit` exits 1 when it finds errors — expected here, because
+      # reporting those findings is the whole point of this workflow. The
+      # exit code is captured so the JSON always reaches the report step;
+      # anything other than 0 or 1 (usage error, crash) still fails the job.
+      - name: Audit
+        run: |
+          status=0
+          hpds audit --format json > audit.json || status=$?
+          if [ "$status" -gt 1 ]; then
+            echo "hpds audit failed with exit code $status" >&2
+            exit "$status"
+          fi
+
+      # On pull_request events this upserts the sticky findings comment;
+      # on the weekly schedule it files one issue per new error finding
+      # and closes issues for findings that no longer occur.
+      - name: Report findings
+        run: hpds audit report-github --input audit.json
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

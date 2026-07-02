@@ -37,7 +37,7 @@ pub struct UseArgs {
     pub language: Option<String>,
 
     /// gha workflows to add without prompting (comma-separated or repeated:
-    /// pr-template, lint)
+    /// pr-template, lint, audit-bot)
     #[arg(long, value_delimiter = ',', value_name = "NAMES")]
     pub workflows: Option<Vec<String>>,
 }

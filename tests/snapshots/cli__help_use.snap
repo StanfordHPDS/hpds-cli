@@ -1,5 +1,6 @@
 ---
 source: tests/cli.rs
+assertion_line: 35
 expression: "help_output(& [\"use\", \"--help\"])"
 ---
 Apply a template component to the current project
@@ -17,5 +18,5 @@ Options:
       --language <LANGUAGE>  Project language; detected from project files (renv.lock, pyproject.toml, ...) when omitted [possible values: r, python, both]
       --no-color             Disable colored output
       --config <PATH>        Use this config file instead of discovering hpds.toml
-      --workflows <NAMES>    gha workflows to add without prompting (comma-separated or repeated: pr-template, lint)
+      --workflows <NAMES>    gha workflows to add without prompting (comma-separated or repeated: pr-template, lint, audit-bot)
   -h, --help                 Print help
