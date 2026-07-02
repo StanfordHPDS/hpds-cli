@@ -1,0 +1,18 @@
+---
+source: tests/cli.rs
+expression: "help_output(& [\"project\", \"--help\"])"
+---
+Project commands (`hpds project init` is an alias for `hpds init`)
+
+Usage: hpds project [OPTIONS] <COMMAND>
+
+Commands:
+  init  Set up a new or existing project interactively (alias for `hpds init`)
+  help  Print this message or the help of the given subcommand(s)
+
+Options:
+  -v, --verbose        Show more detail (underlying commands, tool names)
+  -q, --quiet          Suppress all output except errors
+      --no-color       Disable colored output
+      --config <PATH>  Use this config file instead of discovering hpds.toml
+  -h, --help           Print help

@@ -7,9 +7,15 @@ license = "MIT"
 repository = "https://github.com/StanfordHPDS/hpds-cli"
 
 [dependencies]
+anyhow = "1"
+clap = { version = "4", features = ["derive"] }
+clap_complete = "4"
+thiserror = "2"
 
 [dev-dependencies]
 assert_cmd = "2"
+insta = "1"
+predicates = "3"
 
 [features]
 # Tests that hit the network or download real tools; excluded from the default

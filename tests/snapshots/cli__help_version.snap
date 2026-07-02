@@ -1,0 +1,14 @@
+---
+source: tests/cli.rs
+expression: "help_output(& [\"version\", \"--help\"])"
+---
+Print the hpds version
+
+Usage: hpds version [OPTIONS]
+
+Options:
+  -v, --verbose        Show more detail (underlying commands, tool names)
+  -q, --quiet          Suppress all output except errors
+      --no-color       Disable colored output
+      --config <PATH>  Use this config file instead of discovering hpds.toml
+  -h, --help           Print help

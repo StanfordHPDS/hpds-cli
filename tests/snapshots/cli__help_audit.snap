@@ -1,0 +1,19 @@
+---
+source: tests/cli.rs
+expression: "help_output(& [\"audit\", \"--help\"])"
+---
+Audit the current repo (or the whole org) against lab standards
+
+Usage: hpds audit [OPTIONS] [COMMAND]
+
+Commands:
+  all            Audit every repo in the GitHub org
+  report-github  Post audit results to GitHub (sticky PR comment, dedup'd issues)
+  help           Print this message or the help of the given subcommand(s)
+
+Options:
+  -v, --verbose        Show more detail (underlying commands, tool names)
+  -q, --quiet          Suppress all output except errors
+      --no-color       Disable colored output
+      --config <PATH>  Use this config file instead of discovering hpds.toml
+  -h, --help           Print help

@@ -1,0 +1,19 @@
+---
+source: tests/cli.rs
+expression: "help_output(& [\"git\", \"--help\"])"
+---
+Git helpers: sensible defaults and global ignore vaccination
+
+Usage: hpds git [OPTIONS] <COMMAND>
+
+Commands:
+  setup      Configure sensible git defaults and gh auth guidance
+  vaccinate  Add R/Python/editor junk patterns to the global git ignore
+  help       Print this message or the help of the given subcommand(s)
+
+Options:
+  -v, --verbose        Show more detail (underlying commands, tool names)
+  -q, --quiet          Suppress all output except errors
+      --no-color       Disable colored output
+      --config <PATH>  Use this config file instead of discovering hpds.toml
+  -h, --help           Print help

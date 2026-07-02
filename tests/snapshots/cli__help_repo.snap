@@ -1,0 +1,18 @@
+---
+source: tests/cli.rs
+expression: "help_output(& [\"repo\", \"--help\"])"
+---
+GitHub repository helpers
+
+Usage: hpds repo [OPTIONS] <COMMAND>
+
+Commands:
+  create  Create a GitHub repo for the current project (lab-manual gh flow)
+  help    Print this message or the help of the given subcommand(s)
+
+Options:
+  -v, --verbose        Show more detail (underlying commands, tool names)
+  -q, --quiet          Suppress all output except errors
+      --no-color       Disable colored output
+      --config <PATH>  Use this config file instead of discovering hpds.toml
+  -h, --help           Print help
