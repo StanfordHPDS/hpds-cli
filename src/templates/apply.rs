@@ -31,8 +31,6 @@ pub enum WriteOutcome {
 /// One entry of an [`apply_dir`] run: the template-relative path and what
 /// happened at the destination.
 #[derive(Debug)]
-// Tests-only until the `hpds use` components consume it.
-#[allow(dead_code)]
 pub struct FileOutcome {
     pub path: PathBuf,
     pub outcome: WriteOutcome,
@@ -122,7 +120,6 @@ pub fn diff_preview(label: &str, old: &str, new: &str) -> String {
 /// Render every file in the embedded `source` dir into `dest_root`,
 /// substituting `vars` in each UTF-8 file (binary files are copied
 /// verbatim). Returns one [`FileOutcome`] per file, sorted by path.
-#[allow(dead_code)] // tests-only until the `hpds use` components consume it
 pub fn apply_dir(
     source: &Dir<'_>,
     dest_root: &Path,

@@ -11,17 +11,20 @@
 //! command layer renders every outcome through `ui/`.
 
 mod apply;
+pub mod components;
 mod markers;
 mod render;
 
-// NOTE: re-exports are consumed by the `hpds use` components; until
-// then they are only exercised by unit tests.
+pub use apply::{FileOutcome, WriteOutcome, apply_dir};
+// NOTE: re-exports consumed by later `hpds use` components; until then they
+// are only exercised by unit tests.
 #[allow(unused_imports)]
-pub use apply::{FileOutcome, WriteOutcome, apply_dir, diff_preview, write_rendered};
+pub use apply::{diff_preview, write_rendered};
 #[allow(unused_imports)]
 pub use markers::{AppendOutcome, append_block};
+pub use render::Vars;
 #[allow(unused_imports)]
-pub use render::{Vars, render};
+pub use render::render;
 
 use std::path::PathBuf;
 
@@ -29,8 +32,6 @@ use include_dir::{Dir, include_dir};
 
 /// Every template component, embedded at compile time from `templates/` at
 /// the repo root.
-// Tests-only until the `hpds use` components consume it.
-#[allow(dead_code)]
 pub static TEMPLATES: Dir<'static> = include_dir!("$CARGO_MANIFEST_DIR/templates");
 
 /// Fixture templates for the engine's own unit tests. Kept under
@@ -95,7 +96,10 @@ mod tests {
         // the `hpds use` component listing; fixtures live in
         // `tests/fixtures/templates/` so they can never leak into either.
         assert!(TEMPLATES.get_dir("test-fixture").is_none());
-        assert!(TEMPLATES.dirs().next().is_none(), "no components yet");
+        assert!(
+            TEMPLATES.get_dir("pipeline").is_some(),
+            "pipeline templates are embedded"
+        );
     }
 
     #[test]

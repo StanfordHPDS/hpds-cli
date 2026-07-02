@@ -25,7 +25,6 @@ impl Vars {
 
     /// The standard the design variables: project name, language, author, and
     /// the current year.
-    #[allow(dead_code)] // tests-only until the `hpds use` components consume it
     pub fn standard(project: &str, language: &str, author: &str) -> Self {
         Self::new()
             .with("project", project)

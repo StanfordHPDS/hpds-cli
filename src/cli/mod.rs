@@ -66,7 +66,7 @@ pub enum Command {
     /// Project commands (`hpds project init` is an alias for `hpds init`)
     Project(project::ProjectArgs),
     /// Apply a template component to the current project
-    Use,
+    Use(r#use::UseArgs),
     /// Install external software (r, quarto, uv, gh, rig, tinytex, duckdb)
     Install,
     /// Set up a fresh machine with the lab toolchain
@@ -98,7 +98,7 @@ pub fn run(cli: Cli) -> anyhow::Result<()> {
         Command::Lint => lint::run(),
         Command::Init => init::run(),
         Command::Project(args) => project::run(args),
-        Command::Use => r#use::run(),
+        Command::Use(args) => r#use::run(args, &global),
         Command::Install => install::run(),
         Command::Setup => setup::run(),
         Command::Git(args) => git::run(args),
@@ -150,6 +150,31 @@ impl NotYetImplemented {
 /// Convenience constructor for stubbed commands.
 pub(crate) fn not_yet_implemented(command: &'static str) -> anyhow::Error {
     anyhow::Error::new(NotYetImplemented { command })
+}
+
+/// Typed error for usage mistakes clap cannot catch (e.g. an unknown
+/// `hpds use` component). `main` renders it with its hint and exits 2,
+/// matching clap's own usage-error exit code.
+#[derive(Debug, thiserror::Error)]
+#[error("{message}")]
+pub struct UsageError {
+    message: String,
+    hint: String,
+}
+
+impl UsageError {
+    /// What to do next (every user-facing error must say).
+    pub fn hint(&self) -> String {
+        self.hint.clone()
+    }
+}
+
+/// Convenience constructor for command-level usage errors.
+pub(crate) fn usage_error(message: impl Into<String>, hint: impl Into<String>) -> anyhow::Error {
+    anyhow::Error::new(UsageError {
+        message: message.into(),
+        hint: hint.into(),
+    })
 }
 
 #[cfg(test)]
