@@ -18,19 +18,23 @@ pub struct Vars(BTreeMap<String, String>);
 
 impl Vars {
     /// An empty map; add variables with [`Vars::with`].
-    #[allow(dead_code)] // tests-only until the `hpds use` components consume it
     pub fn new() -> Self {
         Self::default()
     }
 
-    /// The standard the design variables: project name, language, author, and
-    /// the current year.
-    pub fn standard(project: &str, language: &str, author: &str) -> Self {
-        Self::new()
+    /// The standard variables: project name, author, the current year, and
+    /// the project language when it is known. Components that need the
+    /// language look it up with [`Vars::get`] and ask the user for
+    /// `--language` when it is absent.
+    pub fn standard(project: &str, language: Option<&str>, author: &str) -> Self {
+        let vars = Self::new()
             .with("project", project)
-            .with("language", language)
             .with("author", author)
-            .with("year", current_year().to_string())
+            .with("year", current_year().to_string());
+        match language {
+            Some(language) => vars.with("language", language),
+            None => vars,
+        }
     }
 
     /// Builder-style insert; later inserts win.
@@ -39,7 +43,9 @@ impl Vars {
         self
     }
 
-    fn get(&self, name: &str) -> Option<&str> {
+    /// Look a variable up by name (components read e.g. `language` to pick
+    /// their template variant).
+    pub(crate) fn get(&self, name: &str) -> Option<&str> {
         self.0.get(name).map(String::as_str)
     }
 
@@ -242,12 +248,19 @@ mod tests {
 
     #[test]
     fn standard_vars_carry_the_four_spec_variables() {
-        let vars = Vars::standard("proj", "python", "Someone");
+        let vars = Vars::standard("proj", Some("python"), "Someone");
         assert_eq!(vars.get("project"), Some("proj"));
         assert_eq!(vars.get("language"), Some("python"));
         assert_eq!(vars.get("author"), Some("Someone"));
         let year: i64 = vars.get("year").unwrap().parse().unwrap();
         assert!(year >= 2026, "year variable is the current year: {year}");
+    }
+
+    #[test]
+    fn standard_vars_omit_language_when_it_is_unknown() {
+        let vars = Vars::standard("proj", None, "Someone");
+        assert_eq!(vars.get("language"), None);
+        assert_eq!(vars.get("project"), Some("proj"));
     }
 
     #[test]

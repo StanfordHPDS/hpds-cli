@@ -30,6 +30,11 @@ pub struct UseArgs {
     /// Overwrite existing files that differ from the template
     #[arg(long)]
     pub force: bool,
+
+    /// Project language; detected from project files (renv.lock,
+    /// pyproject.toml, ...) when omitted
+    #[arg(long, value_parser = ["r", "python", "both"])]
+    pub language: Option<String>,
 }
 
 pub fn run(args: UseArgs, global: &GlobalArgs) -> anyhow::Result<()> {
@@ -48,11 +53,14 @@ pub fn run(args: UseArgs, global: &GlobalArgs) -> anyhow::Result<()> {
     })?;
 
     let cwd = std::env::current_dir().context("could not determine the current directory")?;
+    let language = args
+        .language
+        .or_else(|| detect_language(&cwd).map(str::to_string));
     let ctx = ComponentCtx {
         kind: args.kind.as_deref(),
         force: args.force,
         dest: &cwd,
-        vars: standard_vars(&cwd, global)?,
+        vars: standard_vars(&cwd, global, language.as_deref())?,
     };
     let outcomes = (component.run)(&ctx)?;
     report(&name, &outcomes);
@@ -77,8 +85,10 @@ fn list_components() {
 }
 
 /// The standard substitution variables for `dest`: project name from the
-/// directory, author from the resolved config, plus language and year.
-fn standard_vars(dest: &Path, global: &GlobalArgs) -> anyhow::Result<Vars> {
+/// directory, author from the resolved config, the current year, and the
+/// project language when known (`--language` or detection); components
+/// that need the language ask for the flag when it is absent.
+fn standard_vars(dest: &Path, global: &GlobalArgs, language: Option<&str>) -> anyhow::Result<Vars> {
     let project = dest
         .file_name()
         .and_then(|n| n.to_str())
@@ -87,13 +97,44 @@ fn standard_vars(dest: &Path, global: &GlobalArgs) -> anyhow::Result<Vars> {
     for warning in &loaded.warnings {
         ui::warn(warning);
     }
-    // Project-level language metadata lands with `hpds init`; until a
-    // component needs to distinguish, R is the lab default.
     Ok(Vars::standard(
         project,
-        "r",
+        language,
         &loaded.config.project.primary_author,
     ))
+}
+
+/// Best-effort language detection from well-known project files. `None`
+/// when nothing identifies the project; components that care ask the user
+/// for `--language`.
+fn detect_language(root: &Path) -> Option<&'static str> {
+    let r = ["renv.lock", "renv", "DESCRIPTION", "_targets.R"]
+        .iter()
+        .any(|marker| root.join(marker).exists())
+        || has_rproj_file(root);
+    let python = ["pyproject.toml", "uv.lock", "requirements.txt"]
+        .iter()
+        .any(|marker| root.join(marker).exists());
+    match (r, python) {
+        (true, true) => Some("both"),
+        (true, false) => Some("r"),
+        (false, true) => Some("python"),
+        (false, false) => None,
+    }
+}
+
+/// Whether the directory holds an RStudio `*.Rproj` file.
+fn has_rproj_file(root: &Path) -> bool {
+    std::fs::read_dir(root)
+        .map(|entries| {
+            entries.flatten().any(|entry| {
+                entry
+                    .path()
+                    .extension()
+                    .is_some_and(|ext| ext.eq_ignore_ascii_case("Rproj"))
+            })
+        })
+        .unwrap_or(false)
 }
 
 /// Report one line per file through `ui/`, with a diff preview and a
@@ -122,5 +163,45 @@ fn report(component: &str, outcomes: &[FileOutcome]) {
         ui::println(&format!(
             "re-run `hpds use {component} --force` to overwrite the {conflicts} skipped {plural}"
         ));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn empty_directory_detects_nothing() {
+        let tmp = tempfile::tempdir().unwrap();
+        assert_eq!(detect_language(tmp.path()), None);
+    }
+
+    #[test]
+    fn renv_lock_marks_an_r_project() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("renv.lock"), "{}").unwrap();
+        assert_eq!(detect_language(tmp.path()), Some("r"));
+    }
+
+    #[test]
+    fn rproj_file_marks_an_r_project() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("analysis.Rproj"), "Version: 1.0\n").unwrap();
+        assert_eq!(detect_language(tmp.path()), Some("r"));
+    }
+
+    #[test]
+    fn pyproject_marks_a_python_project() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("pyproject.toml"), "").unwrap();
+        assert_eq!(detect_language(tmp.path()), Some("python"));
+    }
+
+    #[test]
+    fn r_and_python_markers_together_mean_both() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("renv.lock"), "{}").unwrap();
+        std::fs::write(tmp.path().join("uv.lock"), "").unwrap();
+        assert_eq!(detect_language(tmp.path()), Some("both"));
     }
 }

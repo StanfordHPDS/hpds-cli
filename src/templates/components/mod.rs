@@ -10,8 +10,12 @@
 //! `pub static COMPONENT: Component`, and append one line to [`COMPONENTS`].
 
 pub mod pipeline;
+pub mod readme;
+pub mod slurm;
 
 use std::path::Path;
+
+use crate::ui::HintExt;
 
 use super::{FileOutcome, Vars};
 
@@ -44,6 +48,8 @@ pub struct Component {
 /// All registered components, in listing order.
 pub static COMPONENTS: &[Component] = &[
     pipeline::COMPONENT,
+    readme::COMPONENT,
+    slurm::COMPONENT,
     // next component here (one line each)
 ];
 
@@ -61,15 +67,63 @@ pub fn names() -> String {
         .join(", ")
 }
 
+/// Fail with a do-this-next error when `--kind` was passed to a component
+/// that has no variants.
+pub(crate) fn reject_kind(ctx: &ComponentCtx, component: &str) -> anyhow::Result<()> {
+    if let Some(kind) = ctx.kind {
+        anyhow::bail!(
+            "the `{component}` component has no --kind variants \
+             (got `--kind {kind}`); drop the --kind flag and re-run"
+        );
+    }
+    Ok(())
+}
+
+/// The project language from the standard vars, for components that render
+/// differently per language. Absent (no `--language` flag and nothing
+/// detectable in the project) is an error pointing at the flag.
+pub(crate) fn require_language<'v>(
+    ctx: &'v ComponentCtx<'_>,
+    component: &str,
+) -> anyhow::Result<&'v str> {
+    ctx.vars
+        .get("language")
+        .ok_or_else(|| anyhow::anyhow!("could not detect the project language"))
+        .hint(format!(
+            "the `{component}` component renders differently per language; \
+             pass it explicitly, e.g. `hpds use {component} --language r` \
+             (r, python, or both)"
+        ))
+}
+
+#[cfg(test)]
+pub(crate) fn test_ctx<'a>(dest: &'a Path, language: &str) -> ComponentCtx<'a> {
+    ComponentCtx {
+        kind: None,
+        force: false,
+        dest,
+        vars: Vars::standard("malaria-icu", Some(language), "HPDS Lab"),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ui;
 
     #[test]
     fn find_returns_the_pipeline_component() {
         let component = find("pipeline").expect("pipeline is registered");
         assert_eq!(component.name, "pipeline");
         assert!(!component.description.is_empty());
+    }
+
+    #[test]
+    fn find_returns_the_readme_and_slurm_components() {
+        for name in ["readme", "slurm"] {
+            let component = find(name).unwrap_or_else(|| panic!("{name} is registered"));
+            assert_eq!(component.name, name);
+        }
     }
 
     #[test]
@@ -91,5 +145,37 @@ mod tests {
                 component.name
             );
         }
+    }
+
+    #[test]
+    fn reject_kind_errors_with_drop_the_flag_advice() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut ctx = test_ctx(tmp.path(), "r");
+        ctx.kind = Some("make");
+        let err = reject_kind(&ctx, "readme").unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("--kind make"), "names the bad flag: {msg}");
+        assert!(
+            msg.contains("drop the --kind flag"),
+            "says what to do: {msg}"
+        );
+    }
+
+    #[test]
+    fn require_language_error_points_at_the_language_flag() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut ctx = test_ctx(tmp.path(), "r");
+        ctx.vars = Vars::standard("malaria-icu", None, "HPDS Lab");
+        let err = require_language(&ctx, "readme").unwrap_err();
+        let rendered = ui::render_error(&err, false);
+        assert!(rendered.contains("could not detect"), "{rendered}");
+        assert!(rendered.contains("--language"), "{rendered}");
+    }
+
+    #[test]
+    fn require_language_returns_the_language_when_present() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ctx = test_ctx(tmp.path(), "python");
+        assert_eq!(require_language(&ctx, "readme").unwrap(), "python");
     }
 }

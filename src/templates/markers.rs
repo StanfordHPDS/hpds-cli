@@ -18,7 +18,7 @@ use super::TemplateError;
 
 /// What happened to the marker block.
 #[derive(Debug, PartialEq, Eq)]
-// Tests-only until the `hpds use` components consume it.
+// No shipped component appends blocks; only unit tests exercise this.
 #[allow(dead_code)]
 pub enum AppendOutcome {
     /// No block with this id existed; it was appended (the file is created
@@ -37,7 +37,7 @@ pub enum AppendOutcome {
 /// `comment_prefix` is the line-comment leader for the target file type
 /// (`"#"` for Makefile/.gitignore). `body` is the block content between the
 /// markers; a trailing newline is optional.
-#[allow(dead_code)] // tests-only until the `hpds use` components consume it
+#[allow(dead_code)] // no shipped component appends blocks; unit-tested only
 pub fn append_block(
     path: &Path,
     id: &str,

@@ -20,6 +20,8 @@ pub use apply::{FileOutcome, WriteOutcome, apply_dir};
 // are only exercised by unit tests.
 #[allow(unused_imports)]
 pub use apply::{diff_preview, write_rendered};
+// The append-to-existing-files half of the engine; no shipped component
+// appends blocks, so only its unit tests exercise it.
 #[allow(unused_imports)]
 pub use markers::{AppendOutcome, append_block};
 pub use render::Vars;
@@ -100,6 +102,12 @@ mod tests {
             TEMPLATES.get_dir("pipeline").is_some(),
             "pipeline templates are embedded"
         );
+    }
+
+    #[test]
+    fn production_templates_embed_the_shipped_components() {
+        assert!(TEMPLATES.get_dir("readme").is_some());
+        assert!(TEMPLATES.get_dir("slurm").is_some());
     }
 
     #[test]

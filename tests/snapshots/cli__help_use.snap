@@ -10,10 +10,11 @@ Arguments:
   [COMPONENT]  Component to apply; omit to list the available components
 
 Options:
-      --kind <VALUE>   Component-specific variant (e.g. make, targets, or both for pipeline)
-  -v, --verbose        Show more detail (underlying commands, tool names)
-      --force          Overwrite existing files that differ from the template
-  -q, --quiet          Suppress all output except errors
-      --no-color       Disable colored output
-      --config <PATH>  Use this config file instead of discovering hpds.toml
-  -h, --help           Print help
+      --kind <VALUE>         Component-specific variant (e.g. make, targets, or both for pipeline)
+  -v, --verbose              Show more detail (underlying commands, tool names)
+      --force                Overwrite existing files that differ from the template
+  -q, --quiet                Suppress all output except errors
+      --language <LANGUAGE>  Project language; detected from project files (renv.lock, pyproject.toml, ...) when omitted [possible values: r, python, both]
+      --no-color             Disable colored output
+      --config <PATH>        Use this config file instead of discovering hpds.toml
+  -h, --help                 Print help
