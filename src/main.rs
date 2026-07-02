@@ -3,6 +3,7 @@
 //! Thin entry point: parse the CLI, dispatch, render top-level errors.
 
 mod cli;
+mod fsx;
 mod ui;
 
 use std::process::ExitCode;
