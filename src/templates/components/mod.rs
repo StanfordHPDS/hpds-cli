@@ -10,6 +10,7 @@
 //! `pub static COMPONENT: Component`, and append one line to [`COMPONENTS`].
 
 pub mod container;
+pub mod gha;
 pub mod pipeline;
 pub mod readme;
 pub mod slurm;
@@ -25,6 +26,9 @@ pub struct ComponentCtx<'a> {
     /// The component-specific `--kind` flag, unvalidated; each component
     /// defines (and checks) its own accepted values.
     pub kind: Option<&'a str>,
+    /// The gha component's `--workflows` selection, unvalidated; every
+    /// other component rejects the flag.
+    pub workflows: Option<&'a [String]>,
     /// Overwrite files that conflict with the template.
     pub force: bool,
     /// Project root the component renders into.
@@ -49,6 +53,7 @@ pub struct Component {
 /// All registered components, in listing order.
 pub static COMPONENTS: &[Component] = &[
     container::COMPONENT,
+    gha::COMPONENT,
     pipeline::COMPONENT,
     readme::COMPONENT,
     slurm::COMPONENT,
@@ -81,6 +86,19 @@ pub(crate) fn reject_kind(ctx: &ComponentCtx, component: &str) -> anyhow::Result
     Ok(())
 }
 
+/// Fail with a do-this-next error when `--workflows` was passed to a
+/// component other than gha.
+pub(crate) fn reject_workflows(ctx: &ComponentCtx, component: &str) -> anyhow::Result<()> {
+    if let Some(workflows) = ctx.workflows {
+        anyhow::bail!(
+            "the `{component}` component does not take --workflows \
+             (got `--workflows {}`); drop the --workflows flag and re-run",
+            workflows.join(",")
+        );
+    }
+    Ok(())
+}
+
 /// The project language from the standard vars, for components that render
 /// differently per language. Absent (no `--language` flag and nothing
 /// detectable in the project) is an error pointing at the flag.
@@ -102,6 +120,7 @@ pub(crate) fn require_language<'v>(
 pub(crate) fn test_ctx<'a>(dest: &'a Path, language: &str) -> ComponentCtx<'a> {
     ComponentCtx {
         kind: None,
+        workflows: None,
         force: false,
         dest,
         vars: Vars::standard("malaria-icu", Some(language), "HPDS Lab"),
@@ -121,8 +140,8 @@ mod tests {
     }
 
     #[test]
-    fn find_returns_the_readme_slurm_and_container_components() {
-        for name in ["readme", "slurm", "container"] {
+    fn find_returns_the_readme_slurm_container_and_gha_components() {
+        for name in ["readme", "slurm", "container", "gha"] {
             let component = find(name).unwrap_or_else(|| panic!("{name} is registered"));
             assert_eq!(component.name, name);
         }
@@ -161,6 +180,31 @@ mod tests {
             msg.contains("drop the --kind flag"),
             "says what to do: {msg}"
         );
+    }
+
+    #[test]
+    fn reject_workflows_errors_with_drop_the_flag_advice() {
+        let tmp = tempfile::tempdir().unwrap();
+        let workflows = vec!["pr-template".to_string(), "lint".to_string()];
+        let mut ctx = test_ctx(tmp.path(), "r");
+        ctx.workflows = Some(&workflows);
+        let err = reject_workflows(&ctx, "readme").unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("--workflows pr-template,lint"),
+            "names the bad flag: {msg}"
+        );
+        assert!(
+            msg.contains("drop the --workflows flag"),
+            "says what to do: {msg}"
+        );
+    }
+
+    #[test]
+    fn reject_workflows_passes_when_the_flag_is_absent() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ctx = test_ctx(tmp.path(), "r");
+        assert!(reject_workflows(&ctx, "readme").is_ok());
     }
 
     #[test]

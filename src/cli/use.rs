@@ -35,6 +35,11 @@ pub struct UseArgs {
     /// pyproject.toml, ...) when omitted
     #[arg(long, value_parser = ["r", "python", "both"])]
     pub language: Option<String>,
+
+    /// gha workflows to add without prompting (comma-separated or repeated:
+    /// pr-template, lint)
+    #[arg(long, value_delimiter = ',', value_name = "NAMES")]
+    pub workflows: Option<Vec<String>>,
 }
 
 pub fn run(args: UseArgs, global: &GlobalArgs) -> anyhow::Result<()> {
@@ -58,6 +63,7 @@ pub fn run(args: UseArgs, global: &GlobalArgs) -> anyhow::Result<()> {
         .or_else(|| detect_language(&cwd).map(str::to_string));
     let ctx = ComponentCtx {
         kind: args.kind.as_deref(),
+        workflows: args.workflows.as_deref(),
         force: args.force,
         dest: &cwd,
         vars: standard_vars(&cwd, global, language.as_deref())?,

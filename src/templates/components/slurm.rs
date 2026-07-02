@@ -22,6 +22,7 @@ pub static COMPONENT: Component = Component {
 /// Render the Slurm templates into the project root.
 fn run(ctx: &ComponentCtx) -> anyhow::Result<Vec<FileOutcome>> {
     super::reject_kind(ctx, "slurm")?;
+    super::reject_workflows(ctx, "slurm")?;
     let language = super::require_language(ctx, "slurm")?;
     let source = TEMPLATES
         .get_dir("slurm")

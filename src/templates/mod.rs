@@ -109,6 +109,7 @@ mod tests {
         assert!(TEMPLATES.get_dir("readme").is_some());
         assert!(TEMPLATES.get_dir("slurm").is_some());
         assert!(TEMPLATES.get_dir("container").is_some());
+        assert!(TEMPLATES.get_dir("gha").is_some());
     }
 
     #[test]

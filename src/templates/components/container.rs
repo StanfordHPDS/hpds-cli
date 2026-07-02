@@ -74,6 +74,7 @@ fn resolve_kind(flag: Option<&str>) -> anyhow::Result<Kind> {
 }
 
 fn run(ctx: &ComponentCtx) -> anyhow::Result<Vec<FileOutcome>> {
+    super::reject_workflows(ctx, "container")?;
     let kind = resolve_kind(ctx.kind)?;
     let language = super::require_language(ctx, "container")?;
     let mut outcomes = Vec::new();

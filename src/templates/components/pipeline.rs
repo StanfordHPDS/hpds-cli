@@ -75,6 +75,7 @@ fn resolve_kind(flag: Option<&str>) -> anyhow::Result<Kind> {
 }
 
 fn run(ctx: &ComponentCtx) -> anyhow::Result<Vec<FileOutcome>> {
+    super::reject_workflows(ctx, "pipeline")?;
     let kind = resolve_kind(ctx.kind)?;
     let mut outcomes = Vec::new();
     for dir in kind.template_dirs() {

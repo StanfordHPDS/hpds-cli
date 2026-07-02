@@ -1,0 +1,31 @@
+name: hpds lint
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      # PLACEHOLDER INSTALL STEP: the hpds release install script lands
+      # later; once it ships, replace these two steps with a single
+      # `curl ... | sh` of that script. Until then, building from source
+      # with `cargo install --git` is the working fallback (slower, but
+      # correct).
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install hpds
+        run: cargo install --git https://github.com/StanfordHPDS/hpds-cli hpds
+
+      # Both steps fail the job (and the check) on any violation.
+      - name: Lint
+        run: hpds lint
+
+      - name: Check formatting
+        run: hpds format --check

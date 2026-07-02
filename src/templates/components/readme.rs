@@ -20,6 +20,7 @@ pub static COMPONENT: Component = Component {
 /// project root.
 fn run(ctx: &ComponentCtx) -> anyhow::Result<Vec<FileOutcome>> {
     super::reject_kind(ctx, "readme")?;
+    super::reject_workflows(ctx, "readme")?;
     let language = super::require_language(ctx, "readme")?;
     // R projects (including mixed R + Python ones) get a Quarto source
     // that renders to README.md; everything else gets README.md directly.
