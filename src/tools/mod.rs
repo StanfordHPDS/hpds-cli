@@ -17,8 +17,14 @@ mod manifest;
 mod platform;
 #[allow(dead_code)]
 mod spec;
+#[cfg(test)]
+pub(crate) mod test_support;
+#[allow(dead_code)]
+mod uv_tool;
 #[allow(dead_code)]
 pub mod versions;
+
+use std::path::PathBuf;
 
 // NOTE: re-exports are consumed by the `hpds tools` subcommands and the
 // format/lint adapters; until those land they are only exercised by unit
@@ -26,10 +32,34 @@ pub mod versions;
 #[allow(unused_imports)]
 pub use cache::ToolCache;
 #[allow(unused_imports)]
-pub use download::{Downloader, InstallContext, ensure_installed};
+pub use download::{Downloader, InstallContext};
 #[allow(unused_imports)]
 pub use manifest::Manifest;
 #[allow(unused_imports)]
 pub use platform::{Arch, Os, Platform, UnsupportedPlatform};
 #[allow(unused_imports)]
 pub use spec::{ToolKind, ToolSpec};
+#[allow(unused_imports)]
+pub use uv_tool::UvToolInstaller;
+
+/// Install `spec` at `version` into the default cache for this machine and
+/// return the path to its binary, dispatching on the tool's kind so callers
+/// never care how a tool is installed. Cached tools are returned with zero
+/// network.
+#[allow(dead_code)] // consumed by the `hpds tools` subcommands and adapters
+pub fn ensure_installed(
+    spec: &ToolSpec,
+    version: &str,
+    ctx: &InstallContext,
+) -> anyhow::Result<PathBuf> {
+    let cache = ToolCache::from_env()?;
+    let platform = Platform::current()?;
+    match spec.kind {
+        ToolKind::GithubBinary { .. } => {
+            Downloader::new(cache, platform).ensure_installed(spec, version, ctx)
+        }
+        ToolKind::UvTool { .. } => {
+            UvToolInstaller::new(cache, platform).ensure_installed(spec, version, ctx)
+        }
+    }
+}
