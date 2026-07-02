@@ -7,6 +7,7 @@ mod cli;
 mod config;
 mod fsx;
 mod gitx;
+mod install;
 mod templates;
 mod tools;
 mod ui;
@@ -30,7 +31,11 @@ fn render_error(err: anyhow::Error) -> ExitCode {
     let usage_hint = err
         .downcast_ref::<cli::NotYetImplemented>()
         .map(|nyi| nyi.hint())
-        .or_else(|| err.downcast_ref::<cli::UsageError>().map(|u| u.hint()));
+        .or_else(|| err.downcast_ref::<cli::UsageError>().map(|u| u.hint()))
+        .or_else(|| {
+            err.downcast_ref::<install::registry::RegistryError>()
+                .map(|e| e.hint())
+        });
     match usage_hint {
         Some(hint) => {
             // Stubs and usage errors carry their hint on the type; attach it

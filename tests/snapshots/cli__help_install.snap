@@ -4,11 +4,16 @@ expression: "help_output(& [\"install\", \"--help\"])"
 ---
 Install external software (r, quarto, uv, gh, rig, tinytex, duckdb)
 
-Usage: hpds install [OPTIONS]
+Usage: hpds install [OPTIONS] <TOOL>
+
+Arguments:
+  <TOOL>  Tool to install (r, quarto, uv, gh, rig, tinytex, duckdb)
 
 Options:
-  -v, --verbose        Show more detail (underlying commands, tool names)
-  -q, --quiet          Suppress all output except errors
-      --no-color       Disable colored output
-      --config <PATH>  Use this config file instead of discovering hpds.toml
-  -h, --help           Print help
+  -v, --verbose            Show more detail (underlying commands, tool names)
+      --version <VERSION>  Install this exact version (only for tools that support pinning)
+  -q, --quiet              Suppress all output except errors
+  -y, --yes                Skip confirmation prompts; sudo steps still print what they will run
+      --no-color           Disable colored output
+      --config <PATH>      Use this config file instead of discovering hpds.toml
+  -h, --help               Print help

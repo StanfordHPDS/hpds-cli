@@ -1,0 +1,1 @@
+RIG -- The R Installation Manager 0.8.1

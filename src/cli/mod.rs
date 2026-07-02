@@ -68,7 +68,7 @@ pub enum Command {
     /// Apply a template component to the current project
     Use(r#use::UseArgs),
     /// Install external software (r, quarto, uv, gh, rig, tinytex, duckdb)
-    Install,
+    Install(install::InstallArgs),
     /// Set up a fresh machine with the lab toolchain
     Setup,
     /// Git helpers: sensible defaults and global ignore vaccination
@@ -99,7 +99,7 @@ pub fn run(cli: Cli) -> anyhow::Result<()> {
         Command::Init(args) => init::run(args),
         Command::Project(args) => project::run(args),
         Command::Use(args) => r#use::run(args, &global),
-        Command::Install => install::run(),
+        Command::Install(args) => install::run(args, &global),
         Command::Setup => setup::run(),
         Command::Git(args) => git::run(args),
         Command::Repo(args) => repo::run(args),
