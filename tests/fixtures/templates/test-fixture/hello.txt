@@ -1,0 +1,4 @@
+Hello {{project}}!
+language: {{language}}
+year: {{year}}
+author: {{author}}
