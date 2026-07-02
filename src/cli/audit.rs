@@ -37,7 +37,7 @@ enum OutputFormat {
 #[derive(Debug, Subcommand)]
 pub enum AuditCommand {
     /// Audit every repo in the GitHub org
-    All,
+    All(super::audit_all::AllArgs),
     /// Post audit results to GitHub (sticky PR comment, dedup'd issues)
     ReportGithub,
 }
@@ -45,8 +45,8 @@ pub enum AuditCommand {
 pub fn run(args: AuditArgs, global: &super::GlobalArgs) -> anyhow::Result<()> {
     match args.command {
         None => audit_current_repo(&args, global),
-        // Stubs until the org sweep and bot reporter are implemented.
-        Some(AuditCommand::All) => Err(super::not_yet_implemented("audit all")),
+        Some(AuditCommand::All(all_args)) => super::audit_all::run(all_args),
+        // Stub until the bot reporter is implemented.
         Some(AuditCommand::ReportGithub) => Err(super::not_yet_implemented("audit report-github")),
     }
 }

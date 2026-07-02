@@ -4,6 +4,7 @@
 //! This module returns data and rendered strings only — it never prints.
 //! The command layer (`cli::audit`) does all terminal output through `ui/`.
 
+pub mod all;
 mod checks;
 pub mod github;
 mod report;

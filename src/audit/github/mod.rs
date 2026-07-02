@@ -83,9 +83,12 @@ pub trait GithubApi {
     fn local_branch_commit(&self, branch: &str) -> Option<LocalTip>;
 }
 
-/// The real [`GithubApi`]: shells out to `gh` and `git` in the repo.
+/// The real [`GithubApi`]: shells out to `gh` (and `git`, when a local
+/// checkout exists). Without a checkout — the org sweep's metadata-only
+/// mode — `gh api` runs from the process cwd and local branch lookups
+/// always answer `None`.
 struct GhCli {
-    repo: PathBuf,
+    repo: Option<PathBuf>,
 }
 
 impl GithubApi for GhCli {
@@ -99,13 +102,13 @@ impl GithubApi for GhCli {
         if paginate {
             cmd.arg("--paginate");
         }
-        let out = cmd
-            .current_dir(&self.repo)
-            .output()
-            .map_err(|err| match err.kind() {
-                io::ErrorKind::NotFound => failed("gh is not installed or not on PATH".into()),
-                _ => failed(err.to_string()),
-            })?;
+        if let Some(repo) = &self.repo {
+            cmd.current_dir(repo);
+        }
+        let out = cmd.output().map_err(|err| match err.kind() {
+            io::ErrorKind::NotFound => failed("gh is not installed or not on PATH".into()),
+            _ => failed(err.to_string()),
+        })?;
         if out.status.success() {
             return Ok(String::from_utf8_lossy(&out.stdout).into_owned());
         }
@@ -120,9 +123,9 @@ impl GithubApi for GhCli {
     }
 
     fn local_branch_commit(&self, branch: &str) -> Option<LocalTip> {
+        let repo = self.repo.as_deref()?;
         let rev_parse = |rev: &str| -> Option<String> {
-            let out =
-                super::checks::git_maybe(&self.repo, &["rev-parse", "--verify", "--quiet", rev])?;
+            let out = super::checks::git_maybe(repo, &["rev-parse", "--verify", "--quiet", rev])?;
             let sha = out.trim().to_string();
             (!sha.is_empty()).then_some(sha)
         };
@@ -209,6 +212,13 @@ pub enum GithubStatus {
     Skipped(Finding),
 }
 
+/// A GitHub context for a repo with no local checkout, keyed by slug
+/// alone — the org sweep's `--no-clone` metadata pass. The caller is
+/// responsible for having verified `gh` auth first.
+pub fn ctx_without_checkout(slug: RepoSlug) -> GithubCtx {
+    GithubCtx::new(slug, Box::new(GhCli { repo: None }))
+}
+
 /// Probe the repo's `origin` remote and `gh` auth state.
 pub fn probe(repo: &Path) -> GithubStatus {
     let Some(slug) = origin_slug(repo) else {
@@ -218,7 +228,7 @@ pub fn probe(repo: &Path) -> GithubStatus {
         Ok(GhAuth::Authenticated) => GithubStatus::Ready(GithubCtx::new(
             slug,
             Box::new(GhCli {
-                repo: repo.to_path_buf(),
+                repo: Some(repo.to_path_buf()),
             }),
         )),
         // Not installed, not logged in, or unprobeable all mean the same
@@ -334,6 +344,12 @@ mod tests {
     }
 
     #[test]
+    fn gh_cli_without_a_checkout_answers_no_local_branch() {
+        let gh = GhCli { repo: None };
+        assert!(gh.local_branch_commit("main").is_none());
+    }
+
+    #[test]
     fn ctx_api_memoizes_successful_responses() {
         use std::cell::Cell;
         use std::rc::Rc;
@@ -377,7 +393,7 @@ mod tests {
     #[ignore = "network + authenticated gh required; run with --features online-tests -- --ignored"]
     fn online_gh_api_fetches_and_parses_a_real_repo() {
         let gh = GhCli {
-            repo: std::env::temp_dir(),
+            repo: Some(std::env::temp_dir()),
         };
         let body = gh
             .api("repos/cli/cli", false)

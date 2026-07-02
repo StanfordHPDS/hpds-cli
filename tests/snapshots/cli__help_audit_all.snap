@@ -7,8 +7,14 @@ Audit every repo in the GitHub org
 Usage: hpds audit all [OPTIONS]
 
 Options:
-  -v, --verbose        Show more detail (underlying commands, tool names)
-  -q, --quiet          Suppress all output except errors
-      --no-color       Disable colored output
-      --config <PATH>  Use this config file instead of discovering hpds.toml
-  -h, --help           Print help
+      --org <ORG>          GitHub organization to sweep [default: StanfordHPDS]
+  -v, --verbose            Show more detail (underlying commands, tool names)
+      --limit <N>          Audit at most this many repos when enumerating the org [default: 100]
+  -q, --quiet              Suppress all output except errors
+      --no-clone           Skip cloning: audit GitHub metadata only (runs just the watchers, contributors, and stale-remote-branches checks; the other checks need a working tree)
+      --no-color           Disable colored output
+      --config <PATH>      Use this config file instead of discovering hpds.toml
+      --repos-from <FILE>  Audit the repos listed in FILE (one `owner/name` slug or local path per line, `#` comments allowed) instead of enumerating the org
+      --output <PATH>      Write the markdown report to PATH [default: hpds-audit-report.md]
+      --format <FORMAT>    Output format for the terminal summary [default: text] [possible values: text, json]
+  -h, --help               Print help

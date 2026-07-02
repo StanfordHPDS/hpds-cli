@@ -4,6 +4,7 @@
 //! typed [`NotYetImplemented`] error, rendered by `main` with exit code 2.
 
 mod audit;
+mod audit_all;
 mod completions;
 mod config;
 mod format;
