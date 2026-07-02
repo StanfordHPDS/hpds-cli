@@ -6,7 +6,10 @@
 
 pub mod duckdb;
 pub mod gh;
+pub mod quarto;
+pub mod r;
 pub mod rig;
+pub mod tinytex;
 pub mod uv;
 
 use std::path::PathBuf;
@@ -121,6 +124,95 @@ mod online_tests {
         }
         let os = Platform::current().expect("supported platform").os;
         fetch_and_probe(&super::duckdb::release_spec(os), versions::DUCKDB);
+    }
+
+    use crate::install::test_support::PanicFetcher;
+    use crate::install::{InstallCtx, Installer};
+
+    /// An `InstallCtx` against the real machine that can only observe:
+    /// probes run through the system runner, and any fetch panics.
+    fn probe_ctx(runner: &SystemRunner) -> InstallCtx<'_> {
+        InstallCtx {
+            os: Platform::current().expect("supported platform").os,
+            yes: false,
+            verbose: false,
+            pin: None,
+            runner,
+            fetcher: &PanicFetcher,
+        }
+    }
+
+    /// Assert that `installer`'s detection agrees with `probe` being on
+    /// PATH — installing r/quarto/tinytex would mutate this machine's
+    /// real toolchain, so their online tests only exercise detection
+    /// (and skip, with a note, when the tool is absent).
+    fn assert_detection_matches_path(installer: &dyn Installer, probe: &str) {
+        let runner = SystemRunner;
+        let ctx = probe_ctx(&runner);
+        let on_path = runner.which(probe).is_some();
+        match installer.detect(&ctx) {
+            Some(version) => {
+                assert!(
+                    on_path,
+                    "{} detected {version} but `{probe}` is not on PATH",
+                    installer.name()
+                );
+                assert!(!version.is_empty(), "{}", installer.name());
+                eprintln!(
+                    "note: {} {version} is already installed; detection verified, \
+                     skipping install",
+                    installer.name()
+                );
+            }
+            None => {
+                assert!(
+                    !on_path,
+                    "`{probe}` is on PATH but {} detection missed it",
+                    installer.name()
+                );
+                eprintln!(
+                    "note: {} is absent; installing it would mutate this machine, \
+                     so only the detection miss is verified",
+                    installer.name()
+                );
+            }
+        }
+    }
+
+    #[test]
+    #[ignore = "probes the real R install on this machine"]
+    fn r_detection_matches_the_real_machine() {
+        assert_detection_matches_path(&super::r::R, "R");
+    }
+
+    #[test]
+    #[ignore = "probes the real quarto install on this machine"]
+    fn quarto_detection_matches_the_real_machine() {
+        assert_detection_matches_path(&super::quarto::Quarto, "quarto");
+    }
+
+    #[test]
+    #[ignore = "probes the real quarto/tlmgr installs on this machine"]
+    fn tinytex_detection_reads_the_real_machine() {
+        // tinytex has no single probe binary: detection goes through
+        // `quarto list tools` and falls back to tlmgr. When either is
+        // around and reports a TeX, detection must see it.
+        let runner = SystemRunner;
+        let ctx = probe_ctx(&runner);
+        let detected = super::tinytex::TinyTex.detect(&ctx);
+        if runner.which("tlmgr").is_some() {
+            assert!(
+                detected.is_some(),
+                "tlmgr is on PATH but tinytex detection found nothing"
+            );
+            eprintln!(
+                "note: tinytex ({}) is already installed; detection verified, \
+                 skipping install",
+                detected.expect("just checked")
+            );
+        } else {
+            eprintln!("note: no tlmgr on this machine; tinytex detection returned {detected:?}");
+        }
     }
 
     #[test]

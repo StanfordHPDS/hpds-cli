@@ -83,10 +83,20 @@ pub struct FetchCall {
     pub bin_dir: PathBuf,
 }
 
+/// One recorded [`ReleaseFetcher::fetch_tree`] request.
+#[derive(Debug, Clone)]
+pub struct TreeFetchCall {
+    pub spec: ToolSpec,
+    pub version: String,
+    pub opt_dir: PathBuf,
+    pub bin_dir: PathBuf,
+}
+
 /// Fake `ReleaseFetcher`: records requests, downloads nothing.
 #[derive(Default)]
 pub struct FakeFetcher {
     pub calls: RefCell<Vec<FetchCall>>,
+    pub tree_calls: RefCell<Vec<TreeFetchCall>>,
 }
 
 impl ReleaseFetcher for FakeFetcher {
@@ -99,6 +109,22 @@ impl ReleaseFetcher for FakeFetcher {
         self.calls.borrow_mut().push(FetchCall {
             spec: *spec,
             version: version.to_string(),
+            bin_dir: bin_dir.to_path_buf(),
+        });
+        Ok(bin_dir.join(spec.name))
+    }
+
+    fn fetch_tree(
+        &self,
+        spec: &ToolSpec,
+        version: &str,
+        opt_dir: &Path,
+        bin_dir: &Path,
+    ) -> anyhow::Result<PathBuf> {
+        self.tree_calls.borrow_mut().push(TreeFetchCall {
+            spec: *spec,
+            version: version.to_string(),
+            opt_dir: opt_dir.to_path_buf(),
             bin_dir: bin_dir.to_path_buf(),
         });
         Ok(bin_dir.join(spec.name))
@@ -120,13 +146,31 @@ impl ReleaseFetcher for PanicFetcher {
             spec.name
         );
     }
+
+    fn fetch_tree(
+        &self,
+        spec: &ToolSpec,
+        _version: &str,
+        _opt_dir: &Path,
+        _bin_dir: &Path,
+    ) -> anyhow::Result<PathBuf> {
+        panic!(
+            "this test must not fetch a release tree (asked for {})",
+            spec.name
+        );
+    }
 }
 
 /// A recorded `--version` output from `tests/fixtures/tool-output/`.
 pub fn probe_fixture(name: &str) -> String {
+    tool_output_fixture(&format!("version-probes/{name}"))
+}
+
+/// A recorded external-tool output from `tests/fixtures/tool-output/`.
+pub fn tool_output_fixture(rel: &str) -> String {
     let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("tests/fixtures/tool-output/version-probes")
-        .join(name);
+        .join("tests/fixtures/tool-output")
+        .join(rel);
     std::fs::read_to_string(&path)
         .unwrap_or_else(|e| panic!("read fixture {}: {e}", path.display()))
 }

@@ -37,31 +37,35 @@ fn install_unknown_tool_exits_2_and_lists_known_tools() {
 }
 
 #[test]
-fn install_known_but_unimplemented_tool_exits_2_with_lands_soon() {
-    for tool in ["r", "quarto", "tinytex"] {
+fn install_rejects_a_version_pin_for_tools_that_cannot_pin() {
+    // rig installs through package managers and tinytex through quarto's
+    // bundled version, so `--version` is a usage error for both (caught
+    // before anything touches the system).
+    for tool in ["rig", "tinytex"] {
         hpds()
-            .args(["install", tool])
+            .args(["install", tool, "--version", "1.0.0"])
             .assert()
             .code(2)
-            .stdout(predicate::str::is_empty())
             .stderr(
-                predicate::str::contains("lands soon")
-                    .and(predicate::str::contains(tool))
-                    .and(predicate::str::contains("hint:")),
+                predicate::str::contains("does not support")
+                    .and(predicate::str::contains("--version")),
             );
     }
 }
 
+/// The tinytex installer needs quarto; with an empty `PATH` the error
+/// must say to install quarto first (and touch nothing).
 #[test]
-fn install_rejects_a_version_pin_for_tools_that_cannot_pin() {
-    // rig installs through package managers only, so `--version` is a
-    // usage error (caught before anything touches the system).
+fn install_tinytex_without_quarto_says_install_quarto_first() {
+    let empty = tempfile::tempdir().expect("tempdir");
     hpds()
-        .args(["install", "rig", "--version", "0.8.1"])
+        .args(["install", "tinytex", "--yes"])
+        .env("PATH", empty.path())
         .assert()
-        .code(2)
+        .failure()
         .stderr(
-            predicate::str::contains("does not support").and(predicate::str::contains("--version")),
+            predicate::str::contains("needs quarto")
+                .and(predicate::str::contains("hpds install quarto")),
         );
 }
 
@@ -74,21 +78,49 @@ fn install_is_a_no_op_when_the_tool_is_already_on_path() {
     use std::os::unix::fs::PermissionsExt;
 
     let bin = tempfile::tempdir().expect("tempdir");
+    // (hpds tool name, executable name, --version output, detected version)
     let fake_tools = [
-        ("uv", "uv 0.9.0 (39b688653 2025-10-07)", "0.9.0"),
-        ("gh", "gh version 2.95.0 (2026-06-17)", "2.95.0"),
-        ("rig", "RIG -- The R Installation Manager 0.8.1", "0.8.1"),
-        ("duckdb", "v1.5.4 (Variegata) 08e34c447b", "1.5.4"),
+        ("uv", "uv", "uv 0.9.0 (39b688653 2025-10-07)", "0.9.0"),
+        ("gh", "gh", "gh version 2.95.0 (2026-06-17)", "2.95.0"),
+        (
+            "rig",
+            "rig",
+            "RIG -- The R Installation Manager 0.8.1",
+            "0.8.1",
+        ),
+        ("duckdb", "duckdb", "v1.5.4 (Variegata) 08e34c447b", "1.5.4"),
+        ("r", "R", "R version 4.6.0 (2026-04-24)", "4.6.0"),
     ];
-    for (tool, version_output, _) in fake_tools {
-        let path = bin.path().join(tool);
+    for (_, exe, version_output, _) in fake_tools {
+        let path = bin.path().join(exe);
         std::fs::write(&path, format!("#!/bin/sh\necho '{version_output}'\n"))
             .expect("write fake tool");
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755))
             .expect("mark fake tool executable");
     }
 
-    for (tool, _, version) in fake_tools {
+    // quarto answers both `--version` (its own detection) and `list tools`
+    // (tinytex detection), covering the last two installers.
+    let quarto = bin.path().join("quarto");
+    std::fs::write(
+        &quarto,
+        "#!/bin/sh\n\
+         if [ \"$1\" = list ]; then\n\
+         printf 'Tool     Status      Installed  Latest\\n'\n\
+         printf 'tinytex  Up to date  v2026.07   v2026.07\\n'\n\
+         else\n\
+         echo '1.9.36'\n\
+         fi\n",
+    )
+    .expect("write fake quarto");
+    std::fs::set_permissions(&quarto, std::fs::Permissions::from_mode(0o755))
+        .expect("mark fake quarto executable");
+
+    let no_ops = fake_tools
+        .into_iter()
+        .map(|(tool, _, _, version)| (tool, version))
+        .chain([("quarto", "1.9.36"), ("tinytex", "2026.07")]);
+    for (tool, version) in no_ops {
         hpds()
             .args(["install", tool])
             .env("PATH", bin.path())
@@ -104,20 +136,41 @@ fn install_is_a_no_op_when_the_tool_is_already_on_path() {
 
 #[test]
 fn install_accepts_version_and_yes_flags() {
-    // The flags must parse; the tool itself is still unimplemented, so the
-    // run stops at the registry with the "lands soon" error.
+    // The flags must parse; rig cannot pin, so the run stops at the usage
+    // error before anything touches the system.
     hpds()
-        .args(["install", "quarto", "--version", "1.8.27", "--yes"])
+        .args(["install", "rig", "--version", "0.8.1", "--yes"])
         .assert()
         .code(2)
-        .stderr(predicate::str::contains("lands soon"));
+        .stderr(predicate::str::contains("does not support"));
 }
 
 #[test]
 fn install_accepts_short_yes_flag() {
     hpds()
-        .args(["install", "-y", "quarto"])
+        .args(["install", "-y", "rig", "--version", "0.8.1"])
         .assert()
         .code(2)
-        .stderr(predicate::str::contains("lands soon"));
+        .stderr(predicate::str::contains("does not support"));
+}
+
+/// A pinned install of an already-pinned-version tool is a no-op, so the
+/// full `--version` + `--yes` path is exercised without touching anything.
+#[cfg(unix)]
+#[test]
+fn install_pinned_to_the_installed_version_is_a_no_op() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let bin = tempfile::tempdir().expect("tempdir");
+    let path = bin.path().join("quarto");
+    std::fs::write(&path, "#!/bin/sh\necho '1.9.36'\n").expect("write fake quarto");
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755))
+        .expect("mark fake quarto executable");
+
+    hpds()
+        .args(["install", "quarto", "--version", "1.9.36", "--yes"])
+        .env("PATH", bin.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("already installed"));
 }

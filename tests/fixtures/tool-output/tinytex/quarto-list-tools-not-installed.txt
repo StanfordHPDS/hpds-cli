@@ -1,0 +1,7 @@
+[✓] Inspecting tools
+
+Tool                      Status                    Installed     Latest
+chrome-headless-shell     Not installed             ---           150.0.7871.46
+chromium                  Not installed             ---           869685
+tinytex                   Not installed             ---           v2026.07
+verapdf                   Not installed             ---           1.28.2

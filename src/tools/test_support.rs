@@ -73,14 +73,21 @@ impl Drop for FixtureServer {
 /// A `.tar.gz` holding one file at `entry_path` (mode 0644: the
 /// installer, not the archive, is responsible for the exec bit).
 pub(crate) fn targz_with(entry_path: &str, contents: &[u8]) -> Vec<u8> {
+    targz_of(&[(entry_path, contents)])
+}
+
+/// A `.tar.gz` holding the given files (all mode 0644).
+pub(crate) fn targz_of(entries: &[(&str, &[u8])]) -> Vec<u8> {
     let encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
     let mut builder = tar::Builder::new(encoder);
-    let mut header = tar::Header::new_gnu();
-    header.set_size(contents.len() as u64);
-    header.set_mode(0o644);
-    builder
-        .append_data(&mut header, entry_path, contents)
-        .expect("append tar entry");
+    for (entry_path, contents) in entries {
+        let mut header = tar::Header::new_gnu();
+        header.set_size(contents.len() as u64);
+        header.set_mode(0o644);
+        builder
+            .append_data(&mut header, entry_path, *contents)
+            .expect("append tar entry");
+    }
     builder
         .into_inner()
         .expect("finish tar")
@@ -90,11 +97,18 @@ pub(crate) fn targz_with(entry_path: &str, contents: &[u8]) -> Vec<u8> {
 
 /// A `.zip` holding one file at `entry_path`.
 pub(crate) fn zip_with(entry_path: &str, contents: &[u8]) -> Vec<u8> {
+    zip_of(&[(entry_path, contents)])
+}
+
+/// A `.zip` holding the given files.
+pub(crate) fn zip_of(entries: &[(&str, &[u8])]) -> Vec<u8> {
     let mut writer = zip::ZipWriter::new(Cursor::new(Vec::new()));
-    writer
-        .start_file(entry_path, zip::write::SimpleFileOptions::default())
-        .expect("start zip entry");
-    writer.write_all(contents).expect("write zip entry");
+    for (entry_path, contents) in entries {
+        writer
+            .start_file(*entry_path, zip::write::SimpleFileOptions::default())
+            .expect("start zip entry");
+        writer.write_all(contents).expect("write zip entry");
+    }
     writer.finish().expect("finish zip").into_inner()
 }
 

@@ -1,0 +1,7 @@
+(|) Inspecting tools(/) Inspecting tools(-) Inspecting tools(\) Inspecting tools[2K[G[✓] Inspecting tools
+
+[1mTool[22m                      [1mStatus[22m                    [1mInstalled[22m     [1mLatest[22m       
+chrome-headless-shell     Not installed             ---           150.0.7871.46
+chromium                  Not installed             ---           869685       
+tinytex                   External Installation     ---           v2026.07     
+verapdf                   Not installed             ---           1.28.2       

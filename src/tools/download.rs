@@ -171,6 +171,37 @@ impl Downloader {
         Ok(binary)
     }
 
+    /// Download `spec`'s release archive at `version` into `dest_dir`,
+    /// verifying it against the published checksum, and return the archive
+    /// path. Nothing is cached or extracted: callers that install a whole
+    /// archive tree (rather than a single cached binary) take it from here.
+    pub fn fetch_archive(
+        &self,
+        spec: &ToolSpec,
+        version: &str,
+        ctx: &InstallContext,
+        dest_dir: &Path,
+    ) -> anyhow::Result<PathBuf> {
+        let ToolKind::GithubBinary { repo, .. } = spec.kind else {
+            // Internal misrouting, not a user mistake — but still degrade
+            // to a clear error rather than a panic.
+            return Err(anyhow::anyhow!(
+                "`{}` installs via `uv tool install`, not from a GitHub release",
+                spec.name
+            ))
+            .hint("this is an hpds bug; please report it");
+        };
+        let asset = spec
+            .asset_name(self.platform, version)
+            .expect("GithubBinary specs always resolve an asset name");
+        let archive_path = dest_dir.join(&asset);
+        let message = fetch_message(ctx.label, spec.name, version, ctx.verbose);
+        let (_url, tag, actual_sha256) =
+            self.download_archive(spec, repo, version, &asset, &archive_path, &message, ctx)?;
+        self.verify_checksum(spec, repo, version, &tag, &asset, &actual_sha256, ctx)?;
+        Ok(archive_path)
+    }
+
     /// Whether `binary` (plus its manifest) is already installed. The
     /// manifest is written last, inside the same atomic rename, so its
     /// presence means the install completed.
@@ -1037,6 +1068,71 @@ mod tests {
         assert_eq!(parse_checksum("", asset), None);
         assert_eq!(parse_checksum("not a digest\n", asset), None);
         assert_eq!(parse_checksum("deadbeef\n", asset), None); // too short
+    }
+
+    // --- fetch_archive (whole-archive downloads for tree installs) --------
+
+    #[test]
+    fn fetch_archive_downloads_and_verifies_into_the_given_dir() {
+        let archive = targz_with("tool-1.2.3/bin/tool", FAKE_BINARY);
+        let server = FixtureServer::serve(release_routes(&archive));
+        let dir = tempfile::tempdir().expect("tempdir");
+        let downloader = downloader_at(&server, &dir.path().join("cache"), linux());
+
+        let dest = dir.path().join("staging");
+        fs::create_dir_all(&dest).expect("create dest");
+        let fetched = downloader
+            .fetch_archive(&spec(), "1.2.3", &ctx(), &dest)
+            .expect("fetch the archive");
+
+        assert_eq!(
+            fetched,
+            dest.join("tool-1.2.3-x86_64-unknown-linux-gnu.tar.gz")
+        );
+        assert_eq!(fs::read(&fetched).expect("read archive"), archive);
+        // The checksum asset was fetched and checked, nothing else.
+        assert_eq!(server.hits().len(), 2, "{:?}", server.hits());
+    }
+
+    #[test]
+    fn fetch_archive_rejects_a_corrupt_download() {
+        let archive = targz_with("tool-1.2.3/bin/tool", FAKE_BINARY);
+        let checksum = format!(
+            "{}  tool-1.2.3-x86_64-unknown-linux-gnu.tar.gz\n",
+            sha256_hex_of(b"different bytes")
+        );
+        let server = FixtureServer::serve(HashMap::from([
+            (ARCHIVE_PATH.to_string(), archive),
+            (CHECKSUM_PATH.to_string(), checksum.into_bytes()),
+        ]));
+        let dir = tempfile::tempdir().expect("tempdir");
+        let downloader = downloader_at(&server, &dir.path().join("cache"), linux());
+
+        let err = downloader
+            .fetch_archive(&spec(), "1.2.3", &ctx(), dir.path())
+            .expect_err("checksum mismatch must fail");
+        assert!(err.to_string().contains("sha256 mismatch"), "{err}");
+    }
+
+    #[test]
+    fn fetch_archive_refuses_a_non_release_tool() {
+        let uv_tool = ToolSpec {
+            name: "sqlfluff",
+            default_version: "1.0.0",
+            kind: ToolKind::UvTool {
+                package: "sqlfluff",
+            },
+        };
+        let dir = tempfile::tempdir().expect("tempdir");
+        let downloader = Downloader::at_base_url(
+            ToolCache::at(dir.path()),
+            linux(),
+            "http://127.0.0.1:1".to_string(),
+        );
+        let err = downloader
+            .fetch_archive(&uv_tool, "1.0.0", &ctx(), dir.path())
+            .expect_err("uv tools have no release archive");
+        assert!(err.to_string().contains("uv tool install"), "{err}");
     }
 }
 

@@ -8,14 +8,16 @@
 use thiserror::Error;
 
 use super::Installer;
-use super::installers::{duckdb::DuckDb, gh::Gh, rig::Rig, uv::Uv};
+use super::installers::{
+    duckdb::DuckDb, gh::Gh, quarto::Quarto, r::R, rig::Rig, tinytex::TinyTex, uv::Uv,
+};
 
 /// Every tool `hpds install` is meant to manage, implemented or not.
 pub const KNOWN_TOOLS: [&str; 7] = ["r", "quarto", "uv", "gh", "rig", "tinytex", "duckdb"];
 
 /// The installers implemented so far. Each new installer is added here to
 /// become reachable from `hpds install <tool>`.
-static INSTALLERS: &[&(dyn Installer + Sync)] = &[&Uv, &Gh, &Rig, &DuckDb];
+static INSTALLERS: &[&(dyn Installer + Sync)] = &[&Uv, &Gh, &Rig, &DuckDb, &R, &Quarto, &TinyTex];
 
 /// A tool name that cannot be dispatched to an installer. Rendered by
 /// `main` with its [`hint`](RegistryError::hint) and exit code 2.
@@ -83,22 +85,19 @@ mod tests {
     }
 
     #[test]
-    fn known_but_unimplemented_tool_gets_the_lands_soon_error() {
-        for tool in ["r", "quarto", "tinytex"] {
-            let err = lookup_error(tool);
-            assert!(
-                matches!(err, RegistryError::NotImplemented { .. }),
-                "{tool}"
-            );
-            assert!(err.to_string().contains("lands soon"), "{err}");
-            assert!(err.to_string().contains(tool), "{err}");
-            assert!(err.hint().contains("manually"), "{}", err.hint());
-        }
+    fn the_not_implemented_error_keeps_its_guidance() {
+        // Every current tool has an installer; the variant stays for the
+        // next tool added to KNOWN_TOOLS ahead of its installer.
+        let err = RegistryError::NotImplemented {
+            name: "newtool".to_string(),
+        };
+        assert!(err.to_string().contains("lands soon"), "{err}");
+        assert!(err.hint().contains("manually"), "{}", err.hint());
     }
 
     #[test]
-    fn implemented_tools_resolve_to_their_installers() {
-        for tool in ["uv", "gh", "rig", "duckdb"] {
+    fn every_known_tool_resolves_to_its_installer() {
+        for tool in KNOWN_TOOLS {
             let installer = find(tool).unwrap_or_else(|e| panic!("{tool}: {e}"));
             assert_eq!(installer.name(), tool);
         }
