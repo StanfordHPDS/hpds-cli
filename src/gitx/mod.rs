@@ -4,6 +4,7 @@
 //! This module returns data only. It never prints to the terminal — all
 //! output goes through `ui/`.
 
+pub mod repo;
 mod vaccinate;
 
 pub use vaccinate::{vaccinate_global, vaccinate_project};

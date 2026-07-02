@@ -9,16 +9,29 @@ mod error;
 mod progress;
 mod prompt;
 
-#[allow(unused_imports)] // re-exported for later commands; ui lands before its callers
+#[allow(unused_imports)] // consumed only by unit tests today; part of the ui API
 pub use error::render_error;
 pub use error::{HintExt, error};
 #[allow(unused_imports)] // re-exported for later commands; ui lands before its callers
 pub use progress::progress_bar;
 #[allow(unused_imports)] // re-exported for later commands; ui lands before its callers
-pub use prompt::{confirm, multiselect, select, set_non_interactive};
+pub use prompt::{confirm, multiselect, select, set_non_interactive, text};
 
 use std::io::IsTerminal;
-use std::sync::atomic::{AtomicU8, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
+
+static QUIET: AtomicBool = AtomicBool::new(false);
+
+/// Set the process-wide quiet mode (wired to the global `--quiet` flag).
+/// When quiet, informational stdout output ([`println`], [`success`]) is
+/// suppressed; errors (and warnings) still print to stderr.
+pub fn set_quiet(quiet: bool) {
+    QUIET.store(quiet, Ordering::Relaxed);
+}
+
+fn is_quiet() -> bool {
+    QUIET.load(Ordering::Relaxed)
+}
 
 /// How color should be decided for output streams. `Auto` (the default)
 /// inspects `NO_COLOR`, `TERM`, and whether the stream is a TTY; the global
@@ -33,7 +46,6 @@ pub enum ColorChoice {
 static COLOR_CHOICE: AtomicU8 = AtomicU8::new(0);
 
 /// Set the process-wide color choice (wired to the global `--no-color` flag).
-#[allow(dead_code)] // not yet consumed; ui lands before its callers
 pub fn set_color_choice(choice: ColorChoice) {
     let raw = match choice {
         ColorChoice::Auto => 0,
@@ -121,18 +133,24 @@ fn render_warn(msg: &str, use_color: bool) -> String {
     format!("{} {msg}", paint(WARN_STYLE, "warning:", use_color))
 }
 
-/// Print an unstyled informational line to stdout.
+/// Print an unstyled informational line to stdout. Suppressed by `--quiet`.
 pub fn println(msg: &str) {
-    std::println!("{msg}");
+    if !is_quiet() {
+        std::println!("{msg}");
+    }
 }
 
-/// Print a green `✓`-prefixed success line to stdout.
-#[allow(dead_code)] // not yet consumed; ui lands before its callers
+/// Print a green `✓`-prefixed success line to stdout. Suppressed by
+/// `--quiet`.
 pub fn success(msg: &str) {
-    std::println!("{}", render_success(msg, stdout_colors()));
+    if !is_quiet() {
+        std::println!("{}", render_success(msg, stdout_colors()));
+    }
 }
 
-/// Print a `warning:`-prefixed line to stderr.
+/// Print a `warning:`-prefixed line to stderr. Not suppressed by `--quiet`:
+/// warnings flag conditions the user likely needs to act on, so they stay
+/// visible alongside errors.
 pub fn warn(msg: &str) {
     eprintln!("{}", render_warn(msg, stderr_colors()));
 }

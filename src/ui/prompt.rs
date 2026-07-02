@@ -18,7 +18,7 @@ static NON_INTERACTIVE: AtomicBool = AtomicBool::new(false);
 
 /// Mark the whole process as non-interactive (wired to the global flags).
 /// All prompt wrappers will then refuse to prompt.
-#[allow(dead_code)] // not yet consumed by any command
+#[allow(dead_code)] // not yet consumed; ui lands before its callers
 pub fn set_non_interactive(non_interactive: bool) {
     NON_INTERACTIVE.store(non_interactive, Ordering::Relaxed);
 }
@@ -49,8 +49,16 @@ fn interactivity_error(prompt: &str) -> anyhow::Error {
     .unwrap_err()
 }
 
+/// Ask for a line of text; `default` is used when the user just hits enter.
+pub fn text(prompt: &str, default: &str) -> anyhow::Result<String> {
+    ensure_interactive(prompt)?;
+    inquire::Text::new(prompt)
+        .with_default(default)
+        .prompt()
+        .with_context(|| format!("could not read an answer to \"{prompt}\""))
+}
+
 /// Ask a yes/no question. `default` is used as the highlighted answer.
-#[allow(dead_code)] // not yet consumed by any command
 pub fn confirm(prompt: &str, default: bool) -> anyhow::Result<bool> {
     ensure_interactive(prompt)?;
     inquire::Confirm::new(prompt)
@@ -60,7 +68,6 @@ pub fn confirm(prompt: &str, default: bool) -> anyhow::Result<bool> {
 }
 
 /// Ask the user to pick exactly one of `options`.
-#[allow(dead_code)] // not yet consumed by any command
 pub fn select<T: Display>(prompt: &str, options: Vec<T>) -> anyhow::Result<T> {
     ensure_interactive(prompt)?;
     inquire::Select::new(prompt, options)
@@ -69,7 +76,7 @@ pub fn select<T: Display>(prompt: &str, options: Vec<T>) -> anyhow::Result<T> {
 }
 
 /// Ask the user to pick any number of `options`.
-#[allow(dead_code)] // not yet consumed by any command
+#[allow(dead_code)] // not yet consumed; ui lands before its callers
 pub fn multiselect<T: Display>(prompt: &str, options: Vec<T>) -> anyhow::Result<Vec<T>> {
     ensure_interactive(prompt)?;
     inquire::MultiSelect::new(prompt, options)

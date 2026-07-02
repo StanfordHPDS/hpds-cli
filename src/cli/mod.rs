@@ -91,6 +91,7 @@ pub enum Command {
 
 /// Dispatch a parsed CLI invocation to its command module.
 pub fn run(cli: Cli) -> anyhow::Result<()> {
+    apply_global_args(&cli.global);
     let global = cli.global;
     match cli.command {
         Command::Format => format::run(),
@@ -108,6 +109,24 @@ pub fn run(cli: Cli) -> anyhow::Result<()> {
         Command::Completions(args) => completions::run(args),
         Command::Version => version::run(),
         Command::Upgrade => upgrade::run(),
+    }
+}
+
+/// Push the global flags into `ui`'s process-wide state before dispatch
+///: `--quiet` gates informational stdout output, `--no-color`
+/// forces color off. `--verbose` and `--config` are consumed by the
+/// commands that need them.
+fn apply_global_args(global: &GlobalArgs) {
+    crate::ui::set_quiet(global.quiet);
+    crate::ui::set_color_choice(color_choice_for(global.no_color));
+}
+
+/// Pure flag → color-choice mapping, factored out so it is unit-testable.
+fn color_choice_for(no_color: bool) -> crate::ui::ColorChoice {
+    if no_color {
+        crate::ui::ColorChoice::Never
+    } else {
+        crate::ui::ColorChoice::Auto
     }
 }
 
@@ -131,4 +150,20 @@ impl NotYetImplemented {
 /// Convenience constructor for stubbed commands.
 pub(crate) fn not_yet_implemented(command: &'static str) -> anyhow::Error {
     anyhow::Error::new(NotYetImplemented { command })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ui::ColorChoice;
+
+    #[test]
+    fn no_color_flag_maps_to_never() {
+        assert_eq!(color_choice_for(true), ColorChoice::Never);
+    }
+
+    #[test]
+    fn without_no_color_the_choice_stays_auto() {
+        assert_eq!(color_choice_for(false), ColorChoice::Auto);
+    }
 }
