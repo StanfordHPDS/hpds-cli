@@ -106,8 +106,8 @@ pub fn create(opts: CreateOptions) -> anyhow::Result<()> {
 
 /// Resolve one prompt-or-flag value: an explicit flag always wins; `--yes`
 /// takes the default; otherwise ask (which fails with an actionable error
-/// when the session is non-interactive).
-fn resolve_with(
+/// when the session is non-interactive). Also used by `hpds init`.
+pub(crate) fn resolve_with(
     flag: Option<String>,
     yes: bool,
     default: impl FnOnce() -> anyhow::Result<String>,

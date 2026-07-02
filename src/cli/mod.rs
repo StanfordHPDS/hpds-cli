@@ -62,7 +62,7 @@ pub enum Command {
     /// Report lint violations across the project
     Lint,
     /// Set up a new or existing project interactively
-    Init,
+    Init(init::InitArgs),
     /// Project commands (`hpds project init` is an alias for `hpds init`)
     Project(project::ProjectArgs),
     /// Apply a template component to the current project
@@ -96,7 +96,7 @@ pub fn run(cli: Cli) -> anyhow::Result<()> {
     match cli.command {
         Command::Format => format::run(),
         Command::Lint => lint::run(),
-        Command::Init => init::run(),
+        Command::Init(args) => init::run(args),
         Command::Project(args) => project::run(args),
         Command::Use(args) => r#use::run(args, &global),
         Command::Install => install::run(),

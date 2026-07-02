@@ -110,6 +110,29 @@ fn git_expect_success<S: AsRef<OsStr>>(args: &[S]) -> Result<Output, GitxError> 
     }
 }
 
+/// Run `git init` in `dir`. Fails with a rendered error on non-zero exit.
+pub fn git_init(dir: &std::path::Path) -> Result<(), GitxError> {
+    let output = Command::new("git")
+        .arg("init")
+        .current_dir(dir)
+        .output()
+        .map_err(|source| match source.kind() {
+            std::io::ErrorKind::NotFound => GitxError::GitNotFound(source),
+            _ => GitxError::GitSpawn {
+                args: "init".to_string(),
+                source,
+            },
+        })?;
+    if output.status.success() {
+        Ok(())
+    } else {
+        Err(GitxError::GitFailed {
+            args: "init".to_string(),
+            stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
+        })
+    }
+}
+
 /// Read one key from the global git config; `None` when unset or empty.
 pub fn global_config_get(key: &str) -> Result<Option<String>, GitxError> {
     let output = git_output(&["config", "--global", "--get", key])?;

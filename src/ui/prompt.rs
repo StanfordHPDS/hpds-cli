@@ -16,9 +16,8 @@ use super::HintExt;
 
 static NON_INTERACTIVE: AtomicBool = AtomicBool::new(false);
 
-/// Mark the whole process as non-interactive (wired to the global flags).
+/// Mark the whole process as non-interactive (wired to `--yes` flags).
 /// All prompt wrappers will then refuse to prompt.
-#[allow(dead_code)] // not yet consumed; ui lands before its callers
 pub fn set_non_interactive(non_interactive: bool) {
     NON_INTERACTIVE.store(non_interactive, Ordering::Relaxed);
 }
@@ -76,7 +75,6 @@ pub fn select<T: Display>(prompt: &str, options: Vec<T>) -> anyhow::Result<T> {
 }
 
 /// Ask the user to pick any number of `options`.
-#[allow(dead_code)] // not yet consumed; ui lands before its callers
 pub fn multiselect<T: Display>(prompt: &str, options: Vec<T>) -> anyhow::Result<Vec<T>> {
     ensure_interactive(prompt)?;
     inquire::MultiSelect::new(prompt, options)

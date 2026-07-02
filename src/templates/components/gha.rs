@@ -44,6 +44,12 @@ const WORKFLOWS: &[Workflow] = &[
     // by the menu, `--workflows`, and the tests automatically.
 ];
 
+/// Every workflow name, in menu order. `hpds init --yes` uses this as the
+/// default selection when `gha` is requested without an explicit list.
+pub(crate) fn workflow_names() -> Vec<String> {
+    WORKFLOWS.iter().map(|w| w.name.to_string()).collect()
+}
+
 /// Comma-separated workflow names, for errors and hints.
 fn available() -> String {
     WORKFLOWS

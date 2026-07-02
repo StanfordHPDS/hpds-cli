@@ -15,11 +15,11 @@ pub mod components;
 mod markers;
 mod render;
 
-pub use apply::{FileOutcome, WriteOutcome, apply_dir};
-// NOTE: re-exports consumed by later `hpds use` components; until then they
-// are only exercised by unit tests.
+pub use apply::{FileOutcome, WriteOutcome, apply_dir, write_rendered};
+// NOTE: re-export consumed by later commands; until then it is only
+// exercised by unit tests.
 #[allow(unused_imports)]
-pub use apply::{diff_preview, write_rendered};
+pub use apply::diff_preview;
 // The append-to-existing-files half of the engine; no shipped component
 // appends blocks, so only its unit tests exercise it.
 #[allow(unused_imports)]

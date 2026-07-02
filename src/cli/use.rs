@@ -69,7 +69,13 @@ pub fn run(args: UseArgs, global: &GlobalArgs) -> anyhow::Result<()> {
         vars: standard_vars(&cwd, global, language.as_deref())?,
     };
     let outcomes = (component.run)(&ctx)?;
-    report(&name, &outcomes);
+    let conflicts = report_outcomes(&outcomes);
+    if conflicts > 0 {
+        let plural = if conflicts == 1 { "file" } else { "files" };
+        ui::println(&format!(
+            "re-run `hpds use {name} --force` to overwrite the {conflicts} skipped {plural}"
+        ));
+    }
     Ok(())
 }
 
@@ -112,8 +118,8 @@ fn standard_vars(dest: &Path, global: &GlobalArgs, language: Option<&str>) -> an
 
 /// Best-effort language detection from well-known project files. `None`
 /// when nothing identifies the project; components that care ask the user
-/// for `--language`.
-fn detect_language(root: &Path) -> Option<&'static str> {
+/// for `--language`. Also used by `hpds init` under `--yes`.
+pub(crate) fn detect_language(root: &Path) -> Option<&'static str> {
     let r = ["renv.lock", "renv", "DESCRIPTION", "_targets.R"]
         .iter()
         .any(|marker| root.join(marker).exists())
@@ -143,9 +149,11 @@ fn has_rproj_file(root: &Path) -> bool {
         .unwrap_or(false)
 }
 
-/// Report one line per file through `ui/`, with a diff preview and a
-/// `--force` pointer for every conflict that was skipped.
-fn report(component: &str, outcomes: &[FileOutcome]) {
+/// Report one line per file through `ui/`, with a diff preview for every
+/// conflict that was skipped. Returns the number of skipped conflicts so
+/// the caller can point at its own `--force` re-run command. Shared with
+/// `hpds init`, which applies the same components.
+pub(crate) fn report_outcomes(outcomes: &[FileOutcome]) -> usize {
     let mut conflicts = 0usize;
     for FileOutcome { path, outcome } in outcomes {
         match outcome {
@@ -164,12 +172,7 @@ fn report(component: &str, outcomes: &[FileOutcome]) {
             }
         }
     }
-    if conflicts > 0 {
-        let plural = if conflicts == 1 { "file" } else { "files" };
-        ui::println(&format!(
-            "re-run `hpds use {component} --force` to overwrite the {conflicts} skipped {plural}"
-        ));
-    }
+    conflicts
 }
 
 #[cfg(test)]

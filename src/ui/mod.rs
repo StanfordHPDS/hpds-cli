@@ -14,7 +14,6 @@ pub use error::render_error;
 pub use error::{HintExt, error};
 #[allow(unused_imports)] // re-exported for later commands; ui lands before its callers
 pub use progress::progress_bar;
-#[allow(unused_imports)] // re-exported for later commands; ui lands before its callers
 pub use prompt::{confirm, multiselect, select, set_non_interactive, text};
 
 use std::io::IsTerminal;

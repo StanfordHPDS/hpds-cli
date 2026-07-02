@@ -206,9 +206,9 @@ fn vaccinate(args: VaccinateArgs) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Render a vaccination result (shared by `git vaccinate` and the offer at
-/// the end of `git setup`).
-fn report_vaccination(report: &gitx::VaccinateReport) {
+/// Render a vaccination result (shared by `git vaccinate`, the offer at
+/// the end of `git setup`, and `hpds init`).
+pub(crate) fn report_vaccination(report: &gitx::VaccinateReport) {
     if report.set_excludes_file {
         ui::println(&format!(
             "set global git core.excludesFile to {}",

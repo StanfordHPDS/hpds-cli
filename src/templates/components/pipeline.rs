@@ -65,6 +65,12 @@ impl fmt::Display for Kind {
     }
 }
 
+/// Every kind name, in menu order. `hpds init` validates `--use
+/// pipeline:<kind>` against this list before it writes anything.
+pub(crate) fn kind_names() -> Vec<&'static str> {
+    Kind::ALL.into_iter().map(Kind::name).collect()
+}
+
 /// `--kind` when given, otherwise an interactive choice (which fails with a
 /// pointer at `--kind` when the process cannot prompt).
 fn resolve_kind(flag: Option<&str>) -> anyhow::Result<Kind> {

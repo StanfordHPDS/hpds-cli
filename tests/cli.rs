@@ -59,8 +59,6 @@ fn stub_commands_exit_2_with_not_yet_implemented_error() {
     let stubs: &[&[&str]] = &[
         &["format"],
         &["lint"],
-        &["init"],
-        &["project", "init"],
         &["install"],
         &["setup"],
         &["audit", "all"],
