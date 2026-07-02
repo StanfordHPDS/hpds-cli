@@ -73,6 +73,15 @@ impl Arch {
             Arch::Aarch64 => "aarch64",
         }
     }
+
+    /// The Go-ecosystem spelling used by some projects' release assets
+    /// (gh, duckdb): `amd64`/`arm64`.
+    pub fn alt_asset_str(self) -> &'static str {
+        match self {
+            Arch::X86_64 => "amd64",
+            Arch::Aarch64 => "arm64",
+        }
+    }
 }
 
 impl Platform {
@@ -183,6 +192,12 @@ mod tests {
         assert_eq!(Os::Windows.asset_str(), "pc-windows-msvc");
         assert_eq!(Arch::X86_64.asset_str(), "x86_64");
         assert_eq!(Arch::Aarch64.asset_str(), "aarch64");
+    }
+
+    #[test]
+    fn alt_arch_strings_match_go_style_release_naming() {
+        assert_eq!(Arch::X86_64.alt_asset_str(), "amd64");
+        assert_eq!(Arch::Aarch64.alt_asset_str(), "arm64");
     }
 
     #[test]

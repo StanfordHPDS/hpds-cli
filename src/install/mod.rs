@@ -7,13 +7,18 @@
 //! [`InstallCtx`], declare sudo steps via [`InstallCtx::run_sudo_step`]
 //! (prompted unless `--yes`), and inherit `-v` command logging for free.
 
+mod fetch;
+mod installers;
 pub mod registry;
 mod runner;
+#[cfg(test)]
+mod test_support;
 
 use std::io::IsTerminal;
 
 use anyhow::anyhow;
 
+pub use fetch::{CacheFetcher, ReleaseFetcher};
 pub use runner::{CommandOutput, CommandRunner, SystemRunner};
 
 use crate::tools::Os;
@@ -22,10 +27,7 @@ use crate::ui::{self, HintExt};
 /// Everything an installer needs to act on this machine. `os` is injected
 /// (not read from `cfg!`) so strategy selection is testable on any host.
 pub struct InstallCtx<'a> {
-    /// The OS whose install strategy applies. Read by installers'
-    /// `install` implementations; until one registers, only unit tests
-    /// exercise it, hence the dead-code allowance.
-    #[allow(dead_code)]
+    /// The OS whose install strategy applies.
     pub os: Os,
     /// Skip confirmation prompts (`--yes`); sudo steps still announce
     /// themselves.
@@ -36,6 +38,8 @@ pub struct InstallCtx<'a> {
     pub pin: Option<String>,
     /// Seam for process execution and `PATH` probing.
     pub runner: &'a dyn CommandRunner,
+    /// Seam for downloading release binaries onto the user's PATH.
+    pub fetcher: &'a dyn ReleaseFetcher,
 }
 
 /// One installable tool: how to spot an existing install and how to put it
@@ -96,10 +100,6 @@ pub fn run_installer(installer: &dyn Installer, ctx: &InstallCtx) -> anyhow::Res
     }
 }
 
-// NOTE: the ctx helpers below are the surface concrete installers build on;
-// until installers register in `registry::INSTALLERS` they are exercised by
-// unit tests only.
-#[allow(dead_code)]
 impl InstallCtx<'_> {
     /// Detect an installed tool by probing `program --version` on `PATH`.
     /// `None` when the program is absent, fails, or prints no version.
@@ -222,81 +222,21 @@ fn looks_like_version(token: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use std::cell::RefCell;
-    use std::collections::HashMap;
-    use std::path::PathBuf;
 
+    use super::test_support::{FakeRunner, PanicFetcher};
     use super::*;
     use crate::ui::render_error;
 
-    /// Fake `CommandRunner`: `paths` answers `which`, `outputs` answers
-    /// `run` (keyed by the full command line), and every run is recorded.
-    #[derive(Default)]
-    struct FakeRunner {
-        paths: HashMap<String, PathBuf>,
-        outputs: HashMap<String, CommandOutput>,
-        calls: RefCell<Vec<String>>,
-    }
-
-    impl FakeRunner {
-        fn on_path(mut self, program: &str) -> Self {
-            self.paths.insert(
-                program.to_string(),
-                PathBuf::from("/fake/bin").join(program),
-            );
-            self
-        }
-
-        fn with_output(mut self, command_line: &str, stdout: &str) -> Self {
-            self.outputs.insert(
-                command_line.to_string(),
-                CommandOutput {
-                    success: true,
-                    stdout: stdout.to_string(),
-                    stderr: String::new(),
-                },
-            );
-            self
-        }
-
-        fn with_failure(mut self, command_line: &str, stderr: &str) -> Self {
-            self.outputs.insert(
-                command_line.to_string(),
-                CommandOutput {
-                    success: false,
-                    stdout: String::new(),
-                    stderr: stderr.to_string(),
-                },
-            );
-            self
-        }
-    }
-
-    impl CommandRunner for FakeRunner {
-        fn which(&self, program: &str) -> Option<PathBuf> {
-            self.paths.get(program).cloned()
-        }
-
-        fn run(&self, program: &str, args: &[&str]) -> anyhow::Result<CommandOutput> {
-            let key = if args.is_empty() {
-                program.to_string()
-            } else {
-                format!("{program} {}", args.join(" "))
-            };
-            self.calls.borrow_mut().push(key.clone());
-            self.outputs
-                .get(&key)
-                .cloned()
-                .ok_or_else(|| anyhow!("no fake output recorded for `{key}`"))
-        }
-    }
-
-    fn ctx<'a>(runner: &'a FakeRunner) -> InstallCtx<'a> {
+    /// A ctx for tests of the shared flow: nothing here may fetch, and the
+    /// prompt-gating tests need `yes: false`.
+    fn ctx(runner: &FakeRunner) -> InstallCtx<'_> {
         InstallCtx {
             os: Os::Mac,
             yes: false,
             verbose: false,
             pin: None,
             runner,
+            fetcher: &PanicFetcher,
         }
     }
 
@@ -344,14 +284,7 @@ mod tests {
 
     // --- detection via --version probing --------------------------------
 
-    /// A recorded `--version` output from `tests/fixtures/tool-output/`.
-    fn probe_fixture(name: &str) -> String {
-        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("tests/fixtures/tool-output/version-probes")
-            .join(name);
-        std::fs::read_to_string(&path)
-            .unwrap_or_else(|e| panic!("read fixture {}: {e}", path.display()))
-    }
+    use super::test_support::probe_fixture;
 
     #[test]
     fn probe_version_hits_when_on_path_and_version_prints() {
@@ -390,6 +323,7 @@ mod tests {
             ("quarto.txt", "1.9.36"),
             ("rig.txt", "0.8.1"),
             ("r.txt", "4.6.0"),
+            ("duckdb.txt", "1.5.4"),
         ] {
             assert_eq!(
                 extract_version(&probe_fixture(fixture)).as_deref(),

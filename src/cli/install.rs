@@ -6,7 +6,7 @@
 
 use clap::Args;
 
-use crate::install::{self, InstallCtx, SystemRunner};
+use crate::install::{self, CacheFetcher, InstallCtx, SystemRunner};
 use crate::tools::Platform;
 
 use super::GlobalArgs;
@@ -39,12 +39,14 @@ pub fn run(args: InstallArgs, global: &GlobalArgs) -> anyhow::Result<()> {
     }
     let platform = Platform::current()?;
     let runner = SystemRunner;
+    let fetcher = CacheFetcher::new(global.verbose);
     let ctx = InstallCtx {
         os: platform.os,
         yes: args.yes,
         verbose: global.verbose,
         pin: args.version,
         runner: &runner,
+        fetcher: &fetcher,
     };
     install::run_installer(installer, &ctx)
 }

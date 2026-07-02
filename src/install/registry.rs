@@ -8,13 +8,14 @@
 use thiserror::Error;
 
 use super::Installer;
+use super::installers::{duckdb::DuckDb, gh::Gh, rig::Rig, uv::Uv};
 
 /// Every tool `hpds install` is meant to manage, implemented or not.
 pub const KNOWN_TOOLS: [&str; 7] = ["r", "quarto", "uv", "gh", "rig", "tinytex", "duckdb"];
 
 /// The installers implemented so far. Each new installer is added here to
 /// become reachable from `hpds install <tool>`.
-static INSTALLERS: &[&(dyn Installer + Sync)] = &[];
+static INSTALLERS: &[&(dyn Installer + Sync)] = &[&Uv, &Gh, &Rig, &DuckDb];
 
 /// A tool name that cannot be dispatched to an installer. Rendered by
 /// `main` with its [`hint`](RegistryError::hint) and exit code 2.
@@ -83,7 +84,7 @@ mod tests {
 
     #[test]
     fn known_but_unimplemented_tool_gets_the_lands_soon_error() {
-        for tool in KNOWN_TOOLS {
+        for tool in ["r", "quarto", "tinytex"] {
             let err = lookup_error(tool);
             assert!(
                 matches!(err, RegistryError::NotImplemented { .. }),
@@ -92,6 +93,14 @@ mod tests {
             assert!(err.to_string().contains("lands soon"), "{err}");
             assert!(err.to_string().contains(tool), "{err}");
             assert!(err.hint().contains("manually"), "{}", err.hint());
+        }
+    }
+
+    #[test]
+    fn implemented_tools_resolve_to_their_installers() {
+        for tool in ["uv", "gh", "rig", "duckdb"] {
+            let installer = find(tool).unwrap_or_else(|e| panic!("{tool}: {e}"));
+            assert_eq!(installer.name(), tool);
         }
     }
 
