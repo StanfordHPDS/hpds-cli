@@ -7,9 +7,12 @@
 //! command layer prints them through `ui/`.
 //!
 //! To add a component: create its module here, give it a
-//! `pub static COMPONENT: Component`, and append one line to [`COMPONENTS`].
+//! `pub static COMPONENT: Component` (modules that provide several, like
+//! `fetched`, name each static after its component), and append one line
+//! to [`COMPONENTS`].
 
 pub mod container;
+pub mod fetched;
 pub mod gha;
 pub mod pipeline;
 pub mod readme;
@@ -55,8 +58,11 @@ pub static COMPONENTS: &[Component] = &[
     container::COMPONENT,
     gha::COMPONENT,
     pipeline::COMPONENT,
+    fetched::POSTER,
     readme::COMPONENT,
+    fetched::SLIDES,
     slurm::COMPONENT,
+    fetched::THESIS,
     // next component here (one line each)
 ];
 
@@ -140,8 +146,16 @@ mod tests {
     }
 
     #[test]
-    fn find_returns_the_readme_slurm_container_and_gha_components() {
-        for name in ["readme", "slurm", "container", "gha"] {
+    fn find_returns_every_other_registered_component() {
+        for name in [
+            "readme",
+            "slurm",
+            "container",
+            "gha",
+            "slides",
+            "poster",
+            "thesis",
+        ] {
             let component = find(name).unwrap_or_else(|| panic!("{name} is registered"));
             assert_eq!(component.name, name);
         }
