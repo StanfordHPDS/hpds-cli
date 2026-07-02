@@ -1,4 +1,4 @@
-//! Gitignore-aware file walker (spec §5).
+//! Gitignore-aware file walker.
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
@@ -35,7 +35,7 @@ pub enum FsxError {
 /// `warnings` through `ui/` so a permission-denied subtree never silently
 /// shrinks the target set.
 #[derive(Debug, Default)]
-// TODO(M2): read by the format/lint batch runner; only tests use it until then.
+// Only tests use this until the format/lint runner consumes it.
 #[allow(dead_code)]
 pub struct WalkOutcome {
     /// Files that survived ignore filtering, sorted and deduplicated.
@@ -51,10 +51,10 @@ pub struct WalkOutcome {
 ///
 /// Filtering respects `.gitignore` files (including nested ones, with normal
 /// gitignore precedence) plus the additive gitignore-style `excludes` globs —
-/// these come from config (`[format].exclude` / `[lint].exclude`, spec §3)
-/// once M0.4 lands, so they are plain parameters here. Per-machine git
+/// these come from the `[format].exclude` / `[lint].exclude` config keys,
+/// passed in as plain parameters here. Per-machine git
 /// configuration (the global gitignore, `.git/info/exclude`) is deliberately
-/// *not* consulted: spec §5 scopes discovery to `.gitignore` + config
+/// *not* consulted: discovery is scoped to `.gitignore` + config
 /// excludes, and results must not vary across machines. Hidden files are
 /// skipped, matching the underlying tools' conventions. Explicit file targets
 /// are returned as-is, bypassing both `.gitignore` and `excludes` (ruff's
@@ -66,7 +66,7 @@ pub struct WalkOutcome {
 /// correct while `excludes` are plain parameters, but the M2 integration must
 /// anchor config excludes at the project root rather than passing them here
 /// per-target unchanged.
-// TODO(M2): consumed by the format/lint batch runner; only tests use it until then.
+// Only tests use this until the format/lint runner consumes it.
 #[allow(dead_code)]
 pub fn walk(paths: &[PathBuf], excludes: &[String]) -> Result<WalkOutcome, FsxError> {
     let mut found = BTreeSet::new();
@@ -89,7 +89,7 @@ pub fn walk(paths: &[PathBuf], excludes: &[String]) -> Result<WalkOutcome, FsxEr
             // Respect .gitignore even outside a git checkout (fixture dirs,
             // fresh projects before `git init`).
             .require_git(false)
-            // Spec §5 scopes discovery to `.gitignore` + config exclude
+            // Discovery is scoped to `.gitignore` + config exclude
             // globs. Per-machine git configuration — the user's global
             // ignore (`core.excludesFile`) and the clone-local
             // `.git/info/exclude` — must not change which files hpds
@@ -333,7 +333,7 @@ mod tests {
     }
 
     /// Regression test: the user's *global* gitignore (`~/.config/git/ignore`
-    /// or `core.excludesFile`) must not leak into discovery — spec §5 names
+    /// or `core.excludesFile`) must not leak into discovery — only
     /// `.gitignore` + config exclude globs only, and honoring per-machine
     /// global excludes would make format/lint targets differ across machines.
     ///

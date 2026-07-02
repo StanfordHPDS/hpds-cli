@@ -1,4 +1,4 @@
-//! `hpds tools` — manage hpds-installed formatter/linter tools (spec §4).
+//! `hpds tools` — manage hpds-installed formatter/linter tools.
 
 use clap::{Args, Subcommand};
 
@@ -20,7 +20,7 @@ pub enum ToolsCommand {
 
 pub fn run(args: ToolsArgs) -> anyhow::Result<()> {
     match args.command {
-        // Stubs until M1.4.
+        // Stubs until tool management is implemented.
         ToolsCommand::List => Err(super::not_yet_implemented("tools list")),
         ToolsCommand::Update => Err(super::not_yet_implemented("tools update")),
         ToolsCommand::Clean => Err(super::not_yet_implemented("tools clean")),

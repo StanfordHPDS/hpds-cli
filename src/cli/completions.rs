@@ -1,4 +1,4 @@
-//! `hpds completions` — generate shell completions (spec §2).
+//! `hpds completions` — generate shell completions.
 
 use clap::{Args, CommandFactory};
 use clap_complete::Shell;

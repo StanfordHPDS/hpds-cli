@@ -1,6 +1,6 @@
-//! Clap derive command tree (spec §2): one file per top-level command.
+//! Clap derive command tree: one file per top-level command.
 //!
-//! Commands whose behavior lands in a later milestone are stubbed with a
+//! Commands not yet implemented are stubbed with a
 //! typed [`NotYetImplemented`] error, rendered by `main` with exit code 2.
 
 mod audit;
@@ -35,7 +35,7 @@ pub struct Cli {
     pub command: Command,
 }
 
-/// Flags accepted by every command (spec §2, global CLI conventions).
+/// Flags accepted by every command.
 #[derive(Debug, Args)]
 pub struct GlobalArgs {
     /// Show more detail (underlying commands, tool names)
@@ -111,7 +111,7 @@ pub fn run(cli: Cli) -> anyhow::Result<()> {
 }
 
 /// Typed error for command stubs whose implementation lands in a later
-/// milestone. `main` renders it cleanly and exits 2.
+/// `main` renders it cleanly and exits 2.
 #[derive(Debug, thiserror::Error)]
 #[error("`hpds {command}` is not yet implemented")]
 pub struct NotYetImplemented {
@@ -120,7 +120,7 @@ pub struct NotYetImplemented {
 }
 
 impl NotYetImplemented {
-    /// What to do next (every user-facing error must say; spec §2).
+    /// What to do next (every user-facing error must say).
     pub fn hint(&self) -> String {
         "this command is planned but not built yet; run `hpds --help` to see what works today"
             .to_string()

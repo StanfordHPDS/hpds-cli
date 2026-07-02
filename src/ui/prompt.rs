@@ -1,7 +1,7 @@
-//! Prompt wrappers around `inquire` (spec §2, M0.3).
+//! Prompt wrappers around `inquire`.
 //!
 //! Every interactive flow in hpds must have a flag-driven non-interactive
-//! path (spec §6). These wrappers enforce the output half of that contract:
+//! path. These wrappers enforce the output half of that contract:
 //! when the process is non-interactive — the global flag is set (wired to
 //! `--yes`/CI detection later) or stdin is not a TTY — prompting fails with
 //! an actionable error instead of hanging or panicking.
@@ -16,9 +16,9 @@ use super::HintExt;
 
 static NON_INTERACTIVE: AtomicBool = AtomicBool::new(false);
 
-/// Mark the whole process as non-interactive (wired to global flags in M0.2).
+/// Mark the whole process as non-interactive (wired to the global flags).
 /// All prompt wrappers will then refuse to prompt.
-#[allow(dead_code)] // not yet consumed; ui lands before its callers (M0.3)
+#[allow(dead_code)] // not yet consumed by any command
 pub fn set_non_interactive(non_interactive: bool) {
     NON_INTERACTIVE.store(non_interactive, Ordering::Relaxed);
 }
@@ -50,7 +50,7 @@ fn interactivity_error(prompt: &str) -> anyhow::Error {
 }
 
 /// Ask a yes/no question. `default` is used as the highlighted answer.
-#[allow(dead_code)] // not yet consumed; ui lands before its callers (M0.3)
+#[allow(dead_code)] // not yet consumed by any command
 pub fn confirm(prompt: &str, default: bool) -> anyhow::Result<bool> {
     ensure_interactive(prompt)?;
     inquire::Confirm::new(prompt)
@@ -60,7 +60,7 @@ pub fn confirm(prompt: &str, default: bool) -> anyhow::Result<bool> {
 }
 
 /// Ask the user to pick exactly one of `options`.
-#[allow(dead_code)] // not yet consumed; ui lands before its callers (M0.3)
+#[allow(dead_code)] // not yet consumed by any command
 pub fn select<T: Display>(prompt: &str, options: Vec<T>) -> anyhow::Result<T> {
     ensure_interactive(prompt)?;
     inquire::Select::new(prompt, options)
@@ -69,7 +69,7 @@ pub fn select<T: Display>(prompt: &str, options: Vec<T>) -> anyhow::Result<T> {
 }
 
 /// Ask the user to pick any number of `options`.
-#[allow(dead_code)] // not yet consumed; ui lands before its callers (M0.3)
+#[allow(dead_code)] // not yet consumed by any command
 pub fn multiselect<T: Display>(prompt: &str, options: Vec<T>) -> anyhow::Result<Vec<T>> {
     ensure_interactive(prompt)?;
     inquire::MultiSelect::new(prompt, options)

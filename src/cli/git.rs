@@ -1,4 +1,4 @@
-//! `hpds git` — git helpers: defaults + ignore vaccination (spec §7, §9).
+//! `hpds git` — git helpers: defaults + ignore vaccination.
 
 use clap::{Args, Subcommand};
 
@@ -18,7 +18,7 @@ pub enum GitCommand {
 
 pub fn run(args: GitArgs) -> anyhow::Result<()> {
     match args.command {
-        // Stub until M4.4 (setup) and M7.1 (vaccinate).
+        // Stubs until the setup and vaccinate implementations land.
         GitCommand::Setup => Err(super::not_yet_implemented("git setup")),
         GitCommand::Vaccinate => Err(super::not_yet_implemented("git vaccinate")),
     }

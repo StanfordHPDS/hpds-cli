@@ -1,6 +1,6 @@
-//! `hpds use` — apply a template component to the current project (spec §6).
+//! `hpds use` — apply a template component to the current project.
 
-/// Stub until M3 lands the template engine and components.
+/// Stub until the template engine and components land.
 pub fn run() -> anyhow::Result<()> {
     Err(super::not_yet_implemented("use"))
 }

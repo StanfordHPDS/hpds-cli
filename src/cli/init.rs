@@ -1,7 +1,7 @@
-//! `hpds init` — project setup wizard (spec §6). Also reachable as
+//! `hpds init` — project setup wizard. Also reachable as
 //! `hpds project init`.
 
-/// Stub until M3.7 implements the wizard and its `--yes` path.
+/// Stub until the wizard and its `--yes` path are implemented.
 pub fn run() -> anyhow::Result<()> {
     Err(super::not_yet_implemented("init"))
 }

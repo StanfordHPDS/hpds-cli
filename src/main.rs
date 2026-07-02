@@ -17,11 +17,10 @@ fn main() -> ExitCode {
     }
 }
 
-/// Render a top-level error and pick the exit code (spec §2: 1 = failure,
-/// 2 = usage error / not-yet-implemented stub).
+/// Render a top-level error and pick the exit code.
 ///
-/// TODO(M0.3): this is the one allowed print site outside `src/ui/`; once the
-/// `ui` module lands (bd-2di.3), route rendering through it with a styled
+/// TODO: this is the one allowed print site outside `src/ui/`; once the
+/// `ui` module lands, route rendering through it with a styled
 /// prefix, cause chain, and hint line.
 fn render_error(err: &anyhow::Error) -> ExitCode {
     if let Some(nyi) = err.downcast_ref::<cli::NotYetImplemented>() {

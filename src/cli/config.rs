@@ -1,6 +1,6 @@
-//! `hpds config` — print the resolved, layered configuration (spec §3).
+//! `hpds config` — print the resolved, layered configuration.
 
-/// Stub until M0.4 lands config discovery and layering.
+/// Stub until config discovery and layering land.
 pub fn run() -> anyhow::Result<()> {
     Err(super::not_yet_implemented("config"))
 }

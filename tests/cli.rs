@@ -1,4 +1,4 @@
-//! Integration tests for the CLI skeleton (spec §2, M0.2).
+//! Integration tests for the CLI skeleton.
 //!
 //! Covers: `--help` snapshots for every command, the "not yet implemented"
 //! stub behavior (clean message, exit 2), global flags, `hpds version`, and

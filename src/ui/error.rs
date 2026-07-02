@@ -1,5 +1,5 @@
 //! Error rendering: styled `error:` prefix, cause chain, and an optional
-//! `hint:` line when a fix can be suggested (spec §2).
+//! `hint:` line when a fix can be suggested.
 
 use std::fmt;
 
@@ -88,7 +88,7 @@ pub fn render_error(err: &anyhow::Error, use_color: bool) -> String {
 }
 
 /// Print `err` to stderr in the standard `hpds` error format.
-#[allow(dead_code)] // not yet consumed; ui lands before its callers (M0.3)
+#[allow(dead_code)] // not yet consumed by any command
 pub fn error(err: &anyhow::Error) {
     eprintln!("{}", render_error(err, stderr_colors()));
 }

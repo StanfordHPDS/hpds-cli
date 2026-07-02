@@ -1,6 +1,6 @@
 //! Terminal output for `hpds`: styling, error rendering, progress, prompts.
 //!
-//! This is the ONLY module allowed to print to the terminal (spec §2). All
+//! This is the ONLY module allowed to print to the terminal. All
 //! helpers degrade gracefully: color is dropped when `NO_COLOR` is set, when
 //! `TERM=dumb`, or when the stream is not a TTY, and progress bars hide
 //! themselves on non-TTY stderr.
@@ -9,11 +9,11 @@ mod error;
 mod progress;
 mod prompt;
 
-#[allow(unused_imports)] // re-exported for later commands; ui lands before its callers (M0.3)
+#[allow(unused_imports)] // re-exported for commands as they gain real implementations
 pub use error::{HintExt, error, render_error};
-#[allow(unused_imports)] // re-exported for later commands; ui lands before its callers (M0.3)
+#[allow(unused_imports)] // re-exported for commands as they gain real implementations
 pub use progress::progress_bar;
-#[allow(unused_imports)] // re-exported for later commands; ui lands before its callers (M0.3)
+#[allow(unused_imports)] // re-exported for commands as they gain real implementations
 pub use prompt::{confirm, multiselect, select, set_non_interactive};
 
 use std::io::IsTerminal;
@@ -21,7 +21,7 @@ use std::sync::atomic::{AtomicU8, Ordering};
 
 /// How color should be decided for output streams. `Auto` (the default)
 /// inspects `NO_COLOR`, `TERM`, and whether the stream is a TTY; the global
-/// `--no-color` flag (M0.2) maps to `Never`.
+/// `--no-color` flag maps to `Never`.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum ColorChoice {
     Auto,
@@ -31,8 +31,8 @@ pub enum ColorChoice {
 
 static COLOR_CHOICE: AtomicU8 = AtomicU8::new(0);
 
-/// Set the process-wide color choice (wired to `--no-color` in M0.2).
-#[allow(dead_code)] // not yet consumed; ui lands before its callers (M0.3)
+/// Set the process-wide color choice (wired to the global `--no-color` flag).
+#[allow(dead_code)] // not yet consumed by any command
 pub fn set_color_choice(choice: ColorChoice) {
     let raw = match choice {
         ColorChoice::Auto => 0,
@@ -121,19 +121,19 @@ fn render_warn(msg: &str, use_color: bool) -> String {
 }
 
 /// Print an unstyled informational line to stdout.
-#[allow(dead_code)] // not yet consumed; ui lands before its callers (M0.3)
+#[allow(dead_code)] // not yet consumed by any command
 pub fn println(msg: &str) {
     std::println!("{msg}");
 }
 
 /// Print a green `✓`-prefixed success line to stdout.
-#[allow(dead_code)] // not yet consumed; ui lands before its callers (M0.3)
+#[allow(dead_code)] // not yet consumed by any command
 pub fn success(msg: &str) {
     std::println!("{}", render_success(msg, stdout_colors()));
 }
 
 /// Print a `warning:`-prefixed line to stderr.
-#[allow(dead_code)] // not yet consumed; ui lands before its callers (M0.3)
+#[allow(dead_code)] // not yet consumed by any command
 pub fn warn(msg: &str) {
     eprintln!("{}", render_warn(msg, stderr_colors()));
 }

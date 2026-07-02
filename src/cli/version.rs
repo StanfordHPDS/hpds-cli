@@ -1,10 +1,9 @@
-//! `hpds version` — print the hpds version (spec §10).
+//! `hpds version` — print the hpds version.
 
-/// Print the version. Baked tool versions are appended once M1.4 lands
-/// `tools/versions.rs`.
+/// Print the version. Baked tool versions are appended once the toolchain
+/// manager defines its version constants.
 ///
-/// TODO(M0.3): route through `src/ui/` once it exists (bd-2di.3); until then
-/// this plain print is the version command's whole behavior.
+/// TODO: route this print through `src/ui/`.
 pub fn run() -> anyhow::Result<()> {
     println!("hpds {}", env!("CARGO_PKG_VERSION"));
     Ok(())

@@ -1,6 +1,6 @@
-//! `hpds upgrade` — self-update from GitHub releases (spec §10).
+//! `hpds upgrade` — self-update from GitHub releases.
 
-/// Stub until M8.2 lands self-update.
+/// Stub until self-update is implemented.
 pub fn run() -> anyhow::Result<()> {
     Err(super::not_yet_implemented("upgrade"))
 }

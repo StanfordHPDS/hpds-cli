@@ -1,4 +1,4 @@
-//! Progress bar wrapper around `indicatif` (spec §2, M0.3).
+//! Progress bar wrapper around `indicatif`.
 //!
 //! Bars draw to stderr so they never pollute piped stdout, and hide
 //! themselves entirely when stderr is not a TTY.
@@ -11,7 +11,7 @@ use indicatif::{ProgressBar, ProgressDrawTarget, ProgressStyle};
 ///
 /// Hidden (no output at all) when stderr is not a TTY, so logs and CI runs
 /// stay clean.
-#[allow(dead_code)] // not yet consumed; ui lands before its callers (M0.3)
+#[allow(dead_code)] // not yet consumed by any command
 pub fn progress_bar(len: u64, msg: impl Into<String>) -> ProgressBar {
     let target = if std::io::stderr().is_terminal() {
         ProgressDrawTarget::stderr()

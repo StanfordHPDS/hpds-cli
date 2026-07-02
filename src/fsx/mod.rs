@@ -1,4 +1,4 @@
-//! File discovery for format/lint targets (spec §5): gitignore-aware walking
+//! File discovery for format/lint targets: gitignore-aware walking
 //! with additive exclude globs, plus the extension → language registry used
 //! to batch files per adapter.
 //!

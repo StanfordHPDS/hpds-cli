@@ -1,4 +1,4 @@
-//! Structural checks on the repo's CI workflow (spec §10, M0.5).
+//! Structural checks on the repo's CI workflow.
 //!
 //! These tests keep the workflow honest: it must run the three quality gates
 //! on the ubuntu/macos/windows matrix and keep network-dependent tests in a
@@ -21,7 +21,7 @@ fn workflow_contents() -> String {
 
 #[test]
 fn ci_workflow_exists_at_badge_path() {
-    // README badge from M0.1 points at workflows/ci.yml; the name is load-bearing.
+    // The README badge points at workflows/ci.yml; the name is load-bearing.
     assert!(
         workflow_path().is_file(),
         "expected .github/workflows/ci.yml to exist"

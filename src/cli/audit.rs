@@ -1,4 +1,4 @@
-//! `hpds audit` — repo and org audits, plus the bot reporter (spec §8).
+//! `hpds audit` — repo and org audits, plus the bot reporter.
 
 use clap::{Args, Subcommand};
 
@@ -19,7 +19,7 @@ pub enum AuditCommand {
 
 pub fn run(args: AuditArgs) -> anyhow::Result<()> {
     match args.command {
-        // Stubs until M5 (audit, audit all) and M6 (report-github).
+        // Stubs until the audit checks and bot reporter are implemented.
         None => Err(super::not_yet_implemented("audit")),
         Some(AuditCommand::All) => Err(super::not_yet_implemented("audit all")),
         Some(AuditCommand::ReportGithub) => Err(super::not_yet_implemented("audit report-github")),

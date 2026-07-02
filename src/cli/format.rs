@@ -1,6 +1,6 @@
-//! `hpds format` — format project files in place (spec §5).
+//! `hpds format` — format project files in place.
 
-/// Stub until M2.6 wires the adapter layer together.
+/// Stub until the adapter layer is wired up.
 pub fn run() -> anyhow::Result<()> {
     Err(super::not_yet_implemented("format"))
 }

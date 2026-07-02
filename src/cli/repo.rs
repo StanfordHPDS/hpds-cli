@@ -1,4 +1,4 @@
-//! `hpds repo` — GitHub repository helpers (spec §9).
+//! `hpds repo` — GitHub repository helpers.
 
 use clap::{Args, Subcommand};
 
@@ -16,7 +16,7 @@ pub enum RepoCommand {
 
 pub fn run(args: RepoArgs) -> anyhow::Result<()> {
     match args.command {
-        // Stub until M7.2.
+        // Stub until repo creation is implemented.
         RepoCommand::Create => Err(super::not_yet_implemented("repo create")),
     }
 }

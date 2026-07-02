@@ -1,14 +1,14 @@
-//! Extension → language registry (spec §5 adapter table).
+//! Extension → language registry.
 
 use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 
-/// Language buckets files are batched into, one per adapter family (spec §5).
+/// Language buckets files are batched into, one per adapter family.
 ///
-/// Adding a language is source-level (spec §1 non-goals): add a variant here,
+/// Adding a language is source-level: add a variant here,
 /// register its extensions in [`ExtensionRegistry::with_defaults`], and add
 /// the adapter in M2's registry.
-// TODO(M2): consumed by the adapter registry; only tests use it until then.
+// Only tests use this until the format/lint runner consumes it.
 #[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum Language {
@@ -17,9 +17,9 @@ pub enum Language {
     /// `.py` and `.ipynb` — ruff handles notebooks natively.
     Python,
     /// `.qmd` / `.Rmd` — panache. Separate from [`Language::Markdown`] so the
-    /// `[lint]`/`[format]` language lists (spec §3) can differ on plain md.
+    /// `[lint]`/`[format]` language lists can differ on plain md.
     Quarto,
-    /// `.md` — panache; format-only by default (spec §3).
+    /// `.md` — panache; format-only by default.
     Markdown,
     /// `.sql` — sqlfluff.
     Sql,
@@ -29,16 +29,16 @@ pub enum Language {
 ///
 /// Lookups are ASCII case-insensitive so `.R`/`.r` and `.Rmd`/`.rmd` land in
 /// the same bucket. Extensions are stored without a leading dot.
-// TODO(M2): consumed by the adapter registry; only tests use it until then.
+// Only tests use this until the format/lint runner consumes it.
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct ExtensionRegistry {
     map: HashMap<String, Language>,
 }
 
-#[allow(dead_code)] // TODO(M2): consumed by the adapter registry.
+#[allow(dead_code)] // consumed once the adapter registry lands
 impl ExtensionRegistry {
-    /// Registry with the spec §5 default extension table.
+    /// Registry with the default extension table.
     pub fn with_defaults() -> Self {
         let mut registry = Self {
             map: HashMap::new(),
@@ -68,12 +68,11 @@ impl ExtensionRegistry {
     }
 }
 
-/// Batch `files` into per-language groups for the adapter runner (spec §5:
-/// each tool invocation gets the whole file list, not one process per file).
+/// Batch `files` into per-language groups for the adapter runner.
 ///
 /// Files with unregistered extensions are dropped. Input order is preserved
 /// within each group; the map itself iterates in [`Language`] order.
-// TODO(M2): consumed by the format/lint batch runner; only tests use it until then.
+// Only tests use this until the format/lint runner consumes it.
 #[allow(dead_code)]
 pub fn group_by_language(
     files: &[PathBuf],

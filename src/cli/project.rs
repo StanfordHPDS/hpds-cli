@@ -1,5 +1,5 @@
 //! `hpds project` — project commands; `project init` aliases `hpds init`
-//! (spec §6).
+//!.
 
 use clap::{Args, Subcommand};
 
