@@ -9,11 +9,12 @@ mod error;
 mod progress;
 mod prompt;
 
-#[allow(unused_imports)] // re-exported for commands as they gain real implementations
-pub use error::{HintExt, error, render_error};
-#[allow(unused_imports)] // re-exported for commands as they gain real implementations
+#[allow(unused_imports)] // re-exported for later commands; ui lands before its callers
+pub use error::render_error;
+pub use error::{HintExt, error};
+#[allow(unused_imports)] // re-exported for later commands; ui lands before its callers
 pub use progress::progress_bar;
-#[allow(unused_imports)] // re-exported for commands as they gain real implementations
+#[allow(unused_imports)] // re-exported for later commands; ui lands before its callers
 pub use prompt::{confirm, multiselect, select, set_non_interactive};
 
 use std::io::IsTerminal;
@@ -32,7 +33,7 @@ pub enum ColorChoice {
 static COLOR_CHOICE: AtomicU8 = AtomicU8::new(0);
 
 /// Set the process-wide color choice (wired to the global `--no-color` flag).
-#[allow(dead_code)] // not yet consumed by any command
+#[allow(dead_code)] // not yet consumed; ui lands before its callers
 pub fn set_color_choice(choice: ColorChoice) {
     let raw = match choice {
         ColorChoice::Auto => 0,
@@ -121,19 +122,17 @@ fn render_warn(msg: &str, use_color: bool) -> String {
 }
 
 /// Print an unstyled informational line to stdout.
-#[allow(dead_code)] // not yet consumed by any command
 pub fn println(msg: &str) {
     std::println!("{msg}");
 }
 
 /// Print a green `✓`-prefixed success line to stdout.
-#[allow(dead_code)] // not yet consumed by any command
+#[allow(dead_code)] // not yet consumed; ui lands before its callers
 pub fn success(msg: &str) {
     std::println!("{}", render_success(msg, stdout_colors()));
 }
 
 /// Print a `warning:`-prefixed line to stderr.
-#[allow(dead_code)] // not yet consumed by any command
 pub fn warn(msg: &str) {
     eprintln!("{}", render_warn(msg, stderr_colors()));
 }

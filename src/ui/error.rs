@@ -88,7 +88,6 @@ pub fn render_error(err: &anyhow::Error, use_color: bool) -> String {
 }
 
 /// Print `err` to stderr in the standard `hpds` error format.
-#[allow(dead_code)] // not yet consumed by any command
 pub fn error(err: &anyhow::Error) {
     eprintln!("{}", render_error(err, stderr_colors()));
 }

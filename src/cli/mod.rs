@@ -80,7 +80,7 @@ pub enum Command {
     /// Manage hpds-installed formatter/linter tools (advanced)
     Tools(tools::ToolsArgs),
     /// Print the resolved configuration and where each value came from
-    Config,
+    Config(config::ConfigArgs),
     /// Generate shell completions
     Completions(completions::CompletionsArgs),
     /// Print the hpds version
@@ -91,6 +91,7 @@ pub enum Command {
 
 /// Dispatch a parsed CLI invocation to its command module.
 pub fn run(cli: Cli) -> anyhow::Result<()> {
+    let global = cli.global;
     match cli.command {
         Command::Format => format::run(),
         Command::Lint => lint::run(),
@@ -103,7 +104,7 @@ pub fn run(cli: Cli) -> anyhow::Result<()> {
         Command::Repo(args) => repo::run(args),
         Command::Audit(args) => audit::run(args),
         Command::Tools(args) => tools::run(args),
-        Command::Config => config::run(),
+        Command::Config(args) => config::run(args, &global),
         Command::Completions(args) => completions::run(args),
         Command::Version => version::run(),
         Command::Upgrade => upgrade::run(),

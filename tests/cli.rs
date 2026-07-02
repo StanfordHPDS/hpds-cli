@@ -73,7 +73,6 @@ fn stub_commands_exit_2_with_not_yet_implemented_error() {
         &["tools", "list"],
         &["tools", "update"],
         &["tools", "clean"],
-        &["config"],
         &["upgrade"],
     ];
     for args in stubs {
