@@ -1,0 +1,17 @@
+[package]
+name = "hpds"
+version = "0.1.0"
+edition = "2024"
+description = "Unified tooling for the Stanford HPDS lab: format, lint, templates, setup, and repo audits"
+license = "MIT"
+repository = "https://github.com/StanfordHPDS/hpds-cli"
+
+[dependencies]
+
+[dev-dependencies]
+assert_cmd = "2"
+
+[features]
+# Tests that hit the network or download real tools; excluded from the default
+# offline test run (see spec §10/§11).
+online-tests = []
