@@ -104,7 +104,7 @@ pub fn run(cli: Cli) -> anyhow::Result<()> {
         Command::Git(args) => git::run(args),
         Command::Repo(args) => repo::run(args),
         Command::Audit(args) => audit::run(args, &global),
-        Command::Tools(args) => tools::run(args),
+        Command::Tools(args) => tools::run(args, &global),
         Command::Config(args) => config::run(args, &global),
         Command::Completions(args) => completions::run(args),
         Command::Version => version::run(),

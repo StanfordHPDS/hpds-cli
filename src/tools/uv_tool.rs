@@ -35,8 +35,12 @@ const VENVS_DIR: &str = "uv-tools";
 
 /// Where a private uv executable comes from.
 enum UvSource {
-    /// Bootstrap uv from its GitHub release on first use.
-    Bootstrap(Downloader),
+    /// Bootstrap this version of uv from its GitHub release on first use
+    /// (the resolved version: config pin, else the baked default).
+    Bootstrap {
+        downloader: Downloader,
+        version: String,
+    },
     /// Use this uv executable directly (tests inject fakes here).
     Binary(PathBuf),
 }
@@ -50,13 +54,16 @@ pub struct UvToolInstaller {
 
 impl UvToolInstaller {
     /// An installer for `platform` into `cache`, bootstrapping its private
-    /// uv from GitHub when it is not cached yet.
-    pub fn new(cache: ToolCache, platform: Platform) -> UvToolInstaller {
+    /// uv at `uv_version` from GitHub when it is not cached yet.
+    pub fn new(cache: ToolCache, platform: Platform, uv_version: String) -> UvToolInstaller {
         let downloader = Downloader::new(cache.clone(), platform);
         UvToolInstaller {
             cache,
             platform,
-            uv: UvSource::Bootstrap(downloader),
+            uv: UvSource::Bootstrap {
+                downloader,
+                version: uv_version,
+            },
         }
     }
 
@@ -71,18 +78,22 @@ impl UvToolInstaller {
         }
     }
 
-    /// An installer bootstrapping uv through `downloader` (tests point it
-    /// at a local fixture server).
+    /// An installer bootstrapping uv at `uv_version` through `downloader`
+    /// (tests point it at a local fixture server).
     #[cfg(test)]
     fn with_downloader(
         cache: ToolCache,
         platform: Platform,
         downloader: Downloader,
+        uv_version: String,
     ) -> UvToolInstaller {
         UvToolInstaller {
             cache,
             platform,
-            uv: UvSource::Bootstrap(downloader),
+            uv: UvSource::Bootstrap {
+                downloader,
+                version: uv_version,
+            },
         }
     }
 
@@ -146,7 +157,10 @@ impl UvToolInstaller {
     fn uv_binary(&self, ctx: &InstallContext) -> anyhow::Result<PathBuf> {
         match &self.uv {
             UvSource::Binary(path) => Ok(path.clone()),
-            UvSource::Bootstrap(downloader) => {
+            UvSource::Bootstrap {
+                downloader,
+                version,
+            } => {
                 // Static data: uv is always in the built-in tool set.
                 let uv = ToolSpec::builtin("uv").expect("uv is a built-in tool");
                 let uv_ctx = InstallContext {
@@ -154,7 +168,7 @@ impl UvToolInstaller {
                     command: ctx.command,
                     verbose: ctx.verbose,
                 };
-                downloader.ensure_installed(&uv, uv.default_version, &uv_ctx)
+                downloader.ensure_installed(&uv, version, &uv_ctx)
             }
         }
     }
@@ -566,7 +580,12 @@ chmod +x "$UV_TOOL_BIN_DIR/sqlfluff""#,
 
         let cache = ToolCache::at(dir.path());
         let downloader = Downloader::at_base_url(cache.clone(), linux(), server.base_url.clone());
-        let installer = UvToolInstaller::with_downloader(cache.clone(), linux(), downloader);
+        let installer = UvToolInstaller::with_downloader(
+            cache.clone(),
+            linux(),
+            downloader,
+            versions::UV.to_string(),
+        );
 
         let binary = installer
             .ensure_installed(&sql_spec(), "3.4.0", &ctx())
@@ -581,6 +600,51 @@ chmod +x "$UV_TOOL_BIN_DIR/sqlfluff""#,
             .ensure_installed(&sql_spec(), "3.4.0", &ctx())
             .expect("cached install");
         assert_eq!(server.hits().len(), hits_after_first, "no new downloads");
+    }
+
+    /// The bootstrap fetches the uv version it was constructed with — a
+    /// `[tools] uv` pin must reach all the way down here, not silently
+    /// fall back to the baked default.
+    #[cfg(unix)]
+    #[test]
+    fn bootstrap_honors_a_pinned_uv_version() {
+        use std::collections::HashMap;
+
+        use crate::tools::test_support::{FixtureServer, sha256_hex_of, targz_with};
+
+        let pinned = "9.9.8";
+        let dir = tempfile::tempdir().expect("tempdir");
+        let record = dir.path().join("record.txt");
+        let script = format!("#!/bin/sh\n{}\n", recording_uv_body(&record));
+        let archive = targz_with("uv-x86_64-unknown-linux-gnu/uv", script.as_bytes());
+
+        let asset_path =
+            format!("/astral-sh/uv/releases/download/{pinned}/uv-x86_64-unknown-linux-gnu.tar.gz");
+        let checksum = format!(
+            "{}  uv-x86_64-unknown-linux-gnu.tar.gz\n",
+            sha256_hex_of(&archive)
+        );
+        let server = FixtureServer::serve(HashMap::from([
+            (asset_path.clone(), archive),
+            (format!("{asset_path}.sha256"), checksum.into_bytes()),
+        ]));
+
+        let cache = ToolCache::at(dir.path());
+        let downloader = Downloader::at_base_url(cache.clone(), linux(), server.base_url.clone());
+        let installer = UvToolInstaller::with_downloader(
+            cache.clone(),
+            linux(),
+            downloader,
+            pinned.to_string(),
+        );
+
+        installer
+            .ensure_installed(&sql_spec(), "3.4.0", &ctx())
+            .expect("bootstrap the pinned uv, then install");
+
+        let manifest = Manifest::load(&cache.manifest_path("uv", pinned))
+            .expect("the pinned uv version must land in the cache");
+        assert_eq!(manifest.version, pinned);
     }
 }
 
@@ -604,7 +668,7 @@ mod online_tests {
             verbose: true,
         };
 
-        let binary = UvToolInstaller::new(cache, platform)
+        let binary = UvToolInstaller::new(cache, platform, crate::tools::versions::UV.to_string())
             .ensure_installed(&spec, spec.default_version, &ctx)
             .expect("bootstrap uv and install sqlfluff");
         let output = Command::new(&binary)

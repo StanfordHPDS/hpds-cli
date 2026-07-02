@@ -62,9 +62,6 @@ fn stub_commands_exit_2_with_not_yet_implemented_error() {
         &["setup"],
         &["audit", "all"],
         &["audit", "report-github"],
-        &["tools", "list"],
-        &["tools", "update"],
-        &["tools", "clean"],
         &["upgrade"],
     ];
     for args in stubs {

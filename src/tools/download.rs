@@ -90,9 +90,16 @@ pub struct Downloader {
 }
 
 impl Downloader {
-    /// A downloader fetching from GitHub for `platform` into `cache`.
+    /// A downloader fetching from GitHub for `platform` into `cache`,
+    /// honoring the internal `HPDS_RELEASE_BASE_URL` override (used by
+    /// tests to point installs at a local fixture server, mirroring
+    /// `HPDS_DATA_DIR`). Checksum files come from the same host, so with
+    /// the override set, verification only guards against corrupt
+    /// transfers, not a hostile host.
     pub fn new(cache: ToolCache, platform: Platform) -> Downloader {
-        Downloader::at_base_url(cache, platform, GITHUB_BASE.to_string())
+        let base_url =
+            std::env::var("HPDS_RELEASE_BASE_URL").unwrap_or_else(|_| GITHUB_BASE.to_string());
+        Downloader::at_base_url(cache, platform, base_url)
     }
 
     /// A downloader against an arbitrary release host (tests point this at
