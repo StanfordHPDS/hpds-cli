@@ -133,6 +133,36 @@ fn audit_json_emits_the_stable_report_schema() {
 }
 
 #[test]
+fn audit_json_stdout_is_pure_json_with_warnings_on_stderr() {
+    let sb = Sandbox::new();
+    // An unknown config key makes the loader emit a warning; in JSON mode
+    // that warning must land on stderr so piped stdout stays parseable.
+    sb.write(
+        "hpds.toml",
+        "[project]\nstatus = \"active\"\nprimary-author = \"malcolm\"\nfuture-key = 1\n",
+    );
+    sb.git(&["add", "-A"]);
+    sb.git(&["commit", "--quiet", "-m", "config with unknown key"]);
+
+    let assert = sb.audit_cmd(&["--format", "json"]).assert().success();
+    let output = assert.get_output();
+
+    // The entire piped stdout must be one JSON document — nothing before,
+    // nothing after (a trailing newline aside).
+    let stdout = String::from_utf8(output.stdout.clone()).expect("stdout should be UTF-8");
+    let value: serde_json::Value =
+        serde_json::from_str(&stdout).expect("entire stdout parses as one JSON document");
+    assert_eq!(value["repo"], "demo-repo");
+    assert_eq!(value["summary"]["errors"], 0);
+
+    let stderr = String::from_utf8(output.stderr.clone()).expect("stderr should be UTF-8");
+    assert!(
+        stderr.contains("warning:") && stderr.contains("future-key"),
+        "config warning goes to stderr: {stderr}"
+    );
+}
+
+#[test]
 fn audit_reports_error_findings_and_exits_1() {
     let sb = Sandbox::new();
     sb.write(".env", "SECRET=hunter2\n");

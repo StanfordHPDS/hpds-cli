@@ -82,13 +82,19 @@ fn audit_current_repo(args: &AuditArgs, global: &super::GlobalArgs) -> anyhow::R
     if ctx.github.is_some() {
         checks.extend(audit::github::registry());
     }
+    // The summary line counts checks actually run; the appended gh-skip
+    // notice is a finding about the run, not a check.
+    let checks_run = checks.len();
     let mut findings = audit::run_checks(&checks, &ctx);
     findings.extend(notice);
 
     match args.format {
-        OutputFormat::Text => {
-            ui::println(&audit::render_text(&repo, &findings, ui::stdout_colors()))
-        }
+        OutputFormat::Text => ui::println(&audit::render_text(
+            &repo,
+            &findings,
+            checks_run,
+            ui::stdout_colors(),
+        )),
         OutputFormat::Json => ui::println(&audit::render_json(&repo, &findings)?),
     }
 

@@ -1,0 +1,80 @@
+---
+source: tests/audit_messy.rs
+expression: messy.redact(&stdout)
+---
+{
+  "repo": "audit-messy",
+  "findings": [
+    {
+      "check_id": "dirty-files",
+      "severity": "warn",
+      "message": "1 tracked file has uncommitted changes (analysis.R)",
+      "remediation": "commit the changes (`git add` / `git commit`) or stash them (`git stash`)"
+    },
+    {
+      "check_id": "untracked-files",
+      "severity": "info",
+      "message": "1 file is neither tracked nor ignored (scratch-notes.txt)",
+      "remediation": "commit each file, add it to .gitignore, or delete it"
+    },
+    {
+      "check_id": "stale-branches",
+      "severity": "info",
+      "message": "local branch `old-work` is fully merged",
+      "remediation": "delete it with `git branch -d old-work`"
+    },
+    {
+      "check_id": "stale-artifacts",
+      "severity": "warn",
+      "message": "`report.html` is older than its source `report.qmd`",
+      "remediation": "re-render it (`quarto render report.qmd`) and commit the result"
+    },
+    {
+      "check_id": "junk-files",
+      "severity": "warn",
+      "message": "`.DS_Store` is committed (macOS Finder junk)",
+      "remediation": "run `git rm --cached .DS_Store` and ignore it (`hpds git vaccinate --project` adds the common patterns)"
+    },
+    {
+      "check_id": "junk-files",
+      "severity": "error",
+      "message": "`.env` is committed (looks like an environment/secrets file)",
+      "remediation": "run `git rm --cached .env`, add it to .gitignore, and rotate the secret if the repo was ever pushed"
+    },
+    {
+      "check_id": "junk-files",
+      "severity": "warn",
+      "message": "`report.html` is committed (rendered output of the .qmd next to it)",
+      "remediation": "run `git rm --cached report.html` and ignore it (`hpds git vaccinate --project` adds the common patterns)"
+    },
+    {
+      "check_id": "gitignore-hygiene",
+      "severity": "warn",
+      "message": ".gitignore is missing the recommended R patterns: .Rhistory, .RData, .Rproj.user, .Rdata, .httr-oauth, .DS_Store",
+      "remediation": "run `hpds git vaccinate --project` to add them"
+    },
+    {
+      "check_id": "readme",
+      "severity": "error",
+      "message": "the repo has no README",
+      "remediation": "add one with `hpds use readme` and fill in the lab-manual sections"
+    },
+    {
+      "check_id": "lifecycle-metadata",
+      "severity": "error",
+      "message": "hpds.toml does not set `project.primary-author`",
+      "remediation": "add `primary-author = \"<github-username>\"` under [project] in hpds.toml"
+    },
+    {
+      "check_id": "lockfiles",
+      "severity": "error",
+      "message": "the project uses renv but renv.lock is not committed",
+      "remediation": "run `renv::snapshot()` in R, then commit renv.lock"
+    }
+  ],
+  "summary": {
+    "errors": 4,
+    "warnings": 5,
+    "infos": 2
+  }
+}

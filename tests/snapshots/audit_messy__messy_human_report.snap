@@ -1,0 +1,35 @@
+---
+source: tests/audit_messy.rs
+expression: messy.redact(&stdout)
+---
+audit of audit-messy
+
+errors:
+  ✗ [junk-files] `.env` is committed (looks like an environment/secrets file)
+    fix: run `git rm --cached .env`, add it to .gitignore, and rotate the secret if the repo was ever pushed
+  ✗ [readme] the repo has no README
+    fix: add one with `hpds use readme` and fill in the lab-manual sections
+  ✗ [lifecycle-metadata] hpds.toml does not set `project.primary-author`
+    fix: add `primary-author = "<github-username>"` under [project] in hpds.toml
+  ✗ [lockfiles] the project uses renv but renv.lock is not committed
+    fix: run `renv::snapshot()` in R, then commit renv.lock
+
+warnings:
+  ! [dirty-files] 1 tracked file has uncommitted changes (analysis.R)
+    fix: commit the changes (`git add` / `git commit`) or stash them (`git stash`)
+  ! [stale-artifacts] `report.html` is older than its source `report.qmd`
+    fix: re-render it (`quarto render report.qmd`) and commit the result
+  ! [junk-files] `.DS_Store` is committed (macOS Finder junk)
+    fix: run `git rm --cached .DS_Store` and ignore it (`hpds git vaccinate --project` adds the common patterns)
+  ! [junk-files] `report.html` is committed (rendered output of the .qmd next to it)
+    fix: run `git rm --cached report.html` and ignore it (`hpds git vaccinate --project` adds the common patterns)
+  ! [gitignore-hygiene] .gitignore is missing the recommended R patterns: .Rhistory, .RData, .Rproj.user, .Rdata, .httr-oauth, .DS_Store
+    fix: run `hpds git vaccinate --project` to add them
+
+info:
+  • [untracked-files] 1 file is neither tracked nor ignored (scratch-notes.txt)
+    fix: commit each file, add it to .gitignore, or delete it
+  • [stale-branches] local branch `old-work` is fully merged
+    fix: delete it with `git branch -d old-work`
+
+4 errors, 5 warnings across 9 checks

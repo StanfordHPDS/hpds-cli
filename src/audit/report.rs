@@ -63,12 +63,14 @@ pub fn render_json(repo: &str, findings: &[Finding]) -> anyhow::Result<String> {
 
 /// Render the report for the terminal: findings grouped by severity
 /// (errors, then warnings, then info), each with its `fix:` remediation
-/// line, followed by a one-line count summary.
-pub fn render_text(repo: &str, findings: &[Finding], use_color: bool) -> String {
+/// line, followed by a one-line summary counting findings against the
+/// `checks_run` checks that produced them.
+pub fn render_text(repo: &str, findings: &[Finding], checks_run: usize, use_color: bool) -> String {
     if findings.is_empty() {
         return format!(
-            "{} audit of {repo}: no findings",
-            paint(SUCCESS_STYLE, "✓", use_color)
+            "audit of {repo}\n\n{} no findings across {}\n",
+            paint(SUCCESS_STYLE, "✓", use_color),
+            count(checks_run, "check"),
         );
     }
 
@@ -100,10 +102,10 @@ pub fn render_text(repo: &str, findings: &[Finding], use_color: bool) -> String 
 
     let summary = summarize(findings);
     out.push_str(&format!(
-        "\n{}, {}, {} info\n",
+        "\n{}, {} across {}\n",
         count(summary.errors, "error"),
         count(summary.warnings, "warning"),
-        summary.infos,
+        count(checks_run, "check"),
     ));
     out
 }
@@ -241,9 +243,12 @@ mod tests {
         );
     }
 
+    /// Checks-run count used by the text-rendering tests.
+    const CHECKS_RUN: usize = 9;
+
     #[test]
     fn text_groups_findings_by_severity_errors_first() {
-        let out = render_text("demo", &mixed_findings(), false);
+        let out = render_text("demo", &mixed_findings(), CHECKS_RUN, false);
         let errors_at = out.find("errors:").expect("has errors section");
         let warnings_at = out.find("warnings:").expect("has warnings section");
         let info_at = out.find("info:").expect("has info section");
@@ -253,7 +258,7 @@ mod tests {
 
     #[test]
     fn text_shows_check_id_message_and_remediation_for_each_finding() {
-        let out = render_text("demo", &mixed_findings(), false);
+        let out = render_text("demo", &mixed_findings(), CHECKS_RUN, false);
         for f in mixed_findings() {
             assert!(out.contains(&f.check_id), "missing check id:\n{out}");
             assert!(out.contains(&f.message), "missing message:\n{out}");
@@ -265,17 +270,18 @@ mod tests {
     #[test]
     fn text_omits_empty_severity_sections() {
         let only_warn = vec![finding("readme", Severity::Warn, "meh", "fix it")];
-        let out = render_text("demo", &only_warn, false);
+        let out = render_text("demo", &only_warn, CHECKS_RUN, false);
         assert!(!out.contains("errors:"), "no empty errors section:\n{out}");
         assert!(!out.contains("info:"), "no empty info section:\n{out}");
         assert!(out.contains("warnings:"));
     }
 
     #[test]
-    fn text_ends_with_a_count_summary() {
-        let out = render_text("demo", &mixed_findings(), false);
+    fn text_ends_with_a_count_summary_naming_the_checks_run() {
+        let out = render_text("demo", &mixed_findings(), CHECKS_RUN, false);
         assert!(
-            out.trim_end().ends_with("1 error, 1 warning, 1 info"),
+            out.trim_end()
+                .ends_with("1 error, 1 warning across 9 checks"),
             "summary line:\n{out}"
         );
     }
@@ -286,35 +292,37 @@ mod tests {
             finding("a", Severity::Error, "m", "r"),
             finding("b", Severity::Error, "m", "r"),
         ];
-        let out = render_text("demo", &findings, false);
+        let out = render_text("demo", &findings, 1, false);
         assert!(
-            out.trim_end().ends_with("2 errors, 0 warnings, 0 info"),
+            out.trim_end()
+                .ends_with("2 errors, 0 warnings across 1 check"),
             "summary line:\n{out}"
         );
     }
 
     #[test]
     fn text_with_no_findings_reports_a_clean_pass() {
-        let out = render_text("demo", &[], false);
-        assert!(out.contains("no findings"), "clean report:\n{out}");
+        let out = render_text("demo", &[], CHECKS_RUN, false);
+        assert!(out.contains("✓ no findings"), "clean report:\n{out}");
         assert!(out.contains("demo"), "names the repo:\n{out}");
+        assert!(out.contains("9 checks"), "names the checks run:\n{out}");
     }
 
     #[test]
     fn text_names_the_repo() {
-        let out = render_text("demo-repo", &mixed_findings(), false);
+        let out = render_text("demo-repo", &mixed_findings(), CHECKS_RUN, false);
         assert!(out.contains("demo-repo"), "names the repo:\n{out}");
     }
 
     #[test]
     fn uncolored_text_has_no_ansi_codes() {
-        assert!(!render_text("demo", &mixed_findings(), false).contains(ESC));
-        assert!(!render_text("demo", &[], false).contains(ESC));
+        assert!(!render_text("demo", &mixed_findings(), CHECKS_RUN, false).contains(ESC));
+        assert!(!render_text("demo", &[], CHECKS_RUN, false).contains(ESC));
     }
 
     #[test]
     fn colored_text_styles_the_severity_sections() {
-        let out = render_text("demo", &mixed_findings(), true);
+        let out = render_text("demo", &mixed_findings(), CHECKS_RUN, true);
         assert!(out.contains(ESC));
     }
 }
