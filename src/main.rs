@@ -5,6 +5,7 @@
 mod cli;
 mod config;
 mod fsx;
+mod gitx;
 mod ui;
 
 use std::process::ExitCode;

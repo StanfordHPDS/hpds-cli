@@ -7,6 +7,7 @@ Add R/Python/editor junk patterns to the global git ignore
 Usage: hpds git vaccinate [OPTIONS]
 
 Options:
+      --project        Append to this repo's .gitignore instead of the global git ignore
   -v, --verbose        Show more detail (underlying commands, tool names)
   -q, --quiet          Suppress all output except errors
       --no-color       Disable colored output
