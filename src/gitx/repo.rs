@@ -64,7 +64,7 @@ pub struct CreateOptions {
 /// Create a GitHub repo for the project in the current directory and push it.
 pub fn create(opts: CreateOptions) -> anyhow::Result<()> {
     let cwd = std::env::current_dir().context("could not determine the current directory")?;
-    ensure_gh_auth(&cwd)?;
+    ensure_gh_auth()?;
 
     let name = resolve_with(
         opts.name,
@@ -135,14 +135,17 @@ fn default_repo_name(cwd: &Path) -> anyhow::Result<String> {
 
 /// Fail early, before touching the working tree, unless `gh` is installed
 /// and authenticated.
-fn ensure_gh_auth(cwd: &Path) -> anyhow::Result<()> {
-    let out = gh(cwd, &["auth", "status"])?;
-    if out.status.success() {
-        return Ok(());
+fn ensure_gh_auth() -> anyhow::Result<()> {
+    match super::gh_auth()? {
+        super::GhAuth::Authenticated => Ok(()),
+        super::GhAuth::Unauthenticated(out) => Err(command_failure("gh auth status", &out))
+            .context("not logged in to GitHub")
+            .hint("run `gh auth login` to authenticate, then re-run `hpds repo create`"),
+        super::GhAuth::NotInstalled => Err(anyhow::anyhow!(
+            "the GitHub CLI (`gh`) is not installed or not on PATH"
+        ))
+        .hint("install it from https://cli.github.com/, then run `gh auth login`"),
     }
-    Err(command_failure("gh auth status", &out))
-        .context("not logged in to GitHub")
-        .hint("run `gh auth login` to authenticate, then re-run `hpds repo create`")
 }
 
 fn ensure_git_repo(cwd: &Path) -> anyhow::Result<()> {

@@ -4,7 +4,7 @@
 
 use std::path::{Path, PathBuf};
 
-use super::{GitxError, git_expect_success, git_output, home_dir};
+use super::{GitxError, git_expect_success, git_output, global_config_get, home_dir};
 
 /// Markers delimiting the hpds-managed block; re-runs never duplicate it.
 const MARKER_BEGIN: &str = "# >>> hpds vaccinate >>>";
@@ -78,12 +78,8 @@ pub fn vaccinate_project() -> Result<VaccinateReport, GitxError> {
 /// Resolve the global excludes file, setting `core.excludesFile` to
 /// `~/.gitignore` when unset. Returns the path and whether we set the config.
 fn resolve_global_excludes_file() -> Result<(PathBuf, bool), GitxError> {
-    let output = git_output(&["config", "--global", "--get", "core.excludesFile"])?;
-    if output.status.success() {
-        let value = String::from_utf8_lossy(&output.stdout).trim().to_string();
-        if !value.is_empty() {
-            return Ok((expand_tilde(&value, &home_dir()?), false));
-        }
+    if let Some(value) = global_config_get("core.excludesFile")? {
+        return Ok((expand_tilde(&value, &home_dir()?), false));
     }
     let path = home_dir()?.join(".gitignore");
     git_expect_success(&[

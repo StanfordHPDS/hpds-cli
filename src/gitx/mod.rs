@@ -7,11 +7,13 @@
 pub mod repo;
 mod vaccinate;
 
-pub use vaccinate::{vaccinate_global, vaccinate_project};
+pub use vaccinate::{VaccinateReport, vaccinate_global, vaccinate_project};
 
 use std::ffi::OsStr;
 use std::path::PathBuf;
 use std::process::{Command, Output};
+
+use anyhow::Context;
 
 /// Errors from git helpers. Every message says what to do next.
 #[derive(Debug, thiserror::Error)]
@@ -104,6 +106,46 @@ fn git_expect_success<S: AsRef<OsStr>>(args: &[S]) -> Result<Output, GitxError> 
                 .join(" "),
             stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
         })
+    }
+}
+
+/// Read one key from the global git config; `None` when unset or empty.
+pub fn global_config_get(key: &str) -> Result<Option<String>, GitxError> {
+    let output = git_output(&["config", "--global", "--get", key])?;
+    if !output.status.success() {
+        return Ok(None);
+    }
+    let value = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    Ok((!value.is_empty()).then_some(value))
+}
+
+/// Set one key in the global git config.
+pub fn global_config_set(key: &str, value: &str) -> Result<(), GitxError> {
+    git_expect_success(&["config", "--global", key, value]).map(|_| ())
+}
+
+/// Auth state of the GitHub CLI, as probed by [`gh_auth`].
+pub enum GhAuth {
+    /// `gh auth status` succeeded: a user is logged in.
+    Authenticated,
+    /// `gh` ran but reports no login; the raw output carries gh's own
+    /// message for callers that want the detail.
+    Unauthenticated(Output),
+    /// No `gh` executable was found on PATH.
+    NotInstalled,
+}
+
+/// Probe the GitHub CLI's auth state via `gh auth status`. All three
+/// expected states are data, not errors — only an unexpected spawn failure
+/// (not "gh missing") is an `Err`.
+pub fn gh_auth() -> anyhow::Result<GhAuth> {
+    match Command::new("gh").args(["auth", "status"]).output() {
+        Ok(out) if out.status.success() => Ok(GhAuth::Authenticated),
+        Ok(out) => Ok(GhAuth::Unauthenticated(out)),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(GhAuth::NotInstalled),
+        Err(err) => {
+            Err(err).context("could not run `gh auth status`; check that gh is installed correctly")
+        }
     }
 }
 

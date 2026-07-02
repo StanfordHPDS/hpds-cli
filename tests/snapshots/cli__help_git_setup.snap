@@ -7,8 +7,11 @@ Configure sensible git defaults and gh auth guidance
 Usage: hpds git setup [OPTIONS]
 
 Options:
+      --name <NAME>    Value for git user.name (skips the prompt; for scripted use)
   -v, --verbose        Show more detail (underlying commands, tool names)
+      --email <EMAIL>  Value for git user.email (skips the prompt; for scripted use)
   -q, --quiet          Suppress all output except errors
       --no-color       Disable colored output
+  -y, --yes            Never prompt: vaccinate the global ignore without asking (identity must then come from --name/--email or existing config)
       --config <PATH>  Use this config file instead of discovering hpds.toml
   -h, --help           Print help
