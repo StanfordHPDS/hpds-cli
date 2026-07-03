@@ -14,6 +14,7 @@
 mod diagnostic;
 #[allow(dead_code)]
 mod outcome;
+mod panache;
 #[allow(dead_code)]
 mod python;
 mod r;
@@ -36,6 +37,7 @@ use crate::ui::HintExt;
 pub use diagnostic::{Diagnostic, Position, Range, Severity};
 #[allow(unused_imports)]
 pub use outcome::FormatOutcome;
+pub use panache::PanacheAdapter;
 #[allow(unused_imports)]
 pub use python::RuffAdapter;
 pub use r::AirAdapter;

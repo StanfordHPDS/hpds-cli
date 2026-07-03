@@ -211,6 +211,11 @@ impl FakeToolPaths {
         }
     }
 
+    /// Add (or replace) a canned answer for `tool`.
+    pub fn insert(&mut self, tool: &str, path: &std::path::Path) {
+        self.paths.insert(tool.to_string(), path.to_path_buf());
+    }
+
     /// Tool names requested through this provider, in call order.
     pub fn requests(&self) -> Vec<String> {
         self.requests.lock().expect("requests lock").clone()

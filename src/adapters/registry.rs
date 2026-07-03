@@ -30,6 +30,9 @@ impl AdapterRegistry {
         let mut registry = AdapterRegistry::new();
         registry.register(Language::Python, Arc::new(RuffAdapter));
         registry.register(Language::R, Arc::new(crate::adapters::AirAdapter));
+        let panache: Arc<dyn Adapter> = Arc::new(crate::adapters::PanacheAdapter::new());
+        registry.register(Language::Quarto, Arc::clone(&panache));
+        registry.register(Language::Markdown, panache);
         registry
     }
 
@@ -88,6 +91,21 @@ mod tests {
 
         let adapter = registry.adapter_for(Language::Sql).expect("registered");
         assert_eq!(adapter.name(), "new");
+    }
+
+    #[test]
+    fn defaults_route_quarto_and_markdown_to_one_panache_instance() {
+        let registry = AdapterRegistry::with_defaults();
+        let quarto = registry
+            .adapter_for(Language::Quarto)
+            .expect("quarto is wired by default");
+        let markdown = registry
+            .adapter_for(Language::Markdown)
+            .expect("markdown is wired by default");
+        assert_eq!(quarto.name(), "panache");
+        // The same instance serves both buckets, so the runner merges
+        // their files into one panache invocation.
+        assert!(Arc::ptr_eq(quarto, markdown));
     }
 
     #[test]
