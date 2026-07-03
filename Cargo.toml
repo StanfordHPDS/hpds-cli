@@ -5,6 +5,7 @@ edition = "2024"
 description = "Unified tooling for the Stanford HPDS lab: format, lint, templates, setup, and repo audits"
 license = "MIT"
 repository = "https://github.com/StanfordHPDS/hpds-cli"
+homepage = "https://github.com/StanfordHPDS/hpds-cli"
 
 [dependencies]
 anstyle = "1.0.14"
@@ -43,3 +44,8 @@ tiny_http = "0.12"
 # Tests that hit the network or download real tools; excluded from the default
 # offline test run (see spec §10/§11).
 online-tests = []
+
+# The profile that 'dist' will build with
+[profile.dist]
+inherits = "release"
+lto = "thin"
