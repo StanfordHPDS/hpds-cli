@@ -29,6 +29,7 @@ impl AdapterRegistry {
     pub fn with_defaults() -> AdapterRegistry {
         let mut registry = AdapterRegistry::new();
         registry.register(Language::Python, Arc::new(RuffAdapter));
+        registry.register(Language::R, Arc::new(crate::adapters::AirAdapter));
         registry
     }
 
@@ -56,6 +57,15 @@ mod tests {
             .adapter_for(Language::Python)
             .expect("python has a real adapter");
         assert_eq!(adapter.name(), "ruff");
+    }
+
+    #[test]
+    fn with_defaults_routes_r_files_to_air() {
+        let registry = AdapterRegistry::with_defaults();
+        let adapter = registry
+            .adapter_for(Language::R)
+            .expect("R is a built-in bucket");
+        assert_eq!(adapter.name(), "air");
     }
 
     #[test]

@@ -16,6 +16,7 @@ mod diagnostic;
 mod outcome;
 #[allow(dead_code)]
 mod python;
+mod r;
 #[allow(dead_code)]
 mod registry;
 #[allow(dead_code)]
@@ -37,6 +38,7 @@ pub use diagnostic::{Diagnostic, Position, Range, Severity};
 pub use outcome::FormatOutcome;
 #[allow(unused_imports)]
 pub use python::RuffAdapter;
+pub use r::AirAdapter;
 #[allow(unused_imports)]
 pub use registry::AdapterRegistry;
 #[allow(unused_imports)]
