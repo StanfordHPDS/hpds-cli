@@ -24,6 +24,9 @@ impl FormatOutcome {
     }
 
     /// Files the tool left alone.
+    // Part of the outcome API alongside `changed_count`; today only tests
+    // consume it (the commands report the changed count), hence the allow.
+    #[allow(dead_code)]
     pub fn unchanged(&self) -> usize {
         self.processed.saturating_sub(self.changed.len())
     }

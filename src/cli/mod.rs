@@ -7,6 +7,7 @@ mod audit;
 mod audit_all;
 mod completions;
 mod config;
+mod fmt_lint;
 mod format;
 mod git;
 mod init;
@@ -59,9 +60,9 @@ pub struct GlobalArgs {
 #[derive(Debug, Subcommand)]
 pub enum Command {
     /// Format project files in place (R, Python, Quarto, SQL, Markdown)
-    Format,
+    Format(format::FormatArgs),
     /// Report lint violations across the project
-    Lint,
+    Lint(lint::LintArgs),
     /// Set up a new or existing project interactively
     Init(init::InitArgs),
     /// Project commands (`hpds project init` is an alias for `hpds init`)
@@ -95,8 +96,8 @@ pub fn run(cli: Cli) -> anyhow::Result<()> {
     apply_global_args(&cli.global);
     let global = cli.global;
     match cli.command {
-        Command::Format => format::run(),
-        Command::Lint => lint::run(),
+        Command::Format(args) => format::run(args, &global),
+        Command::Lint(args) => lint::run(args, &global),
         Command::Init(args) => init::run(args),
         Command::Project(args) => project::run(args),
         Command::Use(args) => r#use::run(args, &global),

@@ -56,7 +56,7 @@ help_snapshot!(help_upgrade, "upgrade");
 /// stderr, says what to do next, and exits 2.
 #[test]
 fn stub_commands_exit_2_with_not_yet_implemented_error() {
-    let stubs: &[&[&str]] = &[&["format"], &["lint"], &["upgrade"]];
+    let stubs: &[&[&str]] = &[&["upgrade"]];
     for args in stubs {
         hpds()
             .args(*args)
@@ -124,7 +124,7 @@ fn global_flags_parse_after_the_subcommand() {
     // itself is still a stub, so it exits 2 via the not-yet-implemented path
     // (not a usage-parse failure, which would not mention the stub error).
     hpds()
-        .args(["format", "-v", "-q", "--no-color", "--config", "hpds.toml"])
+        .args(["upgrade", "-v", "-q", "--no-color", "--config", "hpds.toml"])
         .assert()
         .code(2)
         .stderr(predicate::str::contains("not yet implemented"));

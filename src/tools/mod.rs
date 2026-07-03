@@ -44,6 +44,19 @@ pub use spec::{ToolKind, ToolSpec};
 #[allow(unused_imports)]
 pub use uv_tool::UvToolInstaller;
 
+/// Progress-bar label for each managed tool (tool names themselves appear
+/// only at `-v`).
+pub fn label_for(name: &str) -> &'static str {
+    match name {
+        "air" => "R formatter",
+        "ruff" => "Python formatter/linter",
+        "panache" => "Markdown formatter",
+        "sqlfluff" => "SQL formatter/linter",
+        "uv" => "uv (Python tool installer)",
+        _ => "tool",
+    }
+}
+
 /// The version of `spec` a run should use: the `[tools]` pin from config
 /// when there is one, else the default baked into this hpds release.
 ///
@@ -86,6 +99,13 @@ pub fn ensure_installed(
 mod tests {
     use super::*;
     use std::collections::BTreeMap;
+
+    #[test]
+    fn every_builtin_tool_has_a_human_label() {
+        for spec in ToolSpec::builtins() {
+            assert_ne!(label_for(spec.name), "tool", "{} needs a label", spec.name);
+        }
+    }
 
     #[test]
     fn resolve_version_prefers_the_config_pin() {

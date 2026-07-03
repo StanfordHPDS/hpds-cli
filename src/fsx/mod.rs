@@ -8,9 +8,5 @@
 mod registry;
 mod walk;
 
-// NOTE: re-exports are consumed by the M2 format/lint commands; until then
-// they are only exercised by unit tests.
-#[allow(unused_imports)]
 pub use registry::{ExtensionRegistry, Language, group_by_language};
-#[allow(unused_imports)]
-pub use walk::{FsxError, WalkOutcome, walk};
+pub use walk::{FsxError, walk};

@@ -7,22 +7,13 @@
 //! source-level: implement [`Adapter`] and register it for its
 //! [`Language`](crate::fsx::Language) bucket in [`AdapterRegistry`].
 
-// NOTE: dead_code allowed per module: this is the format/lint API surface,
-// consumed by the `hpds format`/`hpds lint` commands and unit tests; until
-// those commands are wired up, parts of it have only test callers.
-#[allow(dead_code)]
 mod diagnostic;
-#[allow(dead_code)]
 mod outcome;
 mod panache;
-#[allow(dead_code)]
 mod python;
 mod r;
-#[allow(dead_code)]
 mod registry;
-#[allow(dead_code)]
 mod runner;
-#[allow(dead_code)]
 mod sql;
 #[cfg(test)]
 pub(crate) mod test_support;
@@ -33,26 +24,14 @@ use crate::config::Config;
 use crate::tools::{InstallContext, ToolSpec};
 use crate::ui::HintExt;
 
-// NOTE: unused_imports allowed: these re-exports are the module's public
-// surface, and within this crate some of them have only unit-test callers.
-#[allow(unused_imports)]
 pub use diagnostic::{Diagnostic, Position, Range, Severity};
-#[allow(unused_imports)]
 pub use outcome::FormatOutcome;
 pub use panache::PanacheAdapter;
-#[allow(unused_imports)]
 pub use python::RuffAdapter;
 pub use r::AirAdapter;
-#[allow(unused_imports)]
 pub use registry::AdapterRegistry;
-#[allow(unused_imports)]
-pub use runner::{FormatRun, LintRun, format_all, lint_all};
-#[allow(unused_imports)]
+pub use runner::{format_all, lint_all};
 pub use sql::SqlFluffAdapter;
-
-// NOTE: dead_code allowed on the items below for the same reason as the
-// module list above: they are the adapter API surface, and only the
-// format/lint commands and unit tests call them.
 
 /// Formats a batch of files with one underlying tool invocation.
 pub trait Formatter {
@@ -90,14 +69,16 @@ pub trait Adapter: Formatter + Linter + Send + Sync {
 /// Adapters resolve binaries through [`ToolCtx::tool_path`] instead of
 /// calling the installer directly, so tests can substitute a fake
 /// [`ToolPaths`] and no adapter hardwires download logic.
-#[allow(dead_code)]
 pub struct ToolCtx<'a> {
     tools: &'a dyn ToolPaths,
     pub config: &'a Config,
+    /// Verbosity for adapters that want to expose extra detail at `-v`.
+    /// Carried on the shared ctx so growing such output never changes the
+    /// trait signatures; no adapter reads it yet (hence the allow).
+    #[allow(dead_code)]
     pub verbose: bool,
 }
 
-#[allow(dead_code)]
 impl<'a> ToolCtx<'a> {
     pub fn new(tools: &'a dyn ToolPaths, config: &'a Config, verbose: bool) -> ToolCtx<'a> {
         ToolCtx {
@@ -117,14 +98,12 @@ impl<'a> ToolCtx<'a> {
 ///
 /// `Sync` because the batch runner shares one context across adapter
 /// threads.
-#[allow(dead_code)]
 pub trait ToolPaths: Sync {
     fn tool_path(&self, tool: &str) -> anyhow::Result<PathBuf>;
 }
 
 /// The production [`ToolPaths`]: resolves through the managed tool cache,
 /// downloading on first use (`tools::ensure_installed`).
-#[allow(dead_code)]
 pub struct InstalledToolPaths<'a> {
     config: &'a Config,
     /// The hpds command on whose behalf tools are installed, e.g.
@@ -133,7 +112,6 @@ pub struct InstalledToolPaths<'a> {
     verbose: bool,
 }
 
-#[allow(dead_code)]
 impl<'a> InstalledToolPaths<'a> {
     pub fn new(config: &'a Config, command: &'a str, verbose: bool) -> InstalledToolPaths<'a> {
         InstalledToolPaths {
@@ -150,7 +128,9 @@ impl ToolPaths for InstalledToolPaths<'_> {
             .ok_or_else(|| anyhow::anyhow!("no managed tool named `{tool}`"))
             .hint("this is a bug in hpds: an adapter asked for a tool it does not manage; please report it")?;
         let ctx = InstallContext {
-            label: tool,
+            // Friendly label: at normal verbosity the download notice says
+            // "Fetching R formatter…", never the tool name.
+            label: crate::tools::label_for(tool),
             command: self.command,
             verbose: self.verbose,
         };

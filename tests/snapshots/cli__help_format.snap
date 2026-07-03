@@ -4,9 +4,13 @@ expression: "help_output(& [\"format\", \"--help\"])"
 ---
 Format project files in place (R, Python, Quarto, SQL, Markdown)
 
-Usage: hpds format [OPTIONS]
+Usage: hpds format [OPTIONS] [PATHS]...
+
+Arguments:
+  [PATHS]...  Files or directories to format (default: the whole project)
 
 Options:
+      --check          Report the files that would change without rewriting anything (exit 1 when formatting is needed)
   -v, --verbose        Show more detail (underlying commands, tool names)
   -q, --quiet          Suppress all output except errors
       --no-color       Disable colored output

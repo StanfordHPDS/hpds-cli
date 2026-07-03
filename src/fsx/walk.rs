@@ -31,12 +31,10 @@ pub enum FsxError {
 /// What [`walk`] found: the surviving files plus non-fatal problems hit on
 /// the way.
 ///
-/// `fsx` returns data only; callers (the M2 format/lint runner) render
+/// `fsx` returns data only; callers (the format/lint commands) render
 /// `warnings` through `ui/` so a permission-denied subtree never silently
 /// shrinks the target set.
 #[derive(Debug, Default)]
-// Only tests use this until the format/lint runner consumes it.
-#[allow(dead_code)]
 pub struct WalkOutcome {
     /// Files that survived ignore filtering, sorted and deduplicated.
     pub files: Vec<PathBuf>,
@@ -58,31 +56,36 @@ pub struct WalkOutcome {
 /// excludes, and results must not vary across machines. Hidden files are
 /// skipped, matching the underlying tools' conventions. Explicit file targets
 /// are returned as-is, bypassing both `.gitignore` and `excludes` (ruff's
-/// default behavior; spec is silent — M2 must confirm this UX and may want a
-/// `--force-exclude` opt-out).
+/// default behavior): naming a file on the command line is an intentional
+/// request to process that exact file.
 ///
-/// Exclude globs are rooted at each walked path, so anchored patterns like
-/// `data/**` are relative to the *target*, not the project root. That is
-/// correct while `excludes` are plain parameters, but the M2 integration must
-/// anchor config excludes at the project root rather than passing them here
-/// per-target unchanged.
-// Only tests use this until the format/lint runner consumes it.
-#[allow(dead_code)]
-pub fn walk(paths: &[PathBuf], excludes: &[String]) -> Result<WalkOutcome, FsxError> {
+/// Exclude globs are rooted at `exclude_root` when given — the project
+/// root, so anchored patterns like `data/**` mean the same thing no matter
+/// which subdirectory is targeted. Without it they are rooted at each
+/// walked path (plain-parameter behavior for callers with no project
+/// notion).
+pub fn walk(
+    paths: &[PathBuf],
+    excludes: &[String],
+    exclude_root: Option<&Path>,
+) -> Result<WalkOutcome, FsxError> {
     let mut found = BTreeSet::new();
     let mut warnings = BTreeSet::new();
     for path in paths {
         if !path.exists() {
             return Err(FsxError::MissingPath { path: path.clone() });
         }
-        // Root the exclude globs where the walk starts so anchored patterns
-        // (`data/**`) behave like a .gitignore at the target root. For a file
-        // target, that root is its containing directory.
-        let glob_root = if path.is_file() {
-            path.parent().unwrap_or_else(|| Path::new("."))
-        } else {
-            path.as_path()
-        };
+        // Root the exclude globs at the project root when the caller has
+        // one; otherwise where the walk starts, so anchored patterns
+        // (`data/**`) behave like a .gitignore at the target root. For a
+        // file target, that fallback root is its containing directory.
+        let glob_root = exclude_root.unwrap_or_else(|| {
+            if path.is_file() {
+                path.parent().unwrap_or_else(|| Path::new("."))
+            } else {
+                path.as_path()
+            }
+        });
         let overrides = build_exclude_overrides(glob_root, excludes)?;
 
         let walker = WalkBuilder::new(path)
@@ -182,7 +185,7 @@ mod tests {
         write(root, "data/raw.csv", "");
         write(root, "query.sql", "");
 
-        let files = walk(&[root.to_path_buf()], &[]).unwrap().files;
+        let files = walk(&[root.to_path_buf()], &[], None).unwrap().files;
 
         assert_eq!(rel_names(&files, root), vec!["analysis.R", "query.sql"]);
     }
@@ -206,7 +209,7 @@ mod tests {
         write(root, "sub/deeper/scratch.py", "");
         write(root, "sub/deeper/notes.md", "");
 
-        let files = walk(&[root.to_path_buf()], &[]).unwrap().files;
+        let files = walk(&[root.to_path_buf()], &[], None).unwrap().files;
 
         assert_eq!(
             rel_names(&files, root),
@@ -231,9 +234,38 @@ mod tests {
         write(root, "src/model.py", "");
 
         let excludes = ["*.sql".to_string(), "data/**".to_string()];
-        let files = walk(&[root.to_path_buf()], &excludes).unwrap().files;
+        let files = walk(&[root.to_path_buf()], &excludes, None).unwrap().files;
 
         assert_eq!(rel_names(&files, root), vec!["analysis.R", "src/model.py"]);
+    }
+
+    /// Config excludes are written against the *project root*, so when a
+    /// subdirectory is targeted explicitly the anchored globs must still
+    /// mean the same thing. Rooting them per target would silently turn
+    /// `data/**` into "data inside the target".
+    #[test]
+    fn walk_anchors_exclude_globs_at_the_given_root_across_targets() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        write(root, "data/raw.sql", "");
+        write(root, "src/query.sql", "");
+        write(root, "src/data/nested.sql", "");
+
+        let excludes = ["data/**".to_string()];
+        let files = walk(
+            &[root.join("data"), root.join("src")],
+            &excludes,
+            Some(root),
+        )
+        .unwrap()
+        .files;
+
+        // `data/**` is anchored at the root: it drops the root-level data
+        // directory but not `src/data`, exactly like a root .gitignore.
+        assert_eq!(
+            rel_names(&files, root),
+            vec!["src/data/nested.sql", "src/query.sql"]
+        );
     }
 
     #[test]
@@ -243,16 +275,15 @@ mod tests {
         write(root, "analysis.R", "");
         write(root, "model.py", "");
 
-        let files = walk(&[root.join("analysis.R")], &[]).unwrap().files;
+        let files = walk(&[root.join("analysis.R")], &[], None).unwrap().files;
 
         assert_eq!(files, vec![root.join("analysis.R")]);
     }
 
     /// Pins the documented policy that explicit file targets bypass both
     /// `.gitignore` and exclude globs (ruff's default): "format this exact
-    /// file" is an intentional request. The spec is silent here, so M2 must
-    /// confirm the UX — if it decides otherwise, this test should change
-    /// with it deliberately, not by accident.
+    /// file" is an intentional request. If that policy ever changes, this
+    /// test should change with it deliberately, not by accident.
     #[test]
     fn walk_returns_explicit_file_targets_even_if_ignored_or_excluded() {
         let tmp = tempfile::tempdir().unwrap();
@@ -264,6 +295,7 @@ mod tests {
         let outcome = walk(
             &[root.join("run.log"), root.join("query.sql")],
             &["*.sql".to_string()],
+            None,
         )
         .unwrap();
 
@@ -279,7 +311,7 @@ mod tests {
         let root = tmp.path();
         write(root, "sub/model.py", "");
 
-        let files = walk(&[root.to_path_buf(), root.join("sub")], &[])
+        let files = walk(&[root.to_path_buf(), root.join("sub")], &[], None)
             .unwrap()
             .files;
 
@@ -294,7 +326,7 @@ mod tests {
         write(root, ".Rproj.user/settings", "");
         write(root, "analysis.R", "");
 
-        let files = walk(&[root.to_path_buf()], &[]).unwrap().files;
+        let files = walk(&[root.to_path_buf()], &[], None).unwrap().files;
 
         assert_eq!(rel_names(&files, root), vec!["analysis.R"]);
     }
@@ -313,7 +345,7 @@ mod tests {
         let locked = root.join("locked");
         fs::set_permissions(&locked, fs::Permissions::from_mode(0o000)).unwrap();
 
-        let outcome = walk(&[root.to_path_buf()], &[]);
+        let outcome = walk(&[root.to_path_buf()], &[], None);
 
         // Restore before asserting so the tempdir cleans up even on failure.
         fs::set_permissions(&locked, fs::Permissions::from_mode(0o755)).unwrap();
@@ -349,7 +381,7 @@ mod tests {
             write(root, "analysis.R", "");
             write(root, "query.sql", "");
 
-            let files = walk(&[root.to_path_buf()], &[]).unwrap().files;
+            let files = walk(&[root.to_path_buf()], &[], None).unwrap().files;
 
             assert_eq!(rel_names(&files, root), vec!["analysis.R", "query.sql"]);
             return;
@@ -379,7 +411,7 @@ mod tests {
 
     #[test]
     fn walk_returns_empty_for_no_paths() {
-        let outcome = walk(&[], &[]).unwrap();
+        let outcome = walk(&[], &[], None).unwrap();
         assert!(outcome.files.is_empty());
         assert!(outcome.warnings.is_empty());
     }
@@ -389,7 +421,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let missing = tmp.path().join("no-such-dir");
 
-        let err = walk(std::slice::from_ref(&missing), &[]).unwrap_err();
+        let err = walk(std::slice::from_ref(&missing), &[], None).unwrap_err();
 
         assert!(matches!(err, FsxError::MissingPath { .. }));
         let message = err.to_string();
@@ -400,7 +432,7 @@ mod tests {
     fn walk_errors_on_invalid_exclude_glob() {
         let tmp = tempfile::tempdir().unwrap();
 
-        let err = walk(&[tmp.path().to_path_buf()], &["a[".to_string()]).unwrap_err();
+        let err = walk(&[tmp.path().to_path_buf()], &["a[".to_string()], None).unwrap_err();
 
         assert!(matches!(err, FsxError::InvalidExclude { .. }));
         let message = err.to_string();

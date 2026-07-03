@@ -4,11 +4,16 @@ expression: "help_output(& [\"lint\", \"--help\"])"
 ---
 Report lint violations across the project
 
-Usage: hpds lint [OPTIONS]
+Usage: hpds lint [OPTIONS] [PATHS]...
+
+Arguments:
+  [PATHS]...  Files or directories to lint (default: the whole project)
 
 Options:
-  -v, --verbose        Show more detail (underlying commands, tool names)
-  -q, --quiet          Suppress all output except errors
-      --no-color       Disable colored output
-      --config <PATH>  Use this config file instead of discovering hpds.toml
-  -h, --help           Print help
+      --fix              Apply safe autofixes first, then report what remains
+  -v, --verbose          Show more detail (underlying commands, tool names)
+      --format <FORMAT>  Output format [default: text] [possible values: text, json]
+  -q, --quiet            Suppress all output except errors
+      --no-color         Disable colored output
+      --config <PATH>    Use this config file instead of discovering hpds.toml
+  -h, --help             Print help

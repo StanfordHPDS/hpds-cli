@@ -176,7 +176,7 @@ fn update_one(
         .map(|tool| tool.version.clone());
 
     let ctx = InstallContext {
-        label: label_for(spec.name),
+        label: tools::label_for(spec.name),
         command: "hpds tools update",
         verbose: global.verbose,
     };
@@ -186,19 +186,6 @@ fn update_one(
         Some(old) => format!("{} updated {old} -> {wanted}", spec.name),
         None => format!("{} installed {wanted}", spec.name),
     })
-}
-
-/// Progress-bar label for each managed tool (tool names themselves appear
-/// only at `-v`).
-fn label_for(name: &str) -> &'static str {
-    match name {
-        "air" => "R formatter",
-        "ruff" => "Python formatter/linter",
-        "panache" => "Markdown formatter",
-        "sqlfluff" => "SQL formatter/linter",
-        "uv" => "uv (Python tool installer)",
-        _ => "tool",
-    }
 }
 
 /// `hpds tools clean`: delete the whole tool cache directory (after a
@@ -347,13 +334,6 @@ mod tests {
         assert_eq!(install_date("2026-07-02T12:00:00Z"), "2026-07-02");
         assert_eq!(install_date("bogus"), "bogus");
         assert_eq!(install_date(""), "");
-    }
-
-    #[test]
-    fn every_builtin_tool_has_a_human_label() {
-        for spec in ToolSpec::builtins() {
-            assert_ne!(label_for(spec.name), "tool", "{} needs a label", spec.name);
-        }
     }
 
     #[test]

@@ -7,9 +7,7 @@ use std::path::{Path, PathBuf};
 ///
 /// Adding a language is source-level: add a variant here,
 /// register its extensions in [`ExtensionRegistry::with_defaults`], and add
-/// the adapter in M2's registry.
-// Only tests use this until the format/lint runner consumes it.
-#[allow(dead_code)]
+/// the adapter in the adapter registry.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum Language {
     /// `.R` / `.r` — formatted and linted by air.
@@ -25,18 +23,31 @@ pub enum Language {
     Sql,
 }
 
+impl Language {
+    /// The language a `[format].languages` / `[lint].languages` config
+    /// entry names (case-insensitive), or `None` for names hpds does not
+    /// know — the caller warns and skips those.
+    pub fn from_config_name(name: &str) -> Option<Language> {
+        match name.to_ascii_lowercase().as_str() {
+            "r" => Some(Language::R),
+            "python" => Some(Language::Python),
+            "quarto" => Some(Language::Quarto),
+            "markdown" => Some(Language::Markdown),
+            "sql" => Some(Language::Sql),
+            _ => None,
+        }
+    }
+}
+
 /// Maps file extensions to [`Language`] buckets.
 ///
 /// Lookups are ASCII case-insensitive so `.R`/`.r` and `.Rmd`/`.rmd` land in
 /// the same bucket. Extensions are stored without a leading dot.
-// Only tests use this until the format/lint runner consumes it.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct ExtensionRegistry {
     map: HashMap<String, Language>,
 }
 
-#[allow(dead_code)] // consumed once the adapter registry lands
 impl ExtensionRegistry {
     /// Registry with the default extension table.
     pub fn with_defaults() -> Self {
@@ -72,8 +83,6 @@ impl ExtensionRegistry {
 ///
 /// Files with unregistered extensions are dropped. Input order is preserved
 /// within each group; the map itself iterates in [`Language`] order.
-// Only tests use this until the format/lint runner consumes it.
-#[allow(dead_code)]
 pub fn group_by_language(
     files: &[PathBuf],
     registry: &ExtensionRegistry,
@@ -91,6 +100,36 @@ pub fn group_by_language(
 mod tests {
     use super::*;
     use std::path::{Path, PathBuf};
+
+    #[test]
+    fn config_names_map_to_language_buckets() {
+        let cases = [
+            ("r", Language::R),
+            ("python", Language::Python),
+            ("quarto", Language::Quarto),
+            ("markdown", Language::Markdown),
+            ("sql", Language::Sql),
+        ];
+        for (name, lang) in cases {
+            assert_eq!(
+                Language::from_config_name(name),
+                Some(lang),
+                "config name {name}"
+            );
+        }
+    }
+
+    #[test]
+    fn config_name_lookup_is_case_insensitive() {
+        assert_eq!(Language::from_config_name("R"), Some(Language::R));
+        assert_eq!(Language::from_config_name("Python"), Some(Language::Python));
+    }
+
+    #[test]
+    fn unknown_config_names_are_none() {
+        assert_eq!(Language::from_config_name("julia"), None);
+        assert_eq!(Language::from_config_name(""), None);
+    }
 
     #[test]
     fn registry_maps_spec_extensions_to_languages() {
