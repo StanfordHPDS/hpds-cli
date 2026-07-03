@@ -6,9 +6,11 @@
 //! [`ReleaseFetcher`] seam keeps that network step fakeable, so strategy
 //! selection is unit-testable offline.
 
+use std::collections::HashSet;
 use std::ffi::OsString;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::{LazyLock, Mutex};
 
 use anyhow::Context;
 
@@ -295,15 +297,34 @@ pub(crate) fn user_bin_dir() -> anyhow::Result<PathBuf> {
     Ok(dirs.home_dir().join(".local").join("bin"))
 }
 
+/// Bin directories already warned about this process. Several installs
+/// in one run (e.g. `hpds setup`) place tools into the same off-PATH
+/// directory; the advice is identical every time, so it prints once.
+static OFF_PATH_WARNED: LazyLock<Mutex<HashSet<PathBuf>>> =
+    LazyLock::new(|| Mutex::new(HashSet::new()));
+
 /// Warn when `bin_dir` is not on `PATH`, so a fresh install that "cannot
-/// be found" afterwards is no mystery.
+/// be found" afterwards is no mystery. Warns at most once per directory
+/// per process.
 pub(crate) fn warn_if_off_path(bin_dir: &Path) {
-    if !dir_on_path(bin_dir, std::env::var_os("PATH")) {
+    if dir_on_path(bin_dir, std::env::var_os("PATH")) {
+        return;
+    }
+    if first_report(&OFF_PATH_WARNED, bin_dir) {
         ui::warn(&format!(
             "`{}` is not on your PATH; add it in your shell profile, then open a new shell",
             bin_dir.display()
         ));
     }
+}
+
+/// Record `dir` in `seen`, returning `true` only the first time it shows
+/// up. A poisoned lock is reclaimed rather than panicking: the set holds
+/// nothing a panic could leave half-updated.
+fn first_report(seen: &Mutex<HashSet<PathBuf>>, dir: &Path) -> bool {
+    seen.lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .insert(dir.to_path_buf())
 }
 
 /// Whether `dir` appears in a `PATH`-style value. Factored out of env
@@ -592,6 +613,18 @@ mod tests {
     fn user_opt_dir_is_local_opt_under_home() {
         let dir = user_opt_dir().expect("home dir exists on dev machines");
         assert!(dir.ends_with(Path::new(".local").join("opt")), "{dir:?}");
+    }
+
+    #[test]
+    fn off_path_advice_is_reported_once_per_directory() {
+        let seen = Mutex::new(HashSet::new());
+        let bin = Path::new("/home/user/.local/bin");
+        assert!(first_report(&seen, bin), "the first sighting warns");
+        assert!(!first_report(&seen, bin), "repeat advice is suppressed");
+        assert!(
+            first_report(&seen, Path::new("/home/user/other-bin")),
+            "a different directory gets its own warning"
+        );
     }
 
     #[test]

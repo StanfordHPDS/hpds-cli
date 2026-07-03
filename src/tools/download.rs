@@ -10,6 +10,7 @@
 use std::fs;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
+use std::sync::{Mutex, MutexGuard};
 use std::time::Duration;
 
 use anyhow::Context;
@@ -32,6 +33,22 @@ const STAGING_PREFIX: &str = ".staging-";
 
 /// Name of the per-tool advisory lock file inside `<tools>/<name>/`.
 const LOCK_FILE: &str = ".lock";
+
+/// Serializes the sections that draw a download progress bar. Parallel
+/// adapter threads can each hit a first-run tool download at once, and
+/// two live bars interleave on stderr into garbage. First-run downloads
+/// are rare and short, so a plain mutex (one bar at a time, the rest
+/// wait) keeps the rendering simple — no `MultiProgress` coordination.
+static PROGRESS_SECTION: Mutex<()> = Mutex::new(());
+
+/// Hold the progress-bar section. A poisoned lock is reclaimed rather
+/// than panicking: the guarded value is `()`, so there is no state a
+/// panic could have corrupted.
+pub(crate) fn progress_section() -> MutexGuard<'static, ()> {
+    PROGRESS_SECTION
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
 
 /// The per-tool advisory lock: one lock file per `<tools>/<name>/`
 /// directory, shared by every install strategy, so concurrent hpds
@@ -434,6 +451,8 @@ fn stream_to_file(
     message: &str,
 ) -> anyhow::Result<String> {
     let total = response.body().content_length().unwrap_or(0);
+    // One live bar at a time: see `PROGRESS_SECTION`.
+    let _bar_section = progress_section();
     let bar = ui::progress_bar(total, message.to_string());
     let mut reader = response.body_mut().as_reader();
     let mut file =

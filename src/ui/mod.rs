@@ -139,6 +139,13 @@ pub fn println(msg: &str) {
     }
 }
 
+/// Print machine-readable output (`--format json`) to stdout. Never
+/// suppressed by `--quiet`: quiet silences human chrome, not the data
+/// another program asked for.
+pub fn data(msg: &str) {
+    std::println!("{msg}");
+}
+
 /// Print a green `✓`-prefixed success line to stdout. Suppressed by
 /// `--quiet`.
 pub fn success(msg: &str) {

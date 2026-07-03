@@ -130,7 +130,8 @@ pub fn walk(
 /// Compile exclude globs into an [`Override`] set rooted at `root`.
 ///
 /// `Override` globs are whitelists by default; negating each pattern turns
-/// them into ignores, giving the additive gitignore-style semantics of §3.
+/// them into ignores, so configured excludes add to (never replace) what
+/// .gitignore already skips.
 fn build_exclude_overrides(root: &Path, excludes: &[String]) -> Result<Override, FsxError> {
     let mut builder = OverrideBuilder::new(root);
     for pattern in excludes {

@@ -200,6 +200,39 @@ fn fresh_setup_sets_default_branch_identity_and_vaccinates() {
 }
 
 #[test]
+fn identity_flags_matching_existing_config_say_already_set() {
+    // A second run with the same flags is a no-op and must read like
+    // one: "already set", not another "set".
+    let sb = Sandbox::new();
+    sb.git(&["config", "--global", "user.name", "Ada Lovelace"]);
+    sb.git(&["config", "--global", "user.email", "ada@example.com"]);
+
+    sb.hpds()
+        .args([
+            "git",
+            "setup",
+            "--name",
+            "Ada Lovelace",
+            "--email",
+            "ada@example.com",
+            "--yes",
+        ])
+        .assert()
+        .success()
+        .stdout(
+            predicate::str::contains("user.name is already set to \"Ada Lovelace\"")
+                .and(predicate::str::contains(
+                    "user.email is already set to \"ada@example.com\"",
+                ))
+                .and(predicate::str::contains("set user.name to").not())
+                .and(predicate::str::contains("set user.email to").not()),
+        );
+
+    assert_eq!(sb.config("user.name").as_deref(), Some("Ada Lovelace"));
+    assert_eq!(sb.config("user.email").as_deref(), Some("ada@example.com"));
+}
+
+#[test]
 fn default_branch_already_main_is_reported_not_reset() {
     let sb = Sandbox::new();
     sb.git(&["config", "--global", "init.defaultBranch", "main"]);

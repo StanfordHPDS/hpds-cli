@@ -105,6 +105,8 @@ fn configure_default_branch() -> anyhow::Result<()> {
 /// How to obtain one identity value (user.name / user.email).
 #[derive(Debug, PartialEq, Eq)]
 enum IdentityAction {
+    /// The flag matches what config already holds: report, write nothing.
+    AlreadySet(String),
     /// An explicit flag always wins, even over existing config.
     SetFromFlag(String),
     /// Config already has a value and no flag was given: keep it.
@@ -118,6 +120,12 @@ enum IdentityAction {
 /// Pure decision for one identity key, factored out so it is unit-testable.
 fn identity_action(flag: Option<String>, current: Option<String>, yes: bool) -> IdentityAction {
     match (flag, current) {
+        // Compare trimmed: the flag value is trimmed before any write. An
+        // empty current value never counts as set — a blank flag must
+        // still fall through to the cannot-be-empty error.
+        (Some(value), Some(current)) if !current.is_empty() && value.trim() == current => {
+            IdentityAction::AlreadySet(current)
+        }
         (Some(value), _) => IdentityAction::SetFromFlag(value),
         (None, Some(current)) => IdentityAction::KeepExisting(current),
         (None, None) if yes => IdentityAction::NeedFlag,
@@ -133,13 +141,14 @@ fn configure_identity(
     flag: Option<String>,
     yes: bool,
 ) -> anyhow::Result<()> {
-    // A flag always wins, so only consult git config when there is none.
-    let current = if flag.is_some() {
-        None
-    } else {
-        gitx::global_config_get(key)?
-    };
+    // The current value is read even when a flag is given: a flag that
+    // matches it is reported as already set, not rewritten.
+    let current = gitx::global_config_get(key)?;
     let value = match identity_action(flag, current, yes) {
+        IdentityAction::AlreadySet(value) => {
+            ui::success(&format!("{key} is already set to \"{value}\""));
+            return Ok(());
+        }
         IdentityAction::KeepExisting(current) => {
             ui::println(&format!(
                 "{key} is already set to \"{current}\"; leaving it as is"
@@ -255,6 +264,36 @@ mod tests {
         assert_eq!(
             identity_action(Some("New".into()), Some("Old".into()), false),
             IdentityAction::SetFromFlag("New".into())
+        );
+    }
+
+    #[test]
+    fn flag_equal_to_existing_config_is_already_set() {
+        // Re-running setup with the same identity must read as a no-op
+        // ("already set"), not as a fresh write ("set").
+        assert_eq!(
+            identity_action(Some("Same".into()), Some("Same".into()), false),
+            IdentityAction::AlreadySet("Same".into())
+        );
+    }
+
+    #[test]
+    fn a_blank_flag_never_matches_an_empty_config_value() {
+        // Both trim to nothing, but "already set to nothing" is nonsense:
+        // the blank flag must fall through to the cannot-be-empty error.
+        assert_eq!(
+            identity_action(Some("   ".into()), Some(String::new()), false),
+            IdentityAction::SetFromFlag("   ".into())
+        );
+    }
+
+    #[test]
+    fn flag_comparison_ignores_surrounding_whitespace() {
+        // The value is trimmed before it is written, so an untrimmed
+        // match is still the same identity.
+        assert_eq!(
+            identity_action(Some("  Same ".into()), Some("Same".into()), false),
+            IdentityAction::AlreadySet("Same".into())
         );
     }
 

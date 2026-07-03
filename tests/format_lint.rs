@@ -177,6 +177,19 @@ fn lint_json_in_an_empty_project_emits_an_empty_array() {
     assert_eq!(stdout.trim(), "[]", "machine consumers always get JSON");
 }
 
+#[test]
+fn lint_json_survives_quiet_in_an_empty_project() {
+    // --quiet silences human chrome only; the JSON a machine consumer
+    // asked for must still land on stdout.
+    let sb = Sandbox::empty();
+    let assert = sb
+        .cmd(&["lint", "--quiet", "--format", "json"])
+        .assert()
+        .success();
+    let stdout = String::from_utf8(assert.get_output().stdout.clone()).expect("utf-8 stdout");
+    assert_eq!(stdout.trim(), "[]", "--quiet must not suppress JSON output");
+}
+
 // ---------------------------------------------------------------------------
 // Offline end-to-end runs against shim tools (unix: shims are sh scripts).
 
@@ -568,6 +581,20 @@ exit $status
         assert_eq!(f401["fixable"], true);
         assert_eq!(f401["range"]["start"]["line"], 1);
         assert_eq!(f401["range"]["start"]["col"], 8);
+    }
+
+    #[test]
+    fn lint_json_with_diagnostics_survives_quiet() {
+        let sb = shimmed();
+        let assert = sb
+            .cmd(&["lint", "--quiet", "--format", "json"])
+            .assert()
+            .code(1);
+        let stdout = String::from_utf8(assert.get_output().stdout.clone()).expect("utf-8 stdout");
+        let diagnostics: serde_json::Value =
+            serde_json::from_str(&stdout).expect("stdout parses as JSON under --quiet");
+        let items = diagnostics.as_array().expect("a JSON array");
+        assert_eq!(items.len(), 5, "{stdout}");
     }
 
     #[test]

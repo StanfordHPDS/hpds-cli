@@ -124,7 +124,14 @@ impl UvToolInstaller {
 
         // Resolve uv before taking this tool's lock: bootstrapping takes
         // uv's own lock, and resolving it first keeps the locks un-nested.
-        let uv = self.uv_binary(ctx)?;
+        // The breadcrumb matters: the user asked for this tool, not for
+        // uv, so a bootstrap failure must say why uv is involved at all.
+        let uv = self.uv_binary(ctx).with_context(|| {
+            format!(
+                "{} installs via hpds's private uv, which could not be set up",
+                spec.name
+            )
+        })?;
 
         let name_dir = self.cache.root().join(spec.name);
         let mut lock = ToolLock::open(&name_dir)?;
@@ -236,7 +243,9 @@ impl UvToolInstaller {
         let install_spec = format!("{package}=={version}");
         let message = fetch_message(ctx.label, spec.name, version, ctx.verbose);
         // uv reports no byte-level progress here, so the bar is a static
-        // "Fetching …" line that clears when uv finishes.
+        // "Fetching …" line that clears when uv finishes. One live bar at
+        // a time: see `download::PROGRESS_SECTION`.
+        let _bar_section = crate::tools::download::progress_section();
         let bar = ui::progress_bar(1, message);
         let output = Command::new(uv)
             .args(["tool", "install", &install_spec])
@@ -255,10 +264,11 @@ impl UvToolInstaller {
                 stderr.trim()
             ))
             .hint(format!(
-                "`{}` needs network access to install {} the first time; check \
-                 your connection (or HTTPS_PROXY) and the `[tools.{}]` version \
-                 pin in hpds.toml, then rerun",
-                ctx.command, spec.name, spec.name
+                "{} installs via hpds's private uv; `{}` needs network access \
+                 to install it the first time; check your connection (or \
+                 HTTPS_PROXY) and the `[tools.{}]` version pin in hpds.toml, \
+                 then rerun",
+                spec.name, ctx.command, spec.name
             ));
         }
         Ok(())
@@ -463,6 +473,12 @@ chmod +x "$UV_TOOL_BIN_DIR/sqlfluff""#,
         assert!(rendered.contains("No solution found"), "{rendered}");
         assert!(rendered.contains("hpds lint"), "{rendered}");
         assert!(rendered.contains("hint:"), "{rendered}");
+        // The user never asked for uv; the error must explain where it
+        // comes from.
+        assert!(
+            rendered.contains("sqlfluff installs via hpds's private uv"),
+            "{rendered}"
+        );
         assert!(
             !cache.tool_dir("sqlfluff", "3.4.0").exists(),
             "a failed install must leave no tool directory behind"
@@ -511,6 +527,36 @@ chmod +x "$UV_TOOL_BIN_DIR/sqlfluff""#,
 
         assert_eq!(fs::read(&installed).expect("read binary"), b"fake sqlfluff");
         Manifest::load(&cache.manifest_path("sqlfluff", "3.4.0")).expect("manifest rewritten");
+    }
+
+    #[test]
+    fn uv_bootstrap_failure_breadcrumbs_the_private_uv() {
+        // Offline first run: fetching uv itself fails before sqlfluff is
+        // ever attempted. The error must say sqlfluff is the tool that
+        // dragged uv in.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let cache = ToolCache::at(dir.path());
+        let downloader = Downloader::at_base_url(cache.clone(), linux(), dead_url());
+        let installer =
+            UvToolInstaller::with_downloader(cache, linux(), downloader, "0.9.0".to_string());
+
+        let err = installer
+            .ensure_installed(&sql_spec(), "3.4.0", &ctx())
+            .expect_err("an unreachable release host must fail the bootstrap");
+        let rendered = crate::ui::render_error(&err, false);
+        assert!(
+            rendered.contains("sqlfluff installs via hpds's private uv"),
+            "{rendered}"
+        );
+    }
+
+    /// A `http://127.0.0.1:<port>` URL nothing listens on, so any
+    /// download attempt fails like a machine with no network.
+    fn dead_url() -> String {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        let port = listener.local_addr().expect("addr").port();
+        drop(listener);
+        format!("http://127.0.0.1:{port}")
     }
 
     #[test]

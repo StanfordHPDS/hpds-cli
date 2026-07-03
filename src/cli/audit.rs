@@ -236,7 +236,7 @@ fn audit_current_repo(args: &AuditArgs, global: &super::GlobalArgs) -> anyhow::R
             ui::stdout_colors(),
             global.verbose,
         )),
-        OutputFormat::Json => ui::println(&audit::render_json(&repo, &findings)?),
+        OutputFormat::Json => ui::data(&audit::render_json(&repo, &findings)?),
     }
 
     if audit::exit_code(&findings, args.strict) == 0 {

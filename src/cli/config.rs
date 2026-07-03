@@ -24,7 +24,7 @@ enum OutputFormat {
 
 pub fn run(args: ConfigArgs, global: &super::GlobalArgs) -> anyhow::Result<()> {
     let cwd = std::env::current_dir().context("could not determine the current directory")?;
-    // No CLI flags map onto config keys yet; when they do (e.g. M2's
+    // No CLI flags map onto config keys yet; when they do (e.g. future
     // format/lint flags) they become this final layer.
     let loaded = config::load(&cwd, global.config.as_deref(), Layer::default())?;
 
@@ -34,7 +34,7 @@ pub fn run(args: ConfigArgs, global: &super::GlobalArgs) -> anyhow::Result<()> {
 
     match args.format {
         OutputFormat::Text => ui::println(&render_text(&loaded)),
-        OutputFormat::Json => ui::println(&render_json(&loaded)?),
+        OutputFormat::Json => ui::data(&render_json(&loaded)?),
     }
     Ok(())
 }

@@ -114,6 +114,22 @@ fn audit_strict_still_exits_0_when_there_are_no_findings() {
 }
 
 #[test]
+fn audit_json_survives_quiet() {
+    // --quiet silences human chrome only; the JSON a machine consumer
+    // asked for must still land on stdout.
+    let sb = Sandbox::new();
+    let assert = sb
+        .audit_cmd(&["--quiet", "--format", "json"])
+        .assert()
+        .success();
+    let stdout =
+        String::from_utf8(assert.get_output().stdout.clone()).expect("stdout should be UTF-8");
+    let value: serde_json::Value =
+        serde_json::from_str(&stdout).expect("stdout is valid JSON under --quiet");
+    assert!(value.get("repo").is_some(), "{stdout}");
+}
+
+#[test]
 fn audit_json_emits_the_stable_report_schema() {
     let sb = Sandbox::new();
     let assert = sb.audit_cmd(&["--format", "json"]).assert().success();

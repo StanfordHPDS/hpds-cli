@@ -156,8 +156,9 @@ mod tests {
     }
 
     #[test]
-    fn summary_matches_the_spec_example() {
-        // "✓ 42 files formatted, 3 changed" — ui::success adds the ✓.
+    fn summary_counts_processed_and_changed_files() {
+        // Rendered as "✓ 42 files formatted, 3 changed" — ui::success
+        // adds the ✓.
         assert_eq!(
             summary(false, &outcome(42, &["a.R", "b.py", "c.sql"])),
             "42 files formatted, 3 changed"

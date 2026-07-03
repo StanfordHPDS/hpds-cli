@@ -181,7 +181,7 @@ mod tests {
     }
 
     #[test]
-    fn parses_the_full_spec_example() {
+    fn parses_a_config_using_every_documented_key() {
         let parsed = parse(
             r#"
             [project]
@@ -209,7 +209,7 @@ mod tests {
             args = ["--verbose"]
             "#,
         )
-        .expect("spec example must parse");
+        .expect("a config using every documented key must parse");
         assert_no_unknown(&parsed);
 
         let layer = parsed.layer;

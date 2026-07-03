@@ -56,7 +56,7 @@ pub fn run(args: LintArgs, global: &super::GlobalArgs) -> anyhow::Result<()> {
     if discovered.file_count == 0 {
         match args.format {
             // Machine consumers always get valid JSON on stdout.
-            OutputFormat::Json => ui::println("[]"),
+            OutputFormat::Json => ui::data("[]"),
             OutputFormat::Text => ui::println(
                 "no files to lint: nothing under the target paths matches the \
                  enabled languages (see `[lint]` in hpds.toml)",
@@ -88,7 +88,7 @@ pub fn run(args: LintArgs, global: &super::GlobalArgs) -> anyhow::Result<()> {
     fmt_lint::sort_diagnostics(&mut diagnostics);
 
     match args.format {
-        OutputFormat::Json => ui::println(
+        OutputFormat::Json => ui::data(
             &serde_json::to_string_pretty(&diagnostics)
                 .context("could not serialize the diagnostics to JSON")?,
         ),

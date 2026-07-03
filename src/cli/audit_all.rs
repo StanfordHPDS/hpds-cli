@@ -102,7 +102,7 @@ pub fn run(args: AllArgs) -> anyhow::Result<()> {
         SweepFormat::Json => {
             // --repos-from bypasses the org, so the JSON claims none.
             let org = args.repos_from.is_none().then_some(args.org.as_str());
-            ui::println(&all::render_sweep_json(org, &reports)?);
+            ui::data(&all::render_sweep_json(org, &reports)?);
         }
     }
 
