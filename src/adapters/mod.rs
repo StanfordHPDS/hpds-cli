@@ -22,6 +22,8 @@ mod r;
 mod registry;
 #[allow(dead_code)]
 mod runner;
+#[allow(dead_code)]
+mod sql;
 #[cfg(test)]
 pub(crate) mod test_support;
 
@@ -45,6 +47,8 @@ pub use r::AirAdapter;
 pub use registry::AdapterRegistry;
 #[allow(unused_imports)]
 pub use runner::{FormatRun, LintRun, format_all, lint_all};
+#[allow(unused_imports)]
+pub use sql::SqlFluffAdapter;
 
 // NOTE: dead_code allowed on the items below for the same reason as the
 // module list above: they are the adapter API surface, and only the

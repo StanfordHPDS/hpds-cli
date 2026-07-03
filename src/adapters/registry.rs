@@ -33,6 +33,7 @@ impl AdapterRegistry {
         let panache: Arc<dyn Adapter> = Arc::new(crate::adapters::PanacheAdapter::new());
         registry.register(Language::Quarto, Arc::clone(&panache));
         registry.register(Language::Markdown, panache);
+        registry.register(Language::Sql, Arc::new(crate::adapters::SqlFluffAdapter));
         registry
     }
 
@@ -69,6 +70,15 @@ mod tests {
             .adapter_for(Language::R)
             .expect("R is a built-in bucket");
         assert_eq!(adapter.name(), "air");
+    }
+
+    #[test]
+    fn with_defaults_routes_sql_files_to_sqlfluff() {
+        let registry = AdapterRegistry::with_defaults();
+        let adapter = registry
+            .adapter_for(Language::Sql)
+            .expect("sql ships with an adapter");
+        assert_eq!(adapter.name(), "sqlfluff");
     }
 
     #[test]
