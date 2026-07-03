@@ -99,7 +99,7 @@ impl GithubApi for GhCli {
             endpoint: endpoint.to_string(),
             detail,
         };
-        let mut cmd = Command::new("gh");
+        let mut cmd = Command::new(crate::gitx::gh_program());
         cmd.args(["api", endpoint]);
         if paginate {
             cmd.arg("--paginate");
@@ -206,8 +206,9 @@ pub fn registry() -> Vec<Box<dyn Check>> {
 pub enum GithubStatus {
     /// `origin` points at github.com and `gh` is authenticated.
     Ready(GithubCtx),
-    /// No GitHub `origin` remote: the GitHub checks do not apply, silently
-    /// (a purely local repo is a legitimate state; the local checks cover it).
+    /// No GitHub `origin` remote: the GitHub checks do not apply. The
+    /// single-repo audit reports this as the [`no_remote_notice`] Info
+    /// finding so the report says why those checks are absent.
     NoRemote,
     /// The checks apply but cannot run; the finding is an Info notice for
     /// the report (e.g. `gh` missing or unauthenticated).
@@ -250,6 +251,23 @@ pub fn skipped_notice() -> Finding {
         message: "GitHub checks skipped: gh not authenticated".to_string(),
         remediation: "install the GitHub CLI (https://cli.github.com/) if needed, \
                       run `gh auth login`, then re-run `hpds audit`"
+            .to_string(),
+    }
+}
+
+/// The Info notice reported when the GitHub checks are skipped because the
+/// repo has no github.com `origin` remote — symmetric with
+/// [`skipped_notice`], so the report always says why those checks are
+/// absent.
+pub fn no_remote_notice() -> Finding {
+    Finding {
+        check_id: "github".to_string(),
+        severity: Severity::Info,
+        message: "GitHub checks skipped: no origin remote".to_string(),
+        remediation: "if this project should live on GitHub, create the repo \
+                      (`hpds repo create`) or point origin at it \
+                      (`git remote add origin <url>`); purely local repos can \
+                      ignore this"
             .to_string(),
     }
 }
@@ -337,6 +355,15 @@ mod tests {
             "GitHub checks skipped: gh not authenticated"
         );
         assert!(notice.remediation.contains("gh auth login"));
+    }
+
+    #[test]
+    fn no_remote_notice_is_info_and_symmetric_with_the_auth_notice() {
+        let notice = no_remote_notice();
+        assert_eq!(notice.check_id, "github");
+        assert_eq!(notice.severity, Severity::Info);
+        assert_eq!(notice.message, "GitHub checks skipped: no origin remote");
+        assert!(notice.remediation.contains("git remote add origin"));
     }
 
     #[test]

@@ -308,7 +308,11 @@ fn gh_create_args(target: &str, visibility: Visibility) -> Vec<String> {
 /// Run `gh` with `args`, capturing output. A missing binary is a distinct,
 /// actionable error.
 fn gh(cwd: &Path, args: &[&str]) -> anyhow::Result<Output> {
-    match Command::new("gh").args(args).current_dir(cwd).output() {
+    match Command::new(super::gh_program())
+        .args(args)
+        .current_dir(cwd)
+        .output()
+    {
         Ok(out) => Ok(out),
         Err(err) if err.kind() == io::ErrorKind::NotFound => Err(anyhow::anyhow!(
             "the GitHub CLI (`gh`) is not installed or not on PATH"

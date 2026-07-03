@@ -37,6 +37,12 @@ fn render_error(err: anyhow::Error) -> ExitCode {
         .or_else(|| {
             err.downcast_ref::<install::registry::RegistryError>()
                 .map(|e| e.hint())
+        })
+        .or_else(|| {
+            // A bad `--config` value is a usage error like any other bad
+            // flag value.
+            err.downcast_ref::<config::MissingConfigFile>()
+                .map(|e| e.hint())
         });
     match usage_hint {
         Some(hint) => {

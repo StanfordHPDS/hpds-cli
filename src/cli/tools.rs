@@ -219,7 +219,16 @@ fn clean(yes: bool) -> anyhow::Result<()> {
             root.display(),
             human_bytes(bytes)
         );
-        if !ui::confirm(&prompt, false)? {
+        // The generic prompt refusal points at "the flag that answers this
+        // prompt"; here that flag deserves to be named outright.
+        let confirmed = match ui::confirm(&prompt, false) {
+            Ok(answer) => answer,
+            Err(err) => {
+                return Err(anyhow::anyhow!("{err}"))
+                    .hint("pass `--yes` (`hpds tools clean --yes`) to delete without a prompt");
+            }
+        };
+        if !confirmed {
             ui::println("nothing deleted");
             return Ok(());
         }

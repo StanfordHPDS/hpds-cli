@@ -161,6 +161,23 @@ impl Config {
     }
 }
 
+/// Typed error for `--config` pointing at a file that does not exist: a
+/// bad flag value, so `main` renders it as a usage error and exits 2.
+#[derive(Debug, thiserror::Error)]
+#[error("config file `{}` does not exist", path.display())]
+pub struct MissingConfigFile {
+    pub path: PathBuf,
+}
+
+impl MissingConfigFile {
+    /// What to do next (every user-facing error must say).
+    pub fn hint(&self) -> String {
+        "check the path passed to --config, or drop the flag to discover \
+         hpds.toml automatically"
+            .to_string()
+    }
+}
+
 /// The result of [`load`]: the resolved config, which files contributed,
 /// and any unknown-key warnings for the caller to print via `ui::warn`.
 #[derive(Debug)]
@@ -194,14 +211,11 @@ pub fn load(cwd: &Path, explicit: Option<&Path>, flags: Layer) -> anyhow::Result
     let project_path = match explicit {
         Some(path) => {
             if !path.is_file() {
-                return Err(anyhow::anyhow!(
-                    "config file `{}` does not exist",
-                    path.display()
-                ))
-                .hint(
-                    "check the path passed to --config, or drop the flag to \
-                     discover hpds.toml automatically",
-                );
+                // Typed so `main` can exit 2: a bad flag value is a usage
+                // error, not a runtime failure.
+                return Err(anyhow::Error::new(MissingConfigFile {
+                    path: path.to_path_buf(),
+                }));
             }
             Some(path.to_path_buf())
         }
@@ -449,13 +463,18 @@ mod tests {
     }
 
     #[test]
-    fn load_reports_missing_explicit_config_with_hint() {
+    fn load_reports_missing_explicit_config_as_a_typed_usage_error() {
         let dir = tempfile::tempdir().expect("tempdir");
         let missing = dir.path().join("nope.toml");
         let err = load(dir.path(), Some(&missing), Layer::default())
             .expect_err("missing --config file must be an error");
-        let rendered = crate::ui::render_error(&err, false);
-        assert!(rendered.contains("nope.toml"), "names the file: {rendered}");
-        assert!(rendered.contains("hint:"), "says what to do: {rendered}");
+        assert!(
+            err.to_string().contains("nope.toml"),
+            "names the file: {err}"
+        );
+        let typed = err
+            .downcast_ref::<MissingConfigFile>()
+            .expect("typed so main can exit 2 (usage error)");
+        assert!(typed.hint().contains("--config"), "hint: {}", typed.hint());
     }
 }

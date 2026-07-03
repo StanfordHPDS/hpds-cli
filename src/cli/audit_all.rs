@@ -143,7 +143,7 @@ fn resolve_specs(args: &AllArgs) -> anyhow::Result<(Vec<RepoSpec>, String)> {
 
 /// `gh repo list <org> --json nameWithOwner`, parsed into slugs.
 fn list_org_repos(org: &str, limit: u32) -> anyhow::Result<Vec<String>> {
-    let out = Command::new("gh")
+    let out = Command::new(crate::gitx::gh_program())
         .args(["repo", "list", org])
         .args(["--limit", &limit.to_string()])
         .args(["--json", "nameWithOwner"])

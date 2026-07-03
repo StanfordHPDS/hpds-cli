@@ -190,12 +190,15 @@ fn audit_current_repo(args: &AuditArgs, global: &super::GlobalArgs) -> anyhow::R
     let repo = repo_display_name(&root);
 
     // GitHub checks run only against a github.com origin with an
-    // authenticated gh; when they apply but cannot run, the report carries
-    // an Info notice saying so. Without a repo there is no origin to probe.
+    // authenticated gh; whenever they do not run, the report carries an
+    // Info notice saying why (no origin remote, or gh unavailable).
+    // Without a repo there is no origin to probe.
     let (github, notice) = if is_repo {
         match audit::github::probe(&root) {
             audit::github::GithubStatus::Ready(ctx) => (Some(ctx), None),
-            audit::github::GithubStatus::NoRemote => (None, None),
+            audit::github::GithubStatus::NoRemote => {
+                (None, Some(audit::github::no_remote_notice()))
+            }
             audit::github::GithubStatus::Skipped(finding) => (None, Some(finding)),
         }
     } else {
@@ -231,6 +234,7 @@ fn audit_current_repo(args: &AuditArgs, global: &super::GlobalArgs) -> anyhow::R
             &findings,
             checks_run,
             ui::stdout_colors(),
+            global.verbose,
         )),
         OutputFormat::Json => ui::println(&audit::render_json(&repo, &findings)?),
     }

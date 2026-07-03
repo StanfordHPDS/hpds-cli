@@ -31,5 +31,7 @@ info:
     fix: commit each file, add it to .gitignore, or delete it
   • [stale-branches] local branch `old-work` is fully merged
     fix: delete it with `git branch -d old-work`
+  • [github] GitHub checks skipped: no origin remote
+    fix: if this project should live on GitHub, create the repo (`hpds repo create`) or point origin at it (`git remote add origin <url>`); purely local repos can ignore this
 
-4 errors, 5 warnings across 9 checks
+4 errors, 5 warnings, 3 info across 9 checks

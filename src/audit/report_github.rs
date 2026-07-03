@@ -337,7 +337,7 @@ impl GhCliBot {
 
     /// Run `gh api <endpoint> <args...>` and return stdout.
     fn gh(&self, endpoint: &str, args: &[&str]) -> Result<String, BotError> {
-        let out = Command::new("gh")
+        let out = Command::new(crate::gitx::gh_program())
             .arg("api")
             .arg(endpoint)
             .args(args)

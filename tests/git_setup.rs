@@ -29,15 +29,19 @@ esac
 exit 0
 "#;
 
-/// Isolated HOME + global git config + PATH-shimmed `gh` for one test.
+/// Isolated HOME + global git config + shimmed `gh` for one test.
 struct Sandbox {
     tmp: TempDir,
     /// PATH the spawned `hpds` sees.
     path: std::ffi::OsString,
+    /// The `gh` shim, wired in via `HPDS_GH` so no PATH lookup can ever
+    /// fall through to a real gh; `None` simulates a machine without gh.
+    gh: Option<PathBuf>,
 }
 
 impl Sandbox {
-    /// Sandbox whose PATH has the `gh` shim first (shadowing any real gh).
+    /// Sandbox whose `gh` is the shim (via HPDS_GH, plus first on PATH as
+    /// a second line of defense against a real gh).
     fn new() -> Self {
         let (tmp, bin) = Self::base_dirs();
         let gh = bin.join("gh");
@@ -46,7 +50,11 @@ impl Sandbox {
         let orig = std::env::var_os("PATH").unwrap_or_default();
         let path = std::env::join_paths(std::iter::once(bin).chain(std::env::split_paths(&orig)))
             .expect("join PATH");
-        Self { tmp, path }
+        Self {
+            tmp,
+            path,
+            gh: Some(gh),
+        }
     }
 
     /// Sandbox whose PATH contains ONLY real `git` (via a symlink) — no `gh`
@@ -58,6 +66,7 @@ impl Sandbox {
         Self {
             path: bin.into_os_string(),
             tmp,
+            gh: None,
         }
     }
 
@@ -111,6 +120,10 @@ impl Sandbox {
             .env("GH_SHIM_LOG", self.gh_log_path())
             .env_remove("GIT_DIR")
             .env_remove("GIT_WORK_TREE");
+        match &self.gh {
+            Some(gh) => cmd.env("HPDS_GH", gh),
+            None => cmd.env_remove("HPDS_GH"),
+        };
     }
 
     /// Value of `key` in the sandboxed global git config, if set.

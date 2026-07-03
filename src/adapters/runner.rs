@@ -212,7 +212,13 @@ mod tests {
         let provider = FakeToolPaths::default();
         let config = Config::default();
         let ctx = ToolCtx::new(&provider, &config, false);
-        format_all(&registry, &grouped(&["a.py", "b.R"]), false, &ctx);
+        // A private two-thread pool: the assertion must not depend on the
+        // global pool's size (e.g. RAYON_NUM_THREADS=1 in the environment).
+        let pool = rayon::ThreadPoolBuilder::new()
+            .num_threads(2)
+            .build()
+            .expect("build a two-thread rayon pool");
+        pool.install(|| format_all(&registry, &grouped(&["a.py", "b.R"]), false, &ctx));
 
         assert_eq!(gauge.peak(), 2, "both adapters should be in flight at once");
     }

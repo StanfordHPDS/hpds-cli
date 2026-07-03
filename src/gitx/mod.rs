@@ -148,6 +148,22 @@ pub fn global_config_set(key: &str, value: &str) -> Result<(), GitxError> {
     git_expect_success(&["config", "--global", key, value]).map(|_| ())
 }
 
+/// The `gh` executable every GitHub interaction spawns: the `HPDS_GH`
+/// override when set (an internal escape hatch mirroring `HPDS_DATA_DIR`;
+/// the test suite points it at fake gh scripts so no test can ever reach
+/// a real `gh` through PATH), else `gh` resolved from PATH as usual.
+pub(crate) fn gh_program() -> std::ffi::OsString {
+    gh_program_from(std::env::var_os("HPDS_GH"))
+}
+
+/// Pure core of [`gh_program`], factored out so tests never mutate
+/// process-global environment variables.
+fn gh_program_from(override_path: Option<std::ffi::OsString>) -> std::ffi::OsString {
+    override_path
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| std::ffi::OsString::from("gh"))
+}
+
 /// Auth state of the GitHub CLI, as probed by [`gh_auth`].
 pub enum GhAuth {
     /// `gh auth status` succeeded: a user is logged in.
@@ -163,7 +179,7 @@ pub enum GhAuth {
 /// expected states are data, not errors — only an unexpected spawn failure
 /// (not "gh missing") is an `Err`.
 pub fn gh_auth() -> anyhow::Result<GhAuth> {
-    match Command::new("gh").args(["auth", "status"]).output() {
+    match Command::new(gh_program()).args(["auth", "status"]).output() {
         Ok(out) if out.status.success() => Ok(GhAuth::Authenticated),
         Ok(out) => Ok(GhAuth::Unauthenticated(out)),
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(GhAuth::NotInstalled),
@@ -178,7 +194,7 @@ pub fn gh_auth() -> anyhow::Result<GhAuth> {
 /// offline, or otherwise cannot answer — callers treat the login as a
 /// best-effort default, never a hard requirement.
 pub fn gh_login() -> Option<String> {
-    let output = Command::new("gh")
+    let output = Command::new(gh_program())
         .args(["api", "user", "-q", ".login"])
         .output()
         .ok()?;
@@ -197,4 +213,30 @@ fn home_dir() -> Result<PathBuf, GitxError> {
         .find(|value| !value.is_empty())
         .map(PathBuf::from)
         .ok_or(GitxError::NoHomeDir)
+}
+
+#[cfg(test)]
+mod gh_program_tests {
+    use super::*;
+
+    #[test]
+    fn gh_program_defaults_to_path_lookup() {
+        assert_eq!(gh_program_from(None), std::ffi::OsString::from("gh"));
+    }
+
+    #[test]
+    fn gh_program_override_replaces_the_path_lookup() {
+        assert_eq!(
+            gh_program_from(Some("/fixtures/fake-gh".into())),
+            std::ffi::OsString::from("/fixtures/fake-gh")
+        );
+    }
+
+    #[test]
+    fn empty_gh_program_override_is_ignored() {
+        assert_eq!(
+            gh_program_from(Some(std::ffi::OsString::new())),
+            std::ffi::OsString::from("gh")
+        );
+    }
 }

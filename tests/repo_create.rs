@@ -1,8 +1,10 @@
 //! Integration tests for `hpds repo create`.
 //!
 //! These tests NEVER call the real `gh` and never create real repositories:
-//! a shim script named `gh` is placed earlier on `PATH`; it records its argv
-//! to `$GH_SHIM_LOG` and returns canned results driven by env vars
+//! the internal `HPDS_GH` override points hpds straight at a shim script
+//! (no PATH lookup can ever fall through to a real gh; the same shim also
+//! sits first on `PATH` as a second line of defense). The shim records its
+//! argv to `$GH_SHIM_LOG` and returns canned results driven by env vars
 //! (`GH_AUTH_EXIT`, `GH_REPO_CREATE_EXIT`). Real `git` is used, but only
 //! against temp directories, isolated from the developer's configuration via
 //! `GIT_CONFIG_GLOBAL`/`GIT_CONFIG_NOSYSTEM`.
@@ -41,6 +43,8 @@ struct ShimEnv {
     project: PathBuf,
     log: PathBuf,
     gitconfig: PathBuf,
+    /// The shim executable itself, wired in via `HPDS_GH`.
+    gh: PathBuf,
     path: std::ffi::OsString,
 }
 
@@ -77,6 +81,7 @@ fn setup(project_name: &str) -> ShimEnv {
         project,
         log,
         gitconfig,
+        gh,
         path,
     }
 }
@@ -85,6 +90,7 @@ fn hpds(env: &ShimEnv) -> Command {
     let mut cmd = Command::cargo_bin("hpds").expect("hpds binary should build");
     cmd.current_dir(&env.project)
         .env("PATH", &env.path)
+        .env("HPDS_GH", &env.gh)
         .env("GH_SHIM_LOG", &env.log)
         .env("GIT_CONFIG_GLOBAL", &env.gitconfig)
         .env("GIT_CONFIG_NOSYSTEM", "1");

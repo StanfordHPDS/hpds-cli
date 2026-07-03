@@ -2,10 +2,13 @@
 //! skip notice and the end-to-end path through a shimmed `gh` that serves
 //! the recorded fixtures from `tests/fixtures/tool-output/gh/`.
 //!
-//! These tests NEVER call the real `gh`: a shim script earlier on `PATH`
-//! answers `gh auth status` per `GH_AUTH_EXIT` and `gh api <endpoint>` from
-//! fixture files in `GH_FIXTURES`. Real `git` runs only inside temp repos,
-//! isolated via `GIT_CONFIG_GLOBAL`/`GIT_CONFIG_NOSYSTEM`.
+//! These tests NEVER call the real `gh`: the internal `HPDS_GH` override
+//! points hpds straight at a shim script (no PATH lookup can ever fall
+//! through to a real gh, with the same shim first on `PATH` as a second
+//! line of defense) that answers `gh auth status` per `GH_AUTH_EXIT` and
+//! `gh api <endpoint>` from fixture files in `GH_FIXTURES`. Real `git`
+//! runs only inside temp repos, isolated via
+//! `GIT_CONFIG_GLOBAL`/`GIT_CONFIG_NOSYSTEM`.
 //!
 //! Unix-only: on Windows `Command::new("gh")` resolves only `gh.exe`, so a
 //! script shim cannot intercept the call. The check logic itself is
@@ -49,6 +52,8 @@ struct Sandbox {
     repo: PathBuf,
     user_dir: PathBuf,
     gitconfig: PathBuf,
+    /// The shim executable itself, wired in via `HPDS_GH`.
+    gh: PathBuf,
     path: std::ffi::OsString,
 }
 
@@ -124,6 +129,7 @@ fn setup() -> Sandbox {
         repo,
         user_dir,
         gitconfig,
+        gh,
         path,
     }
 }
@@ -136,6 +142,7 @@ fn audit(sb: &Sandbox) -> Command {
     let mut cmd = Command::cargo_bin("hpds").expect("hpds binary should build");
     cmd.current_dir(&sb.repo)
         .env("PATH", &sb.path)
+        .env("HPDS_GH", &sb.gh)
         .env("HPDS_CONFIG_DIR", &sb.user_dir)
         .env("GH_FIXTURES", fixtures_dir())
         .env("GIT_CONFIG_GLOBAL", &sb.gitconfig)
@@ -182,7 +189,7 @@ fn unauthenticated_skip_notice_is_info_severity_in_json() {
 }
 
 #[test]
-fn repo_without_a_github_remote_runs_no_github_checks_and_stays_clean() {
+fn repo_without_a_github_remote_skips_github_checks_with_a_notice() {
     let sb = setup();
     let out = std::process::Command::new("git")
         .args(["remote", "remove", "origin"])
@@ -191,10 +198,14 @@ fn repo_without_a_github_remote_runs_no_github_checks_and_stays_clean() {
         .expect("run git");
     assert!(out.status.success());
 
+    // Symmetric with the unauthenticated notice: the report says why the
+    // GitHub checks did not run, at Info severity (never a failure).
     audit(&sb)
         .assert()
         .success()
-        .stdout(predicate::str::contains("no findings"));
+        .stdout(predicate::str::contains(
+            "GitHub checks skipped: no origin remote",
+        ));
 }
 
 #[test]

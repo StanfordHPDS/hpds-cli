@@ -70,11 +70,17 @@ expression: messy.redact(&stdout)
       "severity": "error",
       "message": "the project uses renv but renv.lock is not committed",
       "remediation": "run `renv::snapshot()` in R, then commit renv.lock"
+    },
+    {
+      "check_id": "github",
+      "severity": "info",
+      "message": "GitHub checks skipped: no origin remote",
+      "remediation": "if this project should live on GitHub, create the repo (`hpds repo create`) or point origin at it (`git remote add origin <url>`); purely local repos can ignore this"
     }
   ],
   "summary": {
     "errors": 4,
     "warnings": 5,
-    "infos": 2
+    "infos": 3
   }
 }

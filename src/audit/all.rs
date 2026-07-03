@@ -156,7 +156,7 @@ fn clone_and_audit(spec: &RepoSpec, dest: &Path) -> anyhow::Result<Vec<Finding>>
 fn clone(spec: &RepoSpec, dest: &Path) -> anyhow::Result<()> {
     let (tool, mut cmd) = match spec {
         RepoSpec::Slug(slug) => {
-            let mut cmd = Command::new("gh");
+            let mut cmd = Command::new(crate::gitx::gh_program());
             cmd.args(["repo", "clone", slug])
                 .arg(dest)
                 .args(["--", "--depth", "1", "--quiet"]);

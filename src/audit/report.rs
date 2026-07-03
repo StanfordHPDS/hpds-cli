@@ -61,11 +61,29 @@ pub fn render_json(repo: &str, findings: &[Finding]) -> anyhow::Result<String> {
     serde_json::to_string_pretty(&report).context("could not serialize the audit report to JSON")
 }
 
+/// A check reporting more than this many findings in one severity section
+/// is collapsed in the human report (JSON always carries everything).
+const ROLLUP_THRESHOLD: usize = 5;
+
+/// How many of a collapsed check's findings are still shown.
+const ROLLUP_SHOWN: usize = 3;
+
 /// Render the report for the terminal: findings grouped by severity
 /// (errors, then warnings, then info), each with its `fix:` remediation
 /// line, followed by a one-line summary counting findings against the
 /// `checks_run` checks that produced them.
-pub fn render_text(repo: &str, findings: &[Finding], checks_run: usize, use_color: bool) -> String {
+///
+/// A single check with more than [`ROLLUP_THRESHOLD`] findings in one
+/// section is collapsed to its first [`ROLLUP_SHOWN`] plus an
+/// "… and N more" line, unless `verbose` — presentation only, so counts
+/// (and the JSON report) always carry every finding.
+pub fn render_text(
+    repo: &str,
+    findings: &[Finding],
+    checks_run: usize,
+    use_color: bool,
+    verbose: bool,
+) -> String {
     if findings.is_empty() {
         return format!(
             "audit of {repo}\n\n{} no findings across {}\n",
@@ -88,23 +106,48 @@ pub fn render_text(repo: &str, findings: &[Finding], checks_run: usize, use_colo
         out.push('\n');
         out.push_str(&paint(style, header, use_color));
         out.push('\n');
-        for finding in group {
-            out.push_str(&format!(
-                "  {} [{}] {}\n    {} {}\n",
-                paint(style, bullet, use_color),
-                finding.check_id,
-                finding.message,
-                paint(HINT_STYLE, "fix:", use_color),
-                finding.remediation,
-            ));
+        // Findings arrive grouped per check (registry order), so one
+        // check's findings are consecutive within a section.
+        let mut start = 0;
+        while start < group.len() {
+            let check_id = &group[start].check_id;
+            let end = start
+                + group[start..]
+                    .iter()
+                    .take_while(|f| f.check_id == *check_id)
+                    .count();
+            let run = &group[start..end];
+            let shown = if verbose || run.len() <= ROLLUP_THRESHOLD {
+                run.len()
+            } else {
+                ROLLUP_SHOWN
+            };
+            for finding in &run[..shown] {
+                out.push_str(&format!(
+                    "  {} [{}] {}\n    {} {}\n",
+                    paint(style, bullet, use_color),
+                    finding.check_id,
+                    finding.message,
+                    paint(HINT_STYLE, "fix:", use_color),
+                    finding.remediation,
+                ));
+            }
+            if shown < run.len() {
+                out.push_str(&format!(
+                    "    … and {} more (run with -v for all)\n",
+                    run.len() - shown
+                ));
+            }
+            start = end;
         }
     }
 
     let summary = summarize(findings);
     out.push_str(&format!(
-        "\n{}, {} across {}\n",
+        "\n{}, {}, {} info across {}\n",
         count(summary.errors, "error"),
         count(summary.warnings, "warning"),
+        summary.infos,
         count(checks_run, "check"),
     ));
     out
@@ -248,7 +291,7 @@ mod tests {
 
     #[test]
     fn text_groups_findings_by_severity_errors_first() {
-        let out = render_text("demo", &mixed_findings(), CHECKS_RUN, false);
+        let out = render_text("demo", &mixed_findings(), CHECKS_RUN, false, false);
         let errors_at = out.find("errors:").expect("has errors section");
         let warnings_at = out.find("warnings:").expect("has warnings section");
         let info_at = out.find("info:").expect("has info section");
@@ -258,7 +301,7 @@ mod tests {
 
     #[test]
     fn text_shows_check_id_message_and_remediation_for_each_finding() {
-        let out = render_text("demo", &mixed_findings(), CHECKS_RUN, false);
+        let out = render_text("demo", &mixed_findings(), CHECKS_RUN, false, false);
         for f in mixed_findings() {
             assert!(out.contains(&f.check_id), "missing check id:\n{out}");
             assert!(out.contains(&f.message), "missing message:\n{out}");
@@ -270,7 +313,7 @@ mod tests {
     #[test]
     fn text_omits_empty_severity_sections() {
         let only_warn = vec![finding("readme", Severity::Warn, "meh", "fix it")];
-        let out = render_text("demo", &only_warn, CHECKS_RUN, false);
+        let out = render_text("demo", &only_warn, CHECKS_RUN, false, false);
         assert!(!out.contains("errors:"), "no empty errors section:\n{out}");
         assert!(!out.contains("info:"), "no empty info section:\n{out}");
         assert!(out.contains("warnings:"));
@@ -278,10 +321,10 @@ mod tests {
 
     #[test]
     fn text_ends_with_a_count_summary_naming_the_checks_run() {
-        let out = render_text("demo", &mixed_findings(), CHECKS_RUN, false);
+        let out = render_text("demo", &mixed_findings(), CHECKS_RUN, false, false);
         assert!(
             out.trim_end()
-                .ends_with("1 error, 1 warning across 9 checks"),
+                .ends_with("1 error, 1 warning, 1 info across 9 checks"),
             "summary line:\n{out}"
         );
     }
@@ -292,17 +335,96 @@ mod tests {
             finding("a", Severity::Error, "m", "r"),
             finding("b", Severity::Error, "m", "r"),
         ];
-        let out = render_text("demo", &findings, 1, false);
+        let out = render_text("demo", &findings, 1, false, false);
         assert!(
             out.trim_end()
-                .ends_with("2 errors, 0 warnings across 1 check"),
+                .ends_with("2 errors, 0 warnings, 0 info across 1 check"),
+            "summary line:\n{out}"
+        );
+    }
+
+    /// `n` findings from one check, plus one from another check, so the
+    /// rollup tests can see that only the noisy check collapses.
+    fn noisy_findings(n: usize) -> Vec<Finding> {
+        let mut findings: Vec<Finding> = (1..=n)
+            .map(|i| {
+                finding(
+                    "stale-branches",
+                    Severity::Info,
+                    &format!("local branch `leftover-{i}` is fully merged"),
+                    &format!("delete it with `git branch -d leftover-{i}`"),
+                )
+            })
+            .collect();
+        findings.push(finding(
+            "readme",
+            Severity::Warn,
+            "README.md is missing required sections",
+            "add the lab-manual minimum sections",
+        ));
+        findings
+    }
+
+    #[test]
+    fn a_check_with_more_than_five_findings_collapses_to_three_plus_a_rollup() {
+        let out = render_text("demo", &noisy_findings(7), CHECKS_RUN, false, false);
+        for shown in 1..=3 {
+            assert!(
+                out.contains(&format!("leftover-{shown}")),
+                "shows the first three:\n{out}"
+            );
+        }
+        for hidden in 4..=7 {
+            assert!(
+                !out.contains(&format!("leftover-{hidden}`")),
+                "collapses the rest:\n{out}"
+            );
+        }
+        assert!(
+            out.contains("and 4 more (run with -v for all)"),
+            "rollup line:\n{out}"
+        );
+        // The quiet check next to it is untouched.
+        assert!(out.contains("README.md is missing"), "{out}");
+    }
+
+    #[test]
+    fn verbose_shows_every_finding_with_no_rollup() {
+        let out = render_text("demo", &noisy_findings(7), CHECKS_RUN, false, true);
+        for i in 1..=7 {
+            assert!(out.contains(&format!("leftover-{i}`")), "shows all:\n{out}");
+        }
+        assert!(!out.contains("more (run with -v for all)"), "{out}");
+    }
+
+    #[test]
+    fn five_findings_from_one_check_all_show_without_a_rollup() {
+        // The threshold is MORE than five: exactly five renders in full.
+        let out = render_text("demo", &noisy_findings(5), CHECKS_RUN, false, false);
+        for i in 1..=5 {
+            assert!(
+                out.contains(&format!("leftover-{i}`")),
+                "shows all five:\n{out}"
+            );
+        }
+        assert!(!out.contains("more (run with -v for all)"), "{out}");
+    }
+
+    #[test]
+    fn rollup_counts_all_severities_in_the_summary_line() {
+        // Collapsing is presentation only: the summary still counts every
+        // finding.
+        let out = render_text("demo", &noisy_findings(7), CHECKS_RUN, false, false);
+        assert!(
+            out.trim_end()
+                .ends_with("0 errors, 1 warning, 7 info across 9 checks"),
             "summary line:\n{out}"
         );
     }
 
     #[test]
     fn text_with_no_findings_reports_a_clean_pass() {
-        let out = render_text("demo", &[], CHECKS_RUN, false);
+        let out = render_text("demo", &[], CHECKS_RUN, false, false);
         assert!(out.contains("✓ no findings"), "clean report:\n{out}");
         assert!(out.contains("demo"), "names the repo:\n{out}");
         assert!(out.contains("9 checks"), "names the checks run:\n{out}");
@@ -310,19 +432,19 @@ mod tests {
 
     #[test]
     fn text_names_the_repo() {
-        let out = render_text("demo-repo", &mixed_findings(), CHECKS_RUN, false);
+        let out = render_text("demo-repo", &mixed_findings(), CHECKS_RUN, false, false);
         assert!(out.contains("demo-repo"), "names the repo:\n{out}");
     }
 
     #[test]
     fn uncolored_text_has_no_ansi_codes() {
-        assert!(!render_text("demo", &mixed_findings(), CHECKS_RUN, false).contains(ESC));
-        assert!(!render_text("demo", &[], CHECKS_RUN, false).contains(ESC));
+        assert!(!render_text("demo", &mixed_findings(), CHECKS_RUN, false, false).contains(ESC));
+        assert!(!render_text("demo", &[], CHECKS_RUN, false, false).contains(ESC));
     }
 
     #[test]
     fn colored_text_styles_the_severity_sections() {
-        let out = render_text("demo", &mixed_findings(), CHECKS_RUN, true);
+        let out = render_text("demo", &mixed_findings(), CHECKS_RUN, true, false);
         assert!(out.contains(ESC));
     }
 }

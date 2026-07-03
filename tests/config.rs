@@ -131,14 +131,17 @@ fn explicit_config_flag_overrides_discovery() {
 }
 
 #[test]
-fn explicit_config_flag_with_missing_file_errors_with_hint() {
+fn explicit_config_flag_with_missing_file_is_a_usage_error() {
+    // A bad `--config` value is a usage error (exit 2), like any other
+    // bad flag value — not a runtime failure.
     let sb = Sandbox::new();
     let mut cmd = sb.config_cmd();
     cmd.arg("--config").arg("no-such-file.toml");
-    cmd.assert().failure().code(1).stderr(
+    cmd.assert().failure().code(2).stderr(
         predicate::str::contains("error:")
             .and(predicate::str::contains("no-such-file.toml"))
-            .and(predicate::str::contains("hint:")),
+            .and(predicate::str::contains("hint:"))
+            .and(predicate::str::contains("--config")),
     );
 }
 

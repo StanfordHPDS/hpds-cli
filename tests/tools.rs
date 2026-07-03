@@ -307,6 +307,40 @@ fn update_honors_a_uv_pin_from_config() {
     );
 }
 
+#[test]
+fn update_announces_downloads_on_non_tty_stderr_labels_only() {
+    // Progress bars cannot render on a piped stderr; a download must still
+    // announce itself with the one-line "Fetching …" notice. Without -v the
+    // notice carries the friendly label only, never the tool name.
+    let sb = Sandbox::new();
+    sb.install_all_defaults();
+    sb.write_project_config("[tools]\nair = \"0.11.0\"\n");
+    let server = FixtureServer::serve(air_release_routes("0.11.0"));
+
+    sb.tools_cmd(&["update"], &server.base_url)
+        .assert()
+        .success()
+        .stderr(
+            predicate::str::contains("Fetching R formatter…")
+                .and(predicate::str::contains("(air 0.11.0)").not()),
+        );
+}
+
+#[test]
+fn update_verbose_download_notice_names_the_tool() {
+    let sb = Sandbox::new();
+    sb.install_all_defaults();
+    sb.write_project_config("[tools]\nair = \"0.11.0\"\n");
+    let server = FixtureServer::serve(air_release_routes("0.11.0"));
+
+    sb.tools_cmd(&["update", "--verbose"], &server.base_url)
+        .assert()
+        .success()
+        .stderr(predicate::str::contains(
+            "Fetching R formatter (air 0.11.0)…",
+        ));
+}
+
 // ---------------------------------------------------------------------------
 // clean
 
@@ -331,11 +365,11 @@ fn clean_without_yes_refuses_when_non_interactive() {
     sb.install_fake_tool("air", "0.10.0", "2026-06-15T08:30:00Z");
 
     // stdin is not a TTY under assert_cmd, so the confirm prompt must fail
-    // with guidance instead of hanging.
+    // with guidance that names the exact flag instead of hanging.
     sb.tools_cmd(&["clean"], &dead_url())
         .assert()
         .failure()
-        .stderr(predicate::str::contains("hint:"));
+        .stderr(predicate::str::contains("hint:").and(predicate::str::contains("--yes")));
 
     assert!(
         sb.data_dir.join("tools").is_dir(),

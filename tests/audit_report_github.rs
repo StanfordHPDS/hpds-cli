@@ -1,11 +1,14 @@
 //! Integration tests for `hpds audit report-github`: flag/environment
 //! resolution and the end-to-end path through a shimmed `gh`.
 //!
-//! These tests NEVER call the real `gh`: a shim script earlier on `PATH`
-//! logs every invocation to `GH_LOG` and answers list endpoints from the
-//! recorded fixtures in `tests/fixtures/tool-output/gh/`. GitHub Actions
-//! environment variables are cleared (or set) explicitly per test so runs
-//! inside real CI stay deterministic.
+//! These tests NEVER call the real `gh`: the internal `HPDS_GH` override
+//! points hpds straight at a shim script (no PATH lookup can ever fall
+//! through to a real gh), the same shim also sits first on `PATH` as a
+//! second line of defense, and every invocation is logged to `GH_LOG` with
+//! list endpoints answered from the recorded fixtures in
+//! `tests/fixtures/tool-output/gh/`. GitHub Actions environment variables
+//! are cleared (or set) explicitly per test so runs inside real CI stay
+//! deterministic.
 //!
 //! Unix-only: on Windows `Command::new("gh")` resolves only `gh.exe`, so a
 //! script shim cannot intercept the call. The bot logic itself is
@@ -58,6 +61,8 @@ const AUDIT_JSON: &str = r#"{
 struct Sandbox {
     tmp: tempfile::TempDir,
     path: std::ffi::OsString,
+    /// The shim executable itself, wired in via `HPDS_GH`.
+    gh: PathBuf,
     log: PathBuf,
     input: PathBuf,
 }
@@ -90,6 +95,7 @@ fn setup() -> Sandbox {
     Sandbox {
         tmp,
         path,
+        gh,
         log,
         input,
     }
@@ -103,6 +109,7 @@ fn report_github(sb: &Sandbox) -> Command {
         .arg("report-github")
         .current_dir(sb.tmp.path())
         .env("PATH", &sb.path)
+        .env("HPDS_GH", &sb.gh)
         .env("GH_LOG", &sb.log)
         .env("GH_FIXTURES", fixtures_dir())
         .env_remove("GITHUB_REPOSITORY")
@@ -236,6 +243,50 @@ fn schedule_mode_dedups_open_issues_and_closes_resolved_ones() {
     assert!(
         !log.contains("repos/acme/demo/issues/33"),
         "the human issue is left alone:\n{log}"
+    );
+}
+
+#[test]
+fn gh_runs_the_explicit_override_and_never_falls_through_to_path() {
+    // Regression: a test binary was once observed spawning a REAL
+    // `gh api repos/acme/demo/issues` child. Every gh spawn must go
+    // through the explicit HPDS_GH invoker; a decoy `gh` planted first on
+    // PATH stands in for the real one and must never run.
+    let sb = setup();
+    let decoy_dir = sb.tmp.path().join("decoy-bin");
+    fs::create_dir(&decoy_dir).expect("create decoy dir");
+    let sentinel = sb.tmp.path().join("real-gh-was-invoked");
+    fs::write(
+        decoy_dir.join("gh"),
+        format!("#!/bin/sh\ntouch \"{}\"\nexit 1\n", sentinel.display()),
+    )
+    .expect("write decoy gh");
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(decoy_dir.join("gh"), fs::Permissions::from_mode(0o755))
+            .expect("chmod decoy gh");
+    }
+    let orig_path = std::env::var_os("PATH").unwrap_or_default();
+    let decoy_path =
+        std::env::join_paths(std::iter::once(decoy_dir).chain(std::env::split_paths(&orig_path)))
+            .expect("join decoy PATH");
+
+    report_github(&sb)
+        .env("PATH", &decoy_path)
+        .args(["--input"])
+        .arg(&sb.input)
+        .args(["--repo", "acme/demo", "--mode", "schedule"])
+        .assert()
+        .success();
+
+    assert!(
+        !sentinel.exists(),
+        "gh must never be resolved through PATH when HPDS_GH is set"
+    );
+    let log = gh_log(&sb);
+    assert!(
+        log.contains("api repos/acme/demo/issues"),
+        "the shim handled the gh calls:\n{log}"
     );
 }
 

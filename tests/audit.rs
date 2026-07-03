@@ -89,12 +89,21 @@ impl Sandbox {
 }
 
 #[test]
-fn audit_on_a_clean_repo_exits_0_and_reports_no_findings() {
+fn audit_on_a_clean_repo_exits_0_with_only_the_no_remote_notice() {
+    // The sandbox repo has no origin remote, so the only finding is the
+    // Info notice that the GitHub checks were skipped — symmetric with
+    // the gh-unauthenticated notice, and never a failure.
     let sb = Sandbox::new();
     sb.audit_cmd(&[])
         .assert()
         .success()
-        .stdout(predicate::str::contains("no findings").and(predicate::str::contains("demo-repo")))
+        .stdout(
+            predicate::str::contains("GitHub checks skipped: no origin remote")
+                .and(predicate::str::contains("demo-repo"))
+                .and(predicate::str::contains(
+                    "0 errors, 0 warnings, 1 info across 9 checks",
+                )),
+        )
         .stderr(predicate::str::is_empty());
 }
 
@@ -125,10 +134,19 @@ fn audit_json_emits_the_stable_report_schema() {
     assert_eq!(keys, ["findings", "repo", "summary"]);
 
     assert_eq!(value["repo"], "demo-repo");
-    assert_eq!(value["findings"], serde_json::json!([]));
+    // The only finding on this remote-less repo is the Info notice that
+    // the GitHub checks were skipped; JSON carries it like any finding.
+    let findings = value["findings"].as_array().expect("findings array");
+    assert_eq!(findings.len(), 1, "findings: {findings:?}");
+    assert_eq!(findings[0]["check_id"], "github");
+    assert_eq!(findings[0]["severity"], "info");
+    assert_eq!(
+        findings[0]["message"],
+        "GitHub checks skipped: no origin remote"
+    );
     assert_eq!(
         value["summary"],
-        serde_json::json!({ "errors": 0, "warnings": 0, "infos": 0 })
+        serde_json::json!({ "errors": 0, "warnings": 0, "infos": 1 })
     );
 }
 
@@ -208,9 +226,9 @@ fn audit_from_a_subdirectory_audits_the_repo_root() {
         .arg("audit");
     // The README and hpds.toml live at the root; auditing from a subdir
     // must still see them (and name the report after the root).
-    cmd.assert()
-        .success()
-        .stdout(predicate::str::contains("no findings").and(predicate::str::contains("demo-repo")));
+    cmd.assert().success().stdout(
+        predicate::str::contains("0 errors, 0 warnings").and(predicate::str::contains("demo-repo")),
+    );
 }
 
 #[test]
@@ -277,6 +295,61 @@ fn audit_outside_a_git_repo_still_runs_the_git_free_checks() {
         .assert()
         .code(1)
         .stdout(predicate::str::contains("readme").and(predicate::str::contains("lifecycle")));
+}
+
+#[test]
+fn many_findings_from_one_check_roll_up_unless_verbose() {
+    // Seven merged leftover branches make stale-branches report seven
+    // findings: the human report collapses them to the first three plus a
+    // rollup line, -v shows all seven, and JSON is always complete.
+    let sb = Sandbox::new();
+    for i in 1..=7 {
+        sb.git(&["branch", &format!("leftover-{i}")]);
+    }
+
+    let assert = sb.audit_cmd(&[]).assert().success();
+    let stdout =
+        String::from_utf8(assert.get_output().stdout.clone()).expect("stdout should be UTF-8");
+    for shown in 1..=3 {
+        assert!(
+            stdout.contains(&format!("leftover-{shown}")),
+            "shows the first three:\n{stdout}"
+        );
+    }
+    assert!(
+        !stdout.contains("leftover-4"),
+        "collapses the fourth onward:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("and 4 more (run with -v for all)"),
+        "rollup line:\n{stdout}"
+    );
+
+    let assert = sb.audit_cmd(&["--verbose"]).assert().success();
+    let stdout =
+        String::from_utf8(assert.get_output().stdout.clone()).expect("stdout should be UTF-8");
+    for i in 1..=7 {
+        assert!(
+            stdout.contains(&format!("leftover-{i}")),
+            "-v shows every finding:\n{stdout}"
+        );
+    }
+    assert!(
+        !stdout.contains("more (run with -v for all)"),
+        "no rollup under -v:\n{stdout}"
+    );
+
+    let assert = sb.audit_cmd(&["--format", "json"]).assert().success();
+    let stdout =
+        String::from_utf8(assert.get_output().stdout.clone()).expect("stdout should be UTF-8");
+    let value: serde_json::Value = serde_json::from_str(&stdout).expect("stdout is valid JSON");
+    let stale: Vec<&serde_json::Value> = value["findings"]
+        .as_array()
+        .expect("findings is an array")
+        .iter()
+        .filter(|f| f["check_id"] == "stale-branches")
+        .collect();
+    assert_eq!(stale.len(), 7, "JSON always carries every finding");
 }
 
 #[test]
