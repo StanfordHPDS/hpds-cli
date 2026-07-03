@@ -1,0 +1,40 @@
+---
+source: src/setup/mod.rs
+expression: "plan(Profile::Server)"
+---
+hpds setup --profile server runs these 12 steps:
+  1. system libraries (apt)
+       sudo apt-get update
+       sudo apt-get install -y build-essential gdebi-core libcurl4-openssl-dev libfontconfig1-dev libfreetype6-dev libfribidi-dev libgit2-dev libharfbuzz-dev libjpeg-dev libpng-dev libssl-dev libtiff5-dev libxml2-dev unixodbc-dev zlib1g-dev
+  2. R + CRAN/PPM repositories
+       hpds install r
+       sudo sh -c echo 'options(repos = c(P3M = "https://packagemanager.posit.co/cran/__linux__/noble/latest", CRAN = "https://cloud.r-project.org"))' >> /etc/R/Rprofile.site
+  3. Python + PPM pip configuration
+       sudo apt-get install -y python3 python3-pip python3-venv
+       sudo sh -c printf '[global]\nindex-url = https://packagemanager.posit.co/pypi/latest/simple\n' > /etc/pip.conf
+  4. quarto
+       hpds install quarto
+  5. tinytex
+       hpds install tinytex
+  6. RStudio Server
+       curl -fsSL -o /tmp/rstudio-server-amd64.deb https://download2.rstudio.org/server/jammy/amd64/rstudio-server-2025.05.1-513-amd64.deb
+       sudo gdebi -n /tmp/rstudio-server-amd64.deb
+  7. code-server + extensions
+       sudo sh -c curl -fsSL https://code-server.dev/install.sh | sh
+       code-server --install-extension ms-python.python
+       code-server --install-extension ms-toolsai.jupyter
+       code-server --install-extension quarto.quarto
+       code-server --install-extension charliermarsh.ruff
+  8. gh
+       hpds install gh
+  9. duckdb
+       hpds install duckdb
+ 10. uv + ruff + sqlfluff
+       hpds install uv
+       uv tool install ruff
+       uv tool install sqlfluff
+       uv tool update-shell
+ 11. rig
+       hpds install rig
+ 12. git defaults
+       hpds git setup

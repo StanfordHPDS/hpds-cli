@@ -14,7 +14,7 @@ pub use error::render_error;
 pub use error::{HintExt, error};
 #[allow(unused_imports)] // re-exported for later commands; ui lands before its callers
 pub use progress::progress_bar;
-pub use prompt::{confirm, multiselect, select, set_non_interactive, text};
+pub use prompt::{confirm, multiselect, multiselect_all, select, set_non_interactive, text};
 
 use std::io::IsTerminal;
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};

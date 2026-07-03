@@ -9,6 +9,7 @@ mod config;
 mod fsx;
 mod gitx;
 mod install;
+mod setup;
 mod templates;
 mod tools;
 mod ui;

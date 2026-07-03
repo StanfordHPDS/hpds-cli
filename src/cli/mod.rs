@@ -71,7 +71,7 @@ pub enum Command {
     /// Install external software (r, quarto, uv, gh, rig, tinytex, duckdb)
     Install(install::InstallArgs),
     /// Set up a fresh machine with the lab toolchain
-    Setup,
+    Setup(setup::SetupArgs),
     /// Git helpers: sensible defaults and global ignore vaccination
     Git(git::GitArgs),
     /// GitHub repository helpers
@@ -101,7 +101,7 @@ pub fn run(cli: Cli) -> anyhow::Result<()> {
         Command::Project(args) => project::run(args),
         Command::Use(args) => r#use::run(args, &global),
         Command::Install(args) => install::run(args, &global),
-        Command::Setup => setup::run(),
+        Command::Setup(args) => setup::run(args, &global),
         Command::Git(args) => git::run(args),
         Command::Repo(args) => repo::run(args),
         Command::Audit(args) => audit::run(args, &global),

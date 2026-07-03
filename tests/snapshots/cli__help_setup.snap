@@ -7,8 +7,11 @@ Set up a fresh machine with the lab toolchain
 Usage: hpds setup [OPTIONS]
 
 Options:
-  -v, --verbose        Show more detail (underlying commands, tool names)
-  -q, --quiet          Suppress all output except errors
-      --no-color       Disable colored output
-      --config <PATH>  Use this config file instead of discovering hpds.toml
-  -h, --help           Print help
+      --profile <PROFILE>  Setup profile: dev (this machine's toolchain) or server (full lab server provisioning; Linux only) [default: dev] [possible values: dev, server]
+  -v, --verbose            Show more detail (underlying commands, tool names)
+      --plan               Print the numbered plan for the profile and exit without running or prompting
+  -q, --quiet              Suppress all output except errors
+      --no-color           Disable colored output
+  -y, --yes                Skip all prompts: run every step and pre-approve sudo steps
+      --config <PATH>      Use this config file instead of discovering hpds.toml
+  -h, --help               Print help

@@ -49,6 +49,16 @@ pub fn run(args: GitArgs) -> anyhow::Result<()> {
     }
 }
 
+/// Run the `hpds git setup` flow with no identity flags, exactly as the
+/// machine-setup bundle needs it.
+pub(super) fn run_setup_with_defaults(yes: bool) -> anyhow::Result<()> {
+    setup(SetupArgs {
+        name: None,
+        email: None,
+        yes,
+    })
+}
+
 /// `hpds git setup`: default branch, identity, gh auth guidance, then an
 /// offer to vaccinate the global ignore.
 fn setup(args: SetupArgs) -> anyhow::Result<()> {

@@ -82,6 +82,16 @@ pub fn multiselect<T: Display>(prompt: &str, options: Vec<T>) -> anyhow::Result<
         .with_context(|| format!("could not read an answer to \"{prompt}\""))
 }
 
+/// Ask the user to pick any number of `options`, with every option
+/// pre-selected — an opt-out checklist (deselect what you don't want).
+pub fn multiselect_all<T: Display>(prompt: &str, options: Vec<T>) -> anyhow::Result<Vec<T>> {
+    ensure_interactive(prompt)?;
+    inquire::MultiSelect::new(prompt, options)
+        .with_all_selected_by_default()
+        .prompt()
+        .with_context(|| format!("could not read an answer to \"{prompt}\""))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

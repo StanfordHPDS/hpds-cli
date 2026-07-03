@@ -12,7 +12,7 @@ mod installers;
 pub mod registry;
 mod runner;
 #[cfg(test)]
-mod test_support;
+pub(crate) mod test_support;
 
 use std::io::IsTerminal;
 
