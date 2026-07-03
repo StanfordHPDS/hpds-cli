@@ -3,7 +3,7 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-use crate::adapters::Adapter;
+use crate::adapters::{Adapter, RuffAdapter};
 use crate::fsx::Language;
 
 /// Maps [`Language`] buckets (from the fsx extension registry) to the
@@ -24,6 +24,14 @@ impl AdapterRegistry {
         AdapterRegistry::default()
     }
 
+    /// The production registry: every language bucket that has a real
+    /// adapter, pre-wired. New adapters add their line here.
+    pub fn with_defaults() -> AdapterRegistry {
+        let mut registry = AdapterRegistry::new();
+        registry.register(Language::Python, Arc::new(RuffAdapter));
+        registry
+    }
+
     /// Route `language` to `adapter`, replacing any existing routing.
     pub fn register(&mut self, language: Language, adapter: Arc<dyn Adapter>) {
         self.map.insert(language, adapter);
@@ -40,6 +48,15 @@ impl AdapterRegistry {
 mod tests {
     use super::*;
     use crate::adapters::test_support::FakeAdapter;
+
+    #[test]
+    fn with_defaults_routes_python_to_the_ruff_adapter() {
+        let registry = AdapterRegistry::with_defaults();
+        let adapter = registry
+            .adapter_for(Language::Python)
+            .expect("python has a real adapter");
+        assert_eq!(adapter.name(), "ruff");
+    }
 
     #[test]
     fn adapter_for_returns_the_registered_adapter() {

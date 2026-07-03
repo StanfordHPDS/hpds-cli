@@ -15,6 +15,8 @@ mod diagnostic;
 #[allow(dead_code)]
 mod outcome;
 #[allow(dead_code)]
+mod python;
+#[allow(dead_code)]
 mod registry;
 #[allow(dead_code)]
 mod runner;
@@ -33,6 +35,8 @@ use crate::ui::HintExt;
 pub use diagnostic::{Diagnostic, Position, Range, Severity};
 #[allow(unused_imports)]
 pub use outcome::FormatOutcome;
+#[allow(unused_imports)]
+pub use python::RuffAdapter;
 #[allow(unused_imports)]
 pub use registry::AdapterRegistry;
 #[allow(unused_imports)]
