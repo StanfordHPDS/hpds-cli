@@ -4,15 +4,36 @@ expression: "help_output(& [\"repo\", \"create\", \"--help\"])"
 ---
 Create a GitHub repo for the current project (lab-manual gh flow)
 
+Creates the repository under the lab org (private by default) via `gh` and wires it up as the origin remote, following the lab-manual flow. `gh` must be authenticated. Pass --yes to accept the defaults without prompting.
+
 Usage: hpds repo create [OPTIONS]
 
 Options:
-      --name <NAME>              Repository name [default: the current directory's name]
-  -v, --verbose                  Show more detail (underlying commands, tool names)
-      --org <ORG>                GitHub organization (or user) to create the repo under [default: StanfordHPDS]
-  -q, --quiet                    Suppress all output except errors
-      --no-color                 Disable colored output
-      --visibility <VISIBILITY>  Repository visibility [default: private] [possible values: private, public]
-      --config <PATH>            Use this config file instead of discovering hpds.toml
-  -y, --yes                      Accept the default for every unanswered question; never prompt
-  -h, --help                     Print help
+      --name <NAME>
+          Repository name [default: the current directory's name]
+
+  -v, --verbose
+          Show more detail (underlying commands, tool names)
+
+      --org <ORG>
+          GitHub organization (or user) to create the repo under [default: StanfordHPDS]
+
+  -q, --quiet
+          Suppress all output except errors
+
+      --no-color
+          Disable colored output
+
+      --visibility <VISIBILITY>
+          Repository visibility [default: private]
+          
+          [possible values: private, public]
+
+      --config <PATH>
+          Use this config file instead of discovering hpds.toml
+
+  -y, --yes
+          Accept the default for every unanswered question; never prompt
+
+  -h, --help
+          Print help (see a summary with '-h')

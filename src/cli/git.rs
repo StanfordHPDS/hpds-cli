@@ -14,8 +14,17 @@ pub struct GitArgs {
 #[derive(Debug, Subcommand)]
 pub enum GitCommand {
     /// Configure sensible git defaults and gh auth guidance
+    ///
+    /// Sets init.defaultBranch to main (unless you already chose one),
+    /// ensures your git user.name and user.email are set (prompting, or from
+    /// --name/--email), reports your gh authentication state, and offers to
+    /// vaccinate the global git ignore.
     Setup(SetupArgs),
     /// Add R/Python/editor junk patterns to the global git ignore
+    ///
+    /// Appends the lab's ignore patterns (R/Python/editor droppings) to your
+    /// global git ignore so they are never committed to any repo. Pass
+    /// --project to write to this repo's .gitignore instead.
     Vaccinate(VaccinateArgs),
 }
 

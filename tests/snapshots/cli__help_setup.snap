@@ -4,14 +4,34 @@ expression: "help_output(& [\"setup\", \"--help\"])"
 ---
 Set up a fresh machine with the lab toolchain
 
+Runs the machine-setup bundle. The `dev` profile provisions this machine's toolchain; the `server` profile does full lab-server provisioning (Linux only). Use --plan to print the numbered steps without running or prompting.
+
 Usage: hpds setup [OPTIONS]
 
 Options:
-      --profile <PROFILE>  Setup profile: dev (this machine's toolchain) or server (full lab server provisioning; Linux only) [default: dev] [possible values: dev, server]
-  -v, --verbose            Show more detail (underlying commands, tool names)
-      --plan               Print the numbered plan for the profile and exit without running or prompting
-  -q, --quiet              Suppress all output except errors
-      --no-color           Disable colored output
-  -y, --yes                Skip all prompts: run every step and pre-approve sudo steps
-      --config <PATH>      Use this config file instead of discovering hpds.toml
-  -h, --help               Print help
+      --profile <PROFILE>
+          Setup profile: dev (this machine's toolchain) or server (full lab server provisioning; Linux only)
+          
+          [default: dev]
+          [possible values: dev, server]
+
+  -v, --verbose
+          Show more detail (underlying commands, tool names)
+
+      --plan
+          Print the numbered plan for the profile and exit without running or prompting
+
+  -q, --quiet
+          Suppress all output except errors
+
+      --no-color
+          Disable colored output
+
+  -y, --yes
+          Skip all prompts: run every step and pre-approve sudo steps
+
+      --config <PATH>
+          Use this config file instead of discovering hpds.toml
+
+  -h, --help
+          Print help (see a summary with '-h')

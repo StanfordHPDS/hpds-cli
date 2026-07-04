@@ -4,6 +4,8 @@ expression: "help_output(& [\"git\", \"--help\"])"
 ---
 Git helpers: sensible defaults and global ignore vaccination
 
+`setup` configures sensible git defaults and points you at gh auth; `vaccinate` adds R/Python/editor junk patterns to your global git ignore so they can never be committed.
+
 Usage: hpds git [OPTIONS] <COMMAND>
 
 Commands:
@@ -12,8 +14,17 @@ Commands:
   help       Print this message or the help of the given subcommand(s)
 
 Options:
-  -v, --verbose        Show more detail (underlying commands, tool names)
-  -q, --quiet          Suppress all output except errors
-      --no-color       Disable colored output
-      --config <PATH>  Use this config file instead of discovering hpds.toml
-  -h, --help           Print help
+  -v, --verbose
+          Show more detail (underlying commands, tool names)
+
+  -q, --quiet
+          Suppress all output except errors
+
+      --no-color
+          Disable colored output
+
+      --config <PATH>
+          Use this config file instead of discovering hpds.toml
+
+  -h, --help
+          Print help (see a summary with '-h')

@@ -38,8 +38,19 @@ enum OutputFormat {
 #[derive(Debug, Subcommand)]
 pub enum AuditCommand {
     /// Audit every repo in the GitHub org
+    ///
+    /// Enumerates the org's repos via `gh`, audits each (shallow clone, or a
+    /// metadata-only pass with --no-clone), and emits a combined report: a
+    /// terminal summary table plus a per-repo markdown file. A failure on one
+    /// repo is reported, not fatal.
     All(super::audit_all::AllArgs),
     /// Post audit results to GitHub (sticky PR comment, dedup'd issues)
+    ///
+    /// Consumes audit JSON (from `hpds audit --format json`) and mirrors the
+    /// findings to GitHub via `gh`: a single sticky comment on a pull
+    /// request, or one deduplicated issue per new error finding on a
+    /// schedule. Meant to run inside the audit-bot workflow; see
+    /// docs/audit-bot.md.
     ReportGithub(ReportGithubArgs),
 }
 

@@ -24,10 +24,22 @@ pub struct ToolsArgs {
 #[derive(Debug, Subcommand)]
 pub enum ToolsCommand {
     /// List installed tools and their versions
+    ///
+    /// Prints each installed tool version from the cache (name, version,
+    /// source, install date) plus the baked default versions for managed
+    /// tools that are not installed. Never touches the network.
     List,
     /// Refresh tools to release defaults or config pins
+    ///
+    /// For each managed tool, resolves the wanted version (config pin, else
+    /// this release's default) and installs it if it is not already cached.
+    /// A failure on one tool is reported and the run continues.
     Update,
     /// Remove the tool cache
+    ///
+    /// Deletes the entire managed-tool cache and reports the space freed;
+    /// tools are re-downloaded on next use. Prompts for confirmation unless
+    /// --yes is given.
     Clean {
         /// Delete without asking for confirmation
         #[arg(short, long)]

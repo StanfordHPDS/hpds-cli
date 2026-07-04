@@ -14,6 +14,9 @@ pub struct ProjectArgs {
 #[derive(Debug, Subcommand)]
 pub enum ProjectCommand {
     /// Set up a new or existing project interactively (alias for `hpds init`)
+    ///
+    /// Identical to `hpds init`: the interactive project-setup wizard. See
+    /// `hpds init --help` for every option.
     Init(init::InitArgs),
 }
 

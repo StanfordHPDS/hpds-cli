@@ -60,34 +60,103 @@ pub struct GlobalArgs {
 #[derive(Debug, Subcommand)]
 pub enum Command {
     /// Format project files in place (R, Python, Quarto, SQL, Markdown)
+    ///
+    /// Discovers files from the given paths (or the whole project when none
+    /// are given), routes each to its formatter behind one interface, and
+    /// rewrites them in place. Pass --check to report what would change
+    /// without touching anything (exit 1 when formatting is needed).
+    /// Respects .gitignore, the [format] config, and any per-tool config the
+    /// project already has (air.toml, ruff.toml, .sqlfluff).
     Format(format::FormatArgs),
     /// Report lint violations across the project
+    ///
+    /// Runs each language's linter and prints normalized diagnostics
+    /// (file:line:col, rule, message), exiting 1 when any remain. --fix
+    /// applies safe autofixes first, then reports what is left; --format json
+    /// emits a stable, machine-readable schema.
     Lint(lint::LintArgs),
     /// Set up a new or existing project interactively
+    ///
+    /// Walks through the project name, language(s), and components (pipeline,
+    /// readme, container, slurm, gha), then writes hpds.toml with the
+    /// [project] metadata and optionally initializes git and creates the
+    /// GitHub repo. Pass --yes to accept every default without prompting.
+    /// `hpds project init` is an alias for this command.
     Init(init::InitArgs),
     /// Project commands (`hpds project init` is an alias for `hpds init`)
+    ///
+    /// Groups project-scoped subcommands. Currently just `init`; run
+    /// `hpds project init` for the setup wizard.
     Project(project::ProjectArgs),
     /// Apply a template component to the current project
+    ///
+    /// Drops a single lab template into the current project — pipeline,
+    /// readme, container, slurm, or gha. Omit the component to list what is
+    /// available. Existing files are left untouched unless --force is given.
     Use(r#use::UseArgs),
     /// Install external software (r, quarto, uv, gh, rig, tinytex, duckdb)
+    ///
+    /// Installs developer tooling onto the machine — distinct from the
+    /// formatter/linter tools hpds manages internally for `format`/`lint`.
+    /// Steps that need sudo print exactly what they will run first; pass
+    /// --yes to skip the confirmation prompts.
     Install(install::InstallArgs),
     /// Set up a fresh machine with the lab toolchain
+    ///
+    /// Runs the machine-setup bundle. The `dev` profile provisions this
+    /// machine's toolchain; the `server` profile does full lab-server
+    /// provisioning (Linux only). Use --plan to print the numbered steps
+    /// without running or prompting.
     Setup(setup::SetupArgs),
     /// Git helpers: sensible defaults and global ignore vaccination
+    ///
+    /// `setup` configures sensible git defaults and points you at gh auth;
+    /// `vaccinate` adds R/Python/editor junk patterns to your global git
+    /// ignore so they can never be committed.
     Git(git::GitArgs),
     /// GitHub repository helpers
+    ///
+    /// Subcommands that shell out to `gh` (which must be authenticated).
+    /// `create` makes a GitHub repo for the current project following the
+    /// lab-manual flow.
     Repo(repo::RepoArgs),
     /// Audit the current repo (or the whole org) against lab standards
+    ///
+    /// With no subcommand, audits the current repo and exits 1 on any
+    /// error-severity finding (--strict promotes warnings to failures).
+    /// `all` sweeps every repo in the org; `report-github` posts results back
+    /// to GitHub as a sticky PR comment or deduplicated issues. --format json
+    /// emits the stable schema the audit bot consumes.
     Audit(audit::AuditArgs),
     /// Manage hpds-installed formatter/linter tools (advanced)
+    ///
+    /// Inspects and maintains the private tool cache hpds downloads on first
+    /// use. `list` shows installed and default versions; `update` refreshes
+    /// to release defaults or config pins; `clean` drops the cache. Most
+    /// users never need this.
     Tools(tools::ToolsArgs),
     /// Print the resolved configuration and where each value came from
+    ///
+    /// Prints the fully layered configuration (built-in defaults, then user
+    /// config, then the project hpds.toml) and the path of each contributing
+    /// file — the answer to "why did it do that?". --format json for a
+    /// machine-readable dump. See docs/hpds.toml.md for every key.
     Config(config::ConfigArgs),
     /// Generate shell completions
+    ///
+    /// Prints a completion script for the given shell to stdout; redirect it
+    /// into the location your shell loads completions from.
     Completions(completions::CompletionsArgs),
     /// Print the hpds version
+    ///
+    /// The same value as `hpds --version`, provided as a subcommand for
+    /// scripts.
     Version,
     /// Upgrade hpds to the latest release
+    ///
+    /// Downloads the latest release for your platform and replaces the
+    /// running binary in place. Does nothing if you already have the latest
+    /// version.
     Upgrade,
 }
 

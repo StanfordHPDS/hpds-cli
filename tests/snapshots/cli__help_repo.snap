@@ -4,6 +4,8 @@ expression: "help_output(& [\"repo\", \"--help\"])"
 ---
 GitHub repository helpers
 
+Subcommands that shell out to `gh` (which must be authenticated). `create` makes a GitHub repo for the current project following the lab-manual flow.
+
 Usage: hpds repo [OPTIONS] <COMMAND>
 
 Commands:
@@ -11,8 +13,17 @@ Commands:
   help    Print this message or the help of the given subcommand(s)
 
 Options:
-  -v, --verbose        Show more detail (underlying commands, tool names)
-  -q, --quiet          Suppress all output except errors
-      --no-color       Disable colored output
-      --config <PATH>  Use this config file instead of discovering hpds.toml
-  -h, --help           Print help
+  -v, --verbose
+          Show more detail (underlying commands, tool names)
+
+  -q, --quiet
+          Suppress all output except errors
+
+      --no-color
+          Disable colored output
+
+      --config <PATH>
+          Use this config file instead of discovering hpds.toml
+
+  -h, --help
+          Print help (see a summary with '-h')

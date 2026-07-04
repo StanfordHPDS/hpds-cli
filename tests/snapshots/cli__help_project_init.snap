@@ -1,25 +1,57 @@
 ---
 source: tests/cli.rs
-assertion_line: 34
 expression: "help_output(& [\"project\", \"init\", \"--help\"])"
 ---
 Set up a new or existing project interactively (alias for `hpds init`)
 
+Identical to `hpds init`: the interactive project-setup wizard. See `hpds init --help` for every option.
+
 Usage: hpds project init [OPTIONS]
 
 Options:
-  -v, --verbose              Show more detail (underlying commands, tool names)
-  -y, --yes                  Accept the default for every unanswered question; never prompt
-      --name <NAME>          Project name [default: the current directory's name]
-  -q, --quiet                Suppress all output except errors
-      --description <TEXT>   One-line project description, recorded in hpds.toml
-      --no-color             Disable colored output
-      --config <PATH>        Use this config file instead of discovering hpds.toml
-      --language <LANGUAGE>  Project language(s) [default under --yes: detected from project files, e.g. renv.lock or pyproject.toml] [possible values: r, python, both]
-      --use <COMPONENTS>     Components to apply (comma-separated): pipeline, readme, container, slurm, gha. Attach a variant with `:` — pipeline:make|targets|both, container:docker|apptainer|both, gha:pr-template+lint+audit-bot. Without a variant, --yes defaults pipeline to make, container to docker, and gha to every workflow
-      --author <AUTHOR>      Primary author (GitHub username) for hpds.toml [default: the login gh is authenticated as, else empty]
-      --force                Overwrite existing files that differ from what init would write
-      --git-init             Initialize a git repository without asking (--yes otherwise skips it)
-      --vaccinate            Add the lab ignore patterns to the repo's .gitignore without asking, like `hpds git vaccinate --project` (--yes otherwise skips it)
-      --repo-create          Create and push a GitHub repository at the end, like `hpds repo create` (never runs under --yes without this flag)
-  -h, --help                 Print help
+  -v, --verbose
+          Show more detail (underlying commands, tool names)
+
+  -y, --yes
+          Accept the default for every unanswered question; never prompt
+
+      --name <NAME>
+          Project name [default: the current directory's name]
+
+  -q, --quiet
+          Suppress all output except errors
+
+      --description <TEXT>
+          One-line project description, recorded in hpds.toml
+
+      --no-color
+          Disable colored output
+
+      --config <PATH>
+          Use this config file instead of discovering hpds.toml
+
+      --language <LANGUAGE>
+          Project language(s) [default under --yes: detected from project files, e.g. renv.lock or pyproject.toml]
+          
+          [possible values: r, python, both]
+
+      --use <COMPONENTS>
+          Components to apply (comma-separated): pipeline, readme, container, slurm, gha. Attach a variant with `:` — pipeline:make|targets|both, container:docker|apptainer|both, gha:pr-template+lint+audit-bot. Without a variant, --yes defaults pipeline to make, container to docker, and gha to every workflow
+
+      --author <AUTHOR>
+          Primary author (GitHub username) for hpds.toml [default: the login gh is authenticated as, else empty]
+
+      --force
+          Overwrite existing files that differ from what init would write
+
+      --git-init
+          Initialize a git repository without asking (--yes otherwise skips it)
+
+      --vaccinate
+          Add the lab ignore patterns to the repo's .gitignore without asking, like `hpds git vaccinate --project` (--yes otherwise skips it)
+
+      --repo-create
+          Create and push a GitHub repository at the end, like `hpds repo create` (never runs under --yes without this flag)
+
+  -h, --help
+          Print help (see a summary with '-h')

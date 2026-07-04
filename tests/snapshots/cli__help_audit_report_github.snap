@@ -1,9 +1,10 @@
 ---
 source: tests/cli.rs
-assertion_line: 45
 expression: "help_output(& [\"audit\", \"report-github\", \"--help\"])"
 ---
 Post audit results to GitHub (sticky PR comment, dedup'd issues)
+
+Consumes audit JSON (from `hpds audit --format json`) and mirrors the findings to GitHub via `gh`: a single sticky comment on a pull request, or one deduplicated issue per new error finding on a schedule. Meant to run inside the audit-bot workflow; see docs/audit-bot.md.
 
 Usage: hpds audit report-github [OPTIONS]
 

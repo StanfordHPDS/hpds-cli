@@ -4,12 +4,28 @@ expression: "help_output(& [\"config\", \"--help\"])"
 ---
 Print the resolved configuration and where each value came from
 
+Prints the fully layered configuration (built-in defaults, then user config, then the project hpds.toml) and the path of each contributing file — the answer to "why did it do that?". --format json for a machine-readable dump. See docs/hpds.toml.md for every key.
+
 Usage: hpds config [OPTIONS]
 
 Options:
-      --format <FORMAT>  Output format [default: text] [possible values: text, json]
-  -v, --verbose          Show more detail (underlying commands, tool names)
-  -q, --quiet            Suppress all output except errors
-      --no-color         Disable colored output
-      --config <PATH>    Use this config file instead of discovering hpds.toml
-  -h, --help             Print help
+      --format <FORMAT>
+          Output format
+          
+          [default: text]
+          [possible values: text, json]
+
+  -v, --verbose
+          Show more detail (underlying commands, tool names)
+
+  -q, --quiet
+          Suppress all output except errors
+
+      --no-color
+          Disable colored output
+
+      --config <PATH>
+          Use this config file instead of discovering hpds.toml
+
+  -h, --help
+          Print help (see a summary with '-h')

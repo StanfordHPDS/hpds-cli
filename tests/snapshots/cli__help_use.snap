@@ -1,22 +1,43 @@
 ---
 source: tests/cli.rs
-assertion_line: 35
 expression: "help_output(& [\"use\", \"--help\"])"
 ---
 Apply a template component to the current project
 
+Drops a single lab template into the current project — pipeline, readme, container, slurm, or gha. Omit the component to list what is available. Existing files are left untouched unless --force is given.
+
 Usage: hpds use [OPTIONS] [COMPONENT]
 
 Arguments:
-  [COMPONENT]  Component to apply; omit to list the available components
+  [COMPONENT]
+          Component to apply; omit to list the available components
 
 Options:
-      --kind <VALUE>         Component-specific variant (e.g. make, targets, or both for pipeline)
-  -v, --verbose              Show more detail (underlying commands, tool names)
-      --force                Overwrite existing files that differ from the template
-  -q, --quiet                Suppress all output except errors
-      --language <LANGUAGE>  Project language; detected from project files (renv.lock, pyproject.toml, ...) when omitted [possible values: r, python, both]
-      --no-color             Disable colored output
-      --config <PATH>        Use this config file instead of discovering hpds.toml
-      --workflows <NAMES>    gha workflows to add without prompting (comma-separated or repeated: pr-template, lint, audit-bot)
-  -h, --help                 Print help
+      --kind <VALUE>
+          Component-specific variant (e.g. make, targets, or both for pipeline)
+
+  -v, --verbose
+          Show more detail (underlying commands, tool names)
+
+      --force
+          Overwrite existing files that differ from the template
+
+  -q, --quiet
+          Suppress all output except errors
+
+      --language <LANGUAGE>
+          Project language; detected from project files (renv.lock, pyproject.toml, ...) when omitted
+          
+          [possible values: r, python, both]
+
+      --no-color
+          Disable colored output
+
+      --config <PATH>
+          Use this config file instead of discovering hpds.toml
+
+      --workflows <NAMES>
+          gha workflows to add without prompting (comma-separated or repeated: pr-template, lint, audit-bot)
+
+  -h, --help
+          Print help (see a summary with '-h')

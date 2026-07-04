@@ -13,6 +13,11 @@ pub struct RepoArgs {
 #[derive(Debug, Subcommand)]
 pub enum RepoCommand {
     /// Create a GitHub repo for the current project (lab-manual gh flow)
+    ///
+    /// Creates the repository under the lab org (private by default) via
+    /// `gh` and wires it up as the origin remote, following the lab-manual
+    /// flow. `gh` must be authenticated. Pass --yes to accept the defaults
+    /// without prompting.
     Create(CreateArgs),
 }
 
