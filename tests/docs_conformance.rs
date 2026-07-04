@@ -4,8 +4,10 @@
 //! Two things are enforced:
 //!
 //!  * every `hpds ...` invocation shown in a fenced code block parses against
-//!    the real binary (help exits 0 only when the whole command path and its
-//!    flags are valid), so a renamed command or dropped flag fails this test;
+//!    the real binary (help exits 0 only when the command path and flag names
+//!    resolve), so a renamed command or dropped flag fails this test; note that
+//!    `--help` short-circuits before enum/positional *values* are validated, so
+//!    those are not covered here;
 //!  * every top-level command the binary exposes is named in the report, so a
 //!    newly added command cannot be silently left unaudited.
 //!
