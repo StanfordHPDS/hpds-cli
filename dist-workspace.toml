@@ -15,6 +15,12 @@ tap = "StanfordHPDS/homebrew-tap"
 publish-jobs = ["homebrew"]
 # Target platforms to build apps for (Rust target-triple syntax)
 targets = ["aarch64-apple-darwin", "aarch64-unknown-linux-gnu", "aarch64-unknown-linux-musl", "x86_64-apple-darwin", "x86_64-unknown-linux-gnu", "x86_64-unknown-linux-musl", "x86_64-pc-windows-msvc"]
+# Archive formats: gzip tarballs on unix, zip on Windows, each with a
+# per-artifact sha256 sidecar. `hpds upgrade` extracts these with the same
+# machinery it uses for managed tool downloads, which reads gzip/zip.
+unix-archive = ".tar.gz"
+windows-archive = ".zip"
+checksum = "sha256"
 # Which actions to run on pull requests (ci.yml owns PR checks)
 pr-run-mode = "skip"
 # Whether to install an updater program

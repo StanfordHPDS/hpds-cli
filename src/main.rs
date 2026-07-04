@@ -28,12 +28,11 @@ fn main() -> ExitCode {
 }
 
 /// Render a top-level error through `ui` and pick the exit code (the design:
-/// 1 = failure, 2 = usage error / not-yet-implemented stub).
+/// 1 = failure, 2 = usage error).
 fn render_error(err: anyhow::Error) -> ExitCode {
     let usage_hint = err
-        .downcast_ref::<cli::NotYetImplemented>()
-        .map(|nyi| nyi.hint())
-        .or_else(|| err.downcast_ref::<cli::UsageError>().map(|u| u.hint()))
+        .downcast_ref::<cli::UsageError>()
+        .map(|u| u.hint())
         .or_else(|| {
             err.downcast_ref::<install::registry::RegistryError>()
                 .map(|e| e.hint())
@@ -46,8 +45,8 @@ fn render_error(err: anyhow::Error) -> ExitCode {
         });
     match usage_hint {
         Some(hint) => {
-            // Stubs and usage errors carry their hint on the type; attach it
-            // so `ui::error` renders the standard `hint:` line.
+            // Usage errors carry their hint on the type; attach it so
+            // `ui::error` renders the standard `hint:` line.
             let hinted = Err::<(), _>(err).hint(hint).expect_err("just wrapped");
             ui::error(&hinted);
             ExitCode::from(2)

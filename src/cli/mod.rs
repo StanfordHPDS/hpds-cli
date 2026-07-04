@@ -110,7 +110,7 @@ pub fn run(cli: Cli) -> anyhow::Result<()> {
         Command::Config(args) => config::run(args, &global),
         Command::Completions(args) => completions::run(args),
         Command::Version => version::run(),
-        Command::Upgrade => upgrade::run(),
+        Command::Upgrade => upgrade::run(&global),
     }
 }
 
@@ -130,28 +130,6 @@ fn color_choice_for(no_color: bool) -> crate::ui::ColorChoice {
     } else {
         crate::ui::ColorChoice::Auto
     }
-}
-
-/// Typed error for command stubs whose implementation lands in a later
-/// `main` renders it cleanly and exits 2.
-#[derive(Debug, thiserror::Error)]
-#[error("`hpds {command}` is not yet implemented")]
-pub struct NotYetImplemented {
-    /// Full subcommand path, e.g. `"git vaccinate"`.
-    command: &'static str,
-}
-
-impl NotYetImplemented {
-    /// What to do next (every user-facing error must say).
-    pub fn hint(&self) -> String {
-        "this command is planned but not built yet; run `hpds --help` to see what works today"
-            .to_string()
-    }
-}
-
-/// Convenience constructor for stubbed commands.
-pub(crate) fn not_yet_implemented(command: &'static str) -> anyhow::Error {
-    anyhow::Error::new(NotYetImplemented { command })
 }
 
 /// Typed error for usage mistakes clap cannot catch (e.g. an unknown

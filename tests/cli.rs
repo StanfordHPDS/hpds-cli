@@ -1,8 +1,7 @@
 //! Integration tests for the CLI skeleton.
 //!
-//! Covers: `--help` snapshots for every command, the "not yet implemented"
-//! stub behavior (clean message, exit 2), global flags, `hpds version`, and
-//! `hpds completions`.
+//! Covers: `--help` snapshots for every command, global flags, `hpds
+//! version`, and `hpds completions`.
 
 use assert_cmd::Command;
 use predicates::prelude::*;
@@ -51,25 +50,6 @@ help_snapshot!(help_config, "config");
 help_snapshot!(help_completions, "completions");
 help_snapshot!(help_version, "version");
 help_snapshot!(help_upgrade, "upgrade");
-
-/// Every stubbed (sub)command renders a clean "not yet implemented" error on
-/// stderr, says what to do next, and exits 2.
-#[test]
-fn stub_commands_exit_2_with_not_yet_implemented_error() {
-    let stubs: &[&[&str]] = &[&["upgrade"]];
-    for args in stubs {
-        hpds()
-            .args(*args)
-            .assert()
-            .code(2)
-            .stdout(predicate::str::is_empty())
-            .stderr(
-                predicate::str::contains("not yet implemented")
-                    .and(predicate::str::contains("error:"))
-                    .and(predicate::str::contains("hpds --help")),
-            );
-    }
-}
 
 #[test]
 fn version_command_prints_version() {
@@ -120,14 +100,13 @@ fn global_flags_parse_before_the_subcommand() {
 
 #[test]
 fn global_flags_parse_after_the_subcommand() {
-    // Global flags must also be accepted in subcommand position; the command
-    // itself is still a stub, so it exits 2 via the not-yet-implemented path
-    // (not a usage-parse failure, which would not mention the stub error).
+    // Global flags must also be accepted in subcommand position: `version`
+    // runs offline and touches nothing, so the flags parsing after it is
+    // what this exercises.
     hpds()
-        .args(["upgrade", "-v", "-q", "--no-color", "--config", "hpds.toml"])
+        .args(["version", "-v", "-q", "--no-color", "--config", "hpds.toml"])
         .assert()
-        .code(2)
-        .stderr(predicate::str::contains("not yet implemented"));
+        .success();
 }
 
 #[test]

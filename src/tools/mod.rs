@@ -36,6 +36,8 @@ pub use cache::{InstalledTool, ToolCache};
 #[allow(unused_imports)]
 pub use download::{Downloader, InstallContext};
 #[allow(unused_imports)]
+pub(crate) use download::{extract_binary, github_agent};
+#[allow(unused_imports)]
 pub use manifest::Manifest;
 #[allow(unused_imports)]
 pub use platform::{Arch, Os, Platform, UnsupportedPlatform};

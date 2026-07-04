@@ -425,7 +425,7 @@ impl Downloader {
 /// HTTP agent for release downloads: honors `HTTPS_PROXY`/`HTTP_PROXY`/
 /// `ALL_PROXY`/`NO_PROXY` and bounds every network phase so a dead or
 /// stalled connection fails instead of hanging the progress bar forever.
-fn github_agent() -> ureq::Agent {
+pub(crate) fn github_agent() -> ureq::Agent {
     agent_with_proxy(ureq::Proxy::try_from_env())
 }
 
@@ -478,7 +478,7 @@ fn stream_to_file(
 /// Extract the tool binary named `binary_name` out of `archive` to `dest`.
 /// Only that one entry is written; nothing else in the archive touches the
 /// filesystem.
-fn extract_binary(
+pub(crate) fn extract_binary(
     archive: &Path,
     asset: &str,
     binary_name: &str,
