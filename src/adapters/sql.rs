@@ -152,8 +152,10 @@ fn check_format(files: &[PathBuf], ctx: &ToolCtx) -> anyhow::Result<FormatOutcom
 /// batch.
 fn run(subcommand: &[&str], files: &[PathBuf], ctx: &ToolCtx) -> anyhow::Result<Output> {
     let binary = ctx.tool_path(TOOL)?;
+    let args = build_args(subcommand, files, ctx.config);
+    crate::adapters::log_command(ctx, &binary, &args);
     Command::new(&binary)
-        .args(build_args(subcommand, files, ctx.config))
+        .args(&args)
         .output()
         .with_context(|| format!("could not run `{}`", binary.display()))
         .hint("run `hpds tools clean` to reset the managed tool cache, then rerun")

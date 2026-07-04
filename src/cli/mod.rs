@@ -114,12 +114,13 @@ pub fn run(cli: Cli) -> anyhow::Result<()> {
     }
 }
 
-/// Push the global flags into `ui`'s process-wide state before dispatch
-///: `--quiet` gates informational stdout output, `--no-color`
-/// forces color off. `--verbose` and `--config` are consumed by the
-/// commands that need them.
+/// Push the global flags into `ui`'s process-wide state before dispatch:
+/// `--quiet` gates informational stdout output, `--no-color` forces color
+/// off, and `--verbose` enables the `running …` invocation log. `--config`
+/// is consumed by the commands that need it.
 fn apply_global_args(global: &GlobalArgs) {
     crate::ui::set_quiet(global.quiet);
+    crate::ui::set_verbose(global.verbose);
     crate::ui::set_color_choice(color_choice_for(global.no_color));
 }
 

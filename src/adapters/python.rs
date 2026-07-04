@@ -96,6 +96,7 @@ fn passthrough_args<'a>(ctx: &'a ToolCtx) -> &'a [String] {
 /// Resolve the managed ruff binary and run it once over the batch.
 fn run_ruff(ctx: &ToolCtx, args: &[OsString]) -> anyhow::Result<Output> {
     let binary = ctx.tool_path(TOOL)?;
+    crate::adapters::log_command(ctx, &binary, args);
     Command::new(&binary)
         .args(args)
         .output()
@@ -126,24 +127,39 @@ fn tool_failure(invocation: &str, output: &Output) -> anyhow::Error {
         .expect_err("just built from Err")
 }
 
-/// Arguments for `ruff format`: the mode flag, the config escape hatch,
-/// and the files — nothing else, so project ruff config always wins.
+/// Arguments for `ruff format`: `--no-cache`, the mode flag, the config
+/// escape hatch, and the files — nothing else, so project ruff config
+/// always wins. See [`no_cache`] for why the cache is disabled.
 fn format_args(check: bool, extra: &[String], files: &[PathBuf]) -> Vec<OsString> {
-    let mut args: Vec<OsString> = vec!["format".into()];
+    let mut args: Vec<OsString> = vec!["format".into(), no_cache()];
     if check {
         args.push("--check".into());
     }
     finish_args(args, extra, files)
 }
 
-/// Arguments for `ruff check`: JSON output, optional `--fix`, the config
-/// escape hatch, and the files — nothing else.
+/// Arguments for `ruff check`: `--no-cache`, JSON output, optional
+/// `--fix`, the config escape hatch, and the files — nothing else.
 fn check_args(fix: bool, extra: &[String], files: &[PathBuf]) -> Vec<OsString> {
-    let mut args: Vec<OsString> = vec!["check".into(), "--output-format".into(), "json".into()];
+    let mut args: Vec<OsString> = vec![
+        "check".into(),
+        no_cache(),
+        "--output-format".into(),
+        "json".into(),
+    ];
     if fix {
         args.push("--fix".into());
     }
     finish_args(args, extra, files)
+}
+
+/// `--no-cache`, passed to every ruff invocation. ruff otherwise writes a
+/// `.ruff_cache/` directory into the current project; hpds runs are
+/// one-shot, so that cache is pure litter (and would show up as an
+/// untracked directory in the user's repo). Both `ruff format` and `ruff
+/// check` accept this global flag.
+fn no_cache() -> OsString {
+    "--no-cache".into()
 }
 
 /// Append the config escape hatch and the files (after `--`, so odd file
@@ -269,15 +285,15 @@ mod tests {
 
     #[test]
     fn format_args_carry_no_style_opinions() {
-        // hpds adds nothing beyond the mode flag and the files, so a
-        // project's own ruff.toml / [tool.ruff] always wins.
+        // hpds adds nothing beyond `--no-cache`, the mode flag, and the
+        // files, so a project's own ruff.toml / [tool.ruff] always wins.
         assert_eq!(
             format_args(false, &[], &paths(&["a.py", "b.ipynb"])),
-            os_strings(&["format", "--", "a.py", "b.ipynb"])
+            os_strings(&["format", "--no-cache", "--", "a.py", "b.ipynb"])
         );
         assert_eq!(
             format_args(true, &[], &paths(&["a.py"])),
-            os_strings(&["format", "--check", "--", "a.py"])
+            os_strings(&["format", "--no-cache", "--check", "--", "a.py"])
         );
     }
 
@@ -285,12 +301,20 @@ mod tests {
     fn check_args_request_json_and_optionally_fix() {
         assert_eq!(
             check_args(false, &[], &paths(&["a.py"])),
-            os_strings(&["check", "--output-format", "json", "--", "a.py"])
+            os_strings(&[
+                "check",
+                "--no-cache",
+                "--output-format",
+                "json",
+                "--",
+                "a.py"
+            ])
         );
         assert_eq!(
             check_args(true, &[], &paths(&["a.py", "n.ipynb"])),
             os_strings(&[
                 "check",
+                "--no-cache",
                 "--output-format",
                 "json",
                 "--fix",
@@ -302,16 +326,42 @@ mod tests {
     }
 
     #[test]
+    fn every_invocation_disables_the_ruff_cache() {
+        // ruff otherwise litters a `.ruff_cache/` into the user's project;
+        // both subcommands must carry `--no-cache`.
+        for args in [
+            format_args(false, &[], &paths(&["a.py"])),
+            format_args(true, &[], &paths(&["a.py"])),
+            check_args(false, &[], &paths(&["a.py"])),
+            check_args(true, &[], &paths(&["a.py"])),
+        ] {
+            assert!(
+                args.contains(&OsString::from("--no-cache")),
+                "missing --no-cache in {args:?}"
+            );
+        }
+    }
+
+    #[test]
     fn config_args_escape_hatch_is_appended_before_the_files() {
         let extra = strings(&["--line-length", "100"]);
         assert_eq!(
             format_args(true, &extra, &paths(&["a.py"])),
-            os_strings(&["format", "--check", "--line-length", "100", "--", "a.py"])
+            os_strings(&[
+                "format",
+                "--no-cache",
+                "--check",
+                "--line-length",
+                "100",
+                "--",
+                "a.py"
+            ])
         );
         assert_eq!(
             check_args(false, &extra, &paths(&["a.py"])),
             os_strings(&[
                 "check",
+                "--no-cache",
                 "--output-format",
                 "json",
                 "--line-length",
@@ -512,6 +562,7 @@ mod tests {
                 recorded_argv(dir.path()),
                 vec![
                     "format",
+                    "--no-cache",
                     "--check",
                     "--",
                     "misformatted.py",
@@ -547,6 +598,7 @@ mod tests {
                 recorded_argv(dir.path()),
                 vec![
                     "format",
+                    "--no-cache",
                     "--",
                     "misformatted.py",
                     "clean.py",
@@ -577,6 +629,7 @@ mod tests {
                 recorded_argv(dir.path()),
                 vec![
                     "check",
+                    "--no-cache",
                     "--output-format",
                     "json",
                     "--",
@@ -608,6 +661,7 @@ mod tests {
                 recorded_argv(dir.path()),
                 vec![
                     "check",
+                    "--no-cache",
                     "--output-format",
                     "json",
                     "--fix",
@@ -637,6 +691,7 @@ mod tests {
                 recorded_argv(dir.path()),
                 vec![
                     "check",
+                    "--no-cache",
                     "--output-format",
                     "json",
                     "--line-length",

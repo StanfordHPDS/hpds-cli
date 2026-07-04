@@ -18,7 +18,8 @@ mod sql;
 #[cfg(test)]
 pub(crate) mod test_support;
 
-use std::path::PathBuf;
+use std::ffi::OsString;
+use std::path::{Path, PathBuf};
 
 use crate::config::Config;
 use crate::tools::{InstallContext, ToolSpec};
@@ -74,8 +75,8 @@ pub struct ToolCtx<'a> {
     pub config: &'a Config,
     /// Verbosity for adapters that want to expose extra detail at `-v`.
     /// Carried on the shared ctx so growing such output never changes the
-    /// trait signatures; no adapter reads it yet (hence the allow).
-    #[allow(dead_code)]
+    /// trait signatures; adapters read it to log their tool invocations
+    /// through [`log_command`].
     pub verbose: bool,
 }
 
@@ -91,6 +92,26 @@ impl<'a> ToolCtx<'a> {
     /// The binary for `tool`, installing it first if needed.
     pub fn tool_path(&self, tool: &str) -> anyhow::Result<PathBuf> {
         self.tools.tool_path(tool)
+    }
+}
+
+/// Render one tool invocation — the program followed by its arguments,
+/// space-separated — as a single line for the `-v` log.
+pub(crate) fn format_command(program: &Path, args: &[OsString]) -> String {
+    let mut line = program.display().to_string();
+    for arg in args {
+        line.push(' ');
+        line.push_str(&arg.to_string_lossy());
+    }
+    line
+}
+
+/// Log one underlying tool invocation through the ui verbose channel when
+/// the run is verbose (`-v`): exactly the program and argv hpds shelled out
+/// to. Goes to stderr, so `--format json` stdout stays machine-parseable.
+pub(crate) fn log_command(ctx: &ToolCtx, program: &Path, args: &[OsString]) {
+    if ctx.verbose {
+        crate::ui::verbose(&format_command(program, args));
     }
 }
 
@@ -142,6 +163,18 @@ impl ToolPaths for InstalledToolPaths<'_> {
 mod tests {
     use super::*;
     use test_support::FakeToolPaths;
+
+    #[test]
+    fn format_command_joins_program_and_argv_on_one_line() {
+        let args: Vec<OsString> = ["check", "--output-format", "json", "--", "a.py"]
+            .into_iter()
+            .map(OsString::from)
+            .collect();
+        assert_eq!(
+            format_command(Path::new("/tools/ruff/0.14.0/ruff"), &args),
+            "/tools/ruff/0.14.0/ruff check --output-format json -- a.py"
+        );
+    }
 
     #[test]
     fn tool_ctx_resolves_binaries_through_the_injected_provider() {

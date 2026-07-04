@@ -73,13 +73,13 @@ impl Formatter for AirAdapter {
         // The check pass answers "which files will change" — air says
         // nothing when formatting in place, so this is the only source of
         // the changed-file list in both modes.
-        let (status, stderr) = run_air(&bin, &invocation(true, extra, files))?;
+        let (status, stderr) = run_air(ctx, &bin, &invocation(true, extra, files))?;
         let report = parse_stderr(&stderr);
         fail_on_unformattable(&report)?;
         verify_run(status, &report, &stderr, true)?;
 
         if !check && !report.would_reformat.is_empty() {
-            let (status, stderr) = run_air(&bin, &invocation(false, extra, files))?;
+            let (status, stderr) = run_air(ctx, &bin, &invocation(false, extra, files))?;
             let apply = parse_stderr(&stderr);
             fail_on_unformattable(&apply)?;
             verify_run(status, &apply, &stderr, false)?;
@@ -101,7 +101,7 @@ impl Linter for AirAdapter {
         // With `--fix` the "safe autofix" for a formatting finding is the
         // formatting itself: one in-place run, and whatever it fixed is no
         // longer a finding. Without it, a check run reports the drift.
-        let (status, stderr) = run_air(&bin, &invocation(!fix, extra_args(ctx), files))?;
+        let (status, stderr) = run_air(ctx, &bin, &invocation(!fix, extra_args(ctx), files))?;
         let report = parse_stderr(&stderr);
         verify_run(status, &report, &stderr, !fix)?;
 
@@ -154,7 +154,8 @@ fn invocation(check: bool, extra: &[String], files: &[PathBuf]) -> Vec<OsString>
 
 /// Run air once and capture its exit status and stderr (air writes every
 /// message to stderr; stdout stays empty).
-fn run_air(bin: &Path, args: &[OsString]) -> anyhow::Result<(ExitStatus, String)> {
+fn run_air(ctx: &ToolCtx, bin: &Path, args: &[OsString]) -> anyhow::Result<(ExitStatus, String)> {
+    crate::adapters::log_command(ctx, bin, args);
     let output = std::process::Command::new(bin)
         .args(args)
         .output()

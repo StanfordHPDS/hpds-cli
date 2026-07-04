@@ -135,21 +135,26 @@ impl PanacheAdapter {
         let air = ctx.tool_path("air")?;
         let ruff = ctx.tool_path("ruff")?;
 
-        let mut cmd = Command::new(&panache);
-        cmd.args(subcommand_args);
+        let mut args: Vec<OsString> = subcommand_args.iter().map(OsString::from).collect();
 
         // Keep the temp file alive until panache has run.
         let mut _default_config = None;
         if self.discovered_config(files).is_none() {
             let file = write_default_config()?;
-            cmd.arg("--config").arg(file.path());
+            args.push("--config".into());
+            args.push(file.path().as_os_str().to_owned());
             _default_config = Some(file);
         }
 
         if let Some(extra) = ctx.config.tools.args.get("panache") {
-            cmd.args(extra);
+            args.extend(extra.iter().map(OsString::from));
         }
-        cmd.args(files);
+        args.extend(files.iter().map(|f| f.as_os_str().to_owned()));
+
+        crate::adapters::log_command(ctx, &panache, &args);
+
+        let mut cmd = Command::new(&panache);
+        cmd.args(&args);
 
         // panache finds the embedded-chunk tools by name on PATH; put the
         // managed copies first so they always win.

@@ -624,6 +624,125 @@ exit $status
             .code(1)
             .stderr(predicate::str::contains("julia").and(predicate::str::contains("warning:")));
     }
+
+    // ---- diagnostic path normalization (ruff reports absolute paths) ------
+
+    /// A ruff `check` that mimics real ruff by reporting an *absolute*
+    /// `filename` (the working directory joined with each input), so the
+    /// path-normalization is exercised end to end. `format` is a no-op.
+    const RUFF_ABSOLUTE_PATH_SHIM: &str = r#"#!/bin/sh
+sub="$1"; shift
+dd=0; files=""
+for a in "$@"; do
+  if [ $dd -eq 1 ]; then files="$files $a"; continue; fi
+  case "$a" in --) dd=1 ;; esac
+done
+[ "$sub" = "format" ] && exit 0
+here=$(pwd)
+out=""
+for f in $files; do
+  [ -n "$out" ] && out="$out,"
+  out="$out{\"filename\":\"$here/$f\",\"code\":\"F401\",\"message\":\"\`os\` imported but unused\",\"location\":{\"row\":1,\"column\":8},\"end_location\":{\"row\":1,\"column\":10},\"fix\":{\"applicability\":\"safe\"}}"
+done
+echo "[$out]"
+exit 1
+"#;
+
+    /// A python-only sandbox with just the ruff shim installed, so no other
+    /// adapter tries to resolve a (missing) tool.
+    fn python_only(shim: &str) -> Sandbox {
+        let sb = Sandbox::empty();
+        sb.write_file("violations.py", "import os\n");
+        install_shim(&sb, "ruff", RUFF_DEFAULT, shim);
+        sb
+    }
+
+    #[test]
+    fn lint_json_reports_project_relative_paths_even_when_ruff_is_absolute() {
+        let sb = python_only(RUFF_ABSOLUTE_PATH_SHIM);
+        let assert = sb.cmd(&["lint", "--format", "json"]).assert().code(1);
+        let stdout = String::from_utf8(assert.get_output().stdout.clone()).expect("utf-8 stdout");
+        let diagnostics: serde_json::Value =
+            serde_json::from_str(&stdout).expect("stdout parses as JSON");
+        let items = diagnostics.as_array().expect("a JSON array");
+        assert_eq!(items.len(), 1, "{stdout}");
+        // The absolute path ruff emitted is normalized to project-relative.
+        assert_eq!(items[0]["path"], "violations.py", "{stdout}");
+    }
+
+    #[test]
+    fn lint_human_output_relativizes_absolute_ruff_paths() {
+        let sb = python_only(RUFF_ABSOLUTE_PATH_SHIM);
+        sb.cmd(&["lint"]).assert().code(1).stdout(
+            // The line starts at the relative path, with no absolute prefix.
+            predicate::str::contains("violations.py:1:8: F401")
+                .and(predicate::str::contains(sb.project.display().to_string()).not()),
+        );
+    }
+
+    // ---- ruff leaves no .ruff_cache in the project (--no-cache) -----------
+
+    /// A ruff shim that writes a `.ruff_cache/` in its working directory
+    /// *unless* `--no-cache` was passed — exactly the litter the flag is
+    /// meant to suppress. Both subcommands succeed cleanly.
+    const RUFF_CACHE_PROBE_SHIM: &str = r#"#!/bin/sh
+nocache=0
+for a in "$@"; do case "$a" in --no-cache) nocache=1 ;; esac; done
+[ $nocache -eq 0 ] && mkdir -p .ruff_cache
+sub="$1"
+[ "$sub" = "check" ] && echo "[]"
+exit 0
+"#;
+
+    #[test]
+    fn ruff_runs_leave_no_ruff_cache_in_the_project() {
+        let sb = python_only(RUFF_CACHE_PROBE_SHIM);
+
+        // Both a format and a lint pass go through ruff; neither may create
+        // the cache directory in the user's project.
+        sb.cmd(&["format"]).assert().success();
+        assert!(
+            !sb.project.join(".ruff_cache").exists(),
+            "hpds format left a .ruff_cache in the project"
+        );
+        sb.cmd(&["lint"]).assert().success();
+        assert!(
+            !sb.project.join(".ruff_cache").exists(),
+            "hpds lint left a .ruff_cache in the project"
+        );
+    }
+
+    // ---- -v logs each underlying tool invocation --------------------------
+
+    #[test]
+    fn verbose_logs_the_underlying_tool_invocations_on_stderr() {
+        let sb = shimmed();
+        sb.cmd(&["lint", "-v"]).assert().code(1).stderr(
+            // The dimmed "running" prefix plus argv of several real tools.
+            predicate::str::contains("running")
+                .and(predicate::str::contains(
+                    "check --no-cache --output-format json",
+                ))
+                .and(predicate::str::contains("lint --message-format short")),
+        );
+    }
+
+    #[test]
+    fn verbose_never_pollutes_the_json_on_stdout() {
+        // -v output goes to stderr, so a machine consumer's stdout is still
+        // nothing but the stable JSON schema.
+        let sb = shimmed();
+        let assert = sb.cmd(&["lint", "-v", "--format", "json"]).assert().code(1);
+        let stdout = String::from_utf8(assert.get_output().stdout.clone()).expect("utf-8 stdout");
+        let diagnostics: serde_json::Value =
+            serde_json::from_str(&stdout).expect("stdout parses as JSON under -v");
+        assert!(diagnostics.as_array().is_some(), "{stdout}");
+        let stderr = String::from_utf8(assert.get_output().stderr.clone()).expect("utf-8 stderr");
+        assert!(
+            stderr.contains("running"),
+            "the invocation log still lands on stderr: {stderr}"
+        );
+    }
 }
 
 // ---------------------------------------------------------------------------

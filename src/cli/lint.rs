@@ -85,6 +85,10 @@ pub fn run(args: LintArgs, global: &super::GlobalArgs) -> anyhow::Result<()> {
             }
         }
     }
+    // Normalize every tool's paths to project-root-relative before both
+    // sorting (which orders by path) and reporting, so human and JSON
+    // output are uniform regardless of which adapter produced a finding.
+    fmt_lint::relativize_diagnostics(&mut diagnostics, &cwd, &root);
     fmt_lint::sort_diagnostics(&mut diagnostics);
 
     match args.format {
@@ -93,8 +97,9 @@ pub fn run(args: LintArgs, global: &super::GlobalArgs) -> anyhow::Result<()> {
                 .context("could not serialize the diagnostics to JSON")?,
         ),
         OutputFormat::Text => {
+            let use_color = ui::stdout_colors();
             for diagnostic in &diagnostics {
-                ui::println(&fmt_lint::render_diagnostic(diagnostic));
+                ui::println(&fmt_lint::render_diagnostic(diagnostic, use_color));
             }
         }
     }

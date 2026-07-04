@@ -73,6 +73,12 @@ pub fn run(args: FormatArgs, global: &super::GlobalArgs) -> anyhow::Result<()> {
         }
     }
 
+    // Normalize the changed-file paths to project-root-relative, so the
+    // report reads uniformly no matter which tool reported which file.
+    for path in &mut total.changed {
+        *path = fmt_lint::relativize_path(path, &cwd, &root);
+    }
+
     if args.check {
         for path in &total.changed {
             ui::println(&format!("would reformat: {}", path.display()));

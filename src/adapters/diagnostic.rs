@@ -5,6 +5,9 @@
 //! `--format json`) is uniform and tools stay swappable. The JSON layout of
 //! [`Diagnostic`] is a stable machine interface: every field is always
 //! present (`null` rather than omitted), so consumers can rely on the keys.
+//! The `path` is always project-root-relative — the command layer
+//! normalizes each tool's paths (ruff, for one, reports absolute paths) so
+//! the schema is uniform.
 
 use std::path::PathBuf;
 
@@ -13,7 +16,9 @@ use serde::{Deserialize, Serialize};
 /// One normalized lint finding.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Diagnostic {
-    /// File the finding is in, as the tool reported it.
+    /// File the finding is in, relative to the project root. The command
+    /// layer normalizes each tool's paths (some report absolute paths) so
+    /// this key is uniform across languages.
     pub path: PathBuf,
     /// Where in the file, when the tool says; `None` for file-level findings.
     pub range: Option<Range>,

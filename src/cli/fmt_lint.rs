@@ -131,19 +131,60 @@ fn relative_to(file: PathBuf, cwd: &Path) -> PathBuf {
     }
 }
 
+/// Rewrite every diagnostic's `path` to be relative to the project `root`,
+/// so reporting (human and `--format json`) is uniform no matter which tool
+/// produced it. See [`relativize_path`].
+pub fn relativize_diagnostics(diagnostics: &mut [Diagnostic], cwd: &Path, root: &Path) {
+    for diagnostic in diagnostics {
+        diagnostic.path = relativize_path(&diagnostic.path, cwd, root);
+    }
+}
+
+/// A tool-reported `path` rewritten relative to the project `root`.
+///
+/// Tools disagree on what they echo: air, panache, and sqlfluff repeat the
+/// (cwd-relative) paths hpds hands them, while ruff resolves them to
+/// absolute paths. Normalizing here — absolutize against `cwd`, then strip
+/// `root` — makes them all project-root-relative. A path that does not sit
+/// under `root` (e.g. a symlinked build dir) is left exactly as the tool
+/// reported it.
+pub fn relativize_path(path: &Path, cwd: &Path, root: &Path) -> PathBuf {
+    let absolute = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        cwd.join(path)
+    };
+    match absolute.strip_prefix(root) {
+        Ok(relative) => relative.to_path_buf(),
+        Err(_) => path.to_path_buf(),
+    }
+}
+
 /// One diagnostic as a ruff-style report line:
 /// `path:line:col: CODE [*] message`, where `[*]` marks findings
 /// `hpds lint --fix` can fix. Position and code are omitted when the tool
 /// did not report them.
-pub fn render_diagnostic(diagnostic: &Diagnostic) -> String {
-    let mut line = diagnostic.path.display().to_string();
+///
+/// With `use_color`, the `path:line:col` location is styled and the rule
+/// code takes its color from the finding's severity, matching ruff; the
+/// message stays plain. With `use_color` false the line is byte-for-byte
+/// the plain form.
+pub fn render_diagnostic(diagnostic: &Diagnostic, use_color: bool) -> String {
+    use crate::ui::{self, DIAGNOSTIC_LOCATION_STYLE};
+
+    let mut location = diagnostic.path.display().to_string();
     if let Some(range) = &diagnostic.range {
-        line.push_str(&format!(":{}:{}", range.start.line, range.start.col));
+        location.push_str(&format!(":{}:{}", range.start.line, range.start.col));
     }
+    let mut line = ui::paint(DIAGNOSTIC_LOCATION_STYLE, &location, use_color);
     line.push(':');
     if let Some(code) = &diagnostic.code {
         line.push(' ');
-        line.push_str(code);
+        line.push_str(&ui::paint(
+            severity_style(diagnostic.severity),
+            code,
+            use_color,
+        ));
     }
     if diagnostic.fixable {
         line.push_str(" [*]");
@@ -151,6 +192,17 @@ pub fn render_diagnostic(diagnostic: &Diagnostic) -> String {
     line.push(' ');
     line.push_str(&diagnostic.message);
     line
+}
+
+/// The style a rule code is painted in, by severity: red for errors,
+/// yellow for warnings, blue for informational findings.
+fn severity_style(severity: crate::adapters::Severity) -> anstyle::Style {
+    use crate::adapters::Severity;
+    match severity {
+        Severity::Error => crate::ui::ERROR_STYLE,
+        Severity::Warning => crate::ui::WARN_STYLE,
+        Severity::Info => crate::ui::INFO_STYLE,
+    }
 }
 
 /// Order diagnostics for reporting: by path, then position, then code —
@@ -391,7 +443,7 @@ mod tests {
             fixable: true,
         };
         assert_eq!(
-            render_diagnostic(&diagnostic),
+            render_diagnostic(&diagnostic, false),
             "violations.py:3:8: F401 [*] `os` imported but unused"
         );
     }
@@ -407,9 +459,36 @@ mod tests {
             fixable: false,
         };
         assert_eq!(
-            render_diagnostic(&diagnostic),
+            render_diagnostic(&diagnostic, false),
             "messy.R: file is not formatted with air"
         );
+    }
+
+    #[test]
+    fn render_diagnostic_styles_location_and_code_on_a_tty() {
+        const ESC: &str = "\x1b[";
+        let diagnostic = Diagnostic {
+            path: PathBuf::from("violations.py"),
+            range: Some(Range {
+                start: Position { line: 3, col: 8 },
+                end: None,
+            }),
+            code: Some("F401".to_string()),
+            severity: Severity::Warning,
+            message: "`os` imported but unused".to_string(),
+            fixable: true,
+        };
+        let styled = render_diagnostic(&diagnostic, true);
+        // The location and code are wrapped in ANSI styling...
+        assert!(styled.contains(ESC), "styled output carries ANSI: {styled}");
+        // ...but the human-readable text is all still there, in order.
+        assert!(styled.contains("violations.py:3:8"), "{styled}");
+        assert!(styled.contains("F401"), "{styled}");
+        assert!(styled.contains("`os` imported but unused"), "{styled}");
+        assert!(styled.contains("[*]"), "{styled}");
+        // The plain form is the exact same text with no escape codes.
+        let plain = render_diagnostic(&diagnostic, false);
+        assert!(!plain.contains(ESC), "{plain}");
     }
 
     #[test]
@@ -456,5 +535,80 @@ mod tests {
         assert_eq!(count(1, "file"), "1 file");
         assert_eq!(count(42, "file"), "42 files");
         assert_eq!(count(0, "issue"), "0 issues");
+    }
+
+    // ---- path normalization ---------------------------------------------
+
+    #[test]
+    fn relativize_makes_absolute_tool_paths_project_relative() {
+        // ruff reports absolute paths; they must come back relative to the
+        // project root.
+        let root = Path::new("/repo");
+        let cwd = Path::new("/repo");
+        assert_eq!(
+            relativize_path(Path::new("/repo/analysis/model.py"), cwd, root),
+            PathBuf::from("analysis/model.py")
+        );
+    }
+
+    #[test]
+    fn relativize_leaves_already_relative_paths_project_relative() {
+        // air/panache/sqlfluff echo the cwd-relative paths we hand them;
+        // when cwd is the root, those are already correct.
+        let root = Path::new("/repo");
+        let cwd = Path::new("/repo");
+        assert_eq!(
+            relativize_path(Path::new("query.sql"), cwd, root),
+            PathBuf::from("query.sql")
+        );
+    }
+
+    #[test]
+    fn relativize_resolves_cwd_relative_paths_against_the_root() {
+        // Running from a subdirectory: a path a tool reported relative to
+        // that subdirectory still normalizes to root-relative.
+        let root = Path::new("/repo");
+        let cwd = Path::new("/repo/analysis");
+        assert_eq!(
+            relativize_path(Path::new("model.py"), cwd, root),
+            PathBuf::from("analysis/model.py")
+        );
+    }
+
+    #[test]
+    fn relativize_leaves_paths_outside_the_root_untouched() {
+        // A path that does not sit under the project root is reported as
+        // the tool gave it, rather than mangled.
+        let root = Path::new("/repo");
+        let cwd = Path::new("/repo");
+        assert_eq!(
+            relativize_path(Path::new("/elsewhere/x.py"), cwd, root),
+            PathBuf::from("/elsewhere/x.py")
+        );
+    }
+
+    #[test]
+    fn relativize_diagnostics_rewrites_every_path() {
+        let mut diagnostics = vec![
+            Diagnostic {
+                path: PathBuf::from("/repo/a.py"),
+                range: None,
+                code: Some("F401".to_string()),
+                severity: Severity::Warning,
+                message: "unused".to_string(),
+                fixable: true,
+            },
+            Diagnostic {
+                path: PathBuf::from("b.sql"),
+                range: None,
+                code: None,
+                severity: Severity::Error,
+                message: "bad".to_string(),
+                fixable: false,
+            },
+        ];
+        relativize_diagnostics(&mut diagnostics, Path::new("/repo"), Path::new("/repo"));
+        assert_eq!(diagnostics[0].path, PathBuf::from("a.py"));
+        assert_eq!(diagnostics[1].path, PathBuf::from("b.sql"));
     }
 }
