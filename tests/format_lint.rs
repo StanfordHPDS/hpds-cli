@@ -728,6 +728,19 @@ exit 0
     }
 
     #[test]
+    fn format_verbose_logs_the_underlying_tool_invocations_on_stderr() {
+        let sb = shimmed();
+        sb.cmd(&["format", "-v"]).assert().success().stderr(
+            // The dimmed "running" prefix plus argv of the format-path tools
+            // (ruff formats with --no-cache, air/panache with --no-color);
+            // the lint path would instead log `check`/`lint` subcommands.
+            predicate::str::contains("running")
+                .and(predicate::str::contains("format --no-cache"))
+                .and(predicate::str::contains("format --no-color")),
+        );
+    }
+
+    #[test]
     fn verbose_never_pollutes_the_json_on_stdout() {
         // -v output goes to stderr, so a machine consumer's stdout is still
         // nothing but the stable JSON schema.
