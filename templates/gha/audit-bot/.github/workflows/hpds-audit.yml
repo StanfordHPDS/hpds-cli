@@ -25,16 +25,11 @@ jobs:
           # rendered outputs against their sources.
           fetch-depth: 0
 
-      # PLACEHOLDER INSTALL STEP: the hpds release install script lands
-      # later; once it ships, replace these two steps with a single
-      # `curl ... | sh` of that script. Until then, building from source
-      # with `cargo install --git` is the working fallback (slower, but
-      # correct).
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-
+      # Installs the latest published hpds release. Until the first
+      # v0.1.0 tag is published this step fails, because no release
+      # exists yet — that is expected and documents itself.
       - name: Install hpds
-        run: cargo install --git https://github.com/StanfordHPDS/hpds-cli hpds
+        run: curl --proto '=https' --tlsv1.2 -LsSf https://github.com/StanfordHPDS/hpds-cli/releases/latest/download/hpds-installer.sh | sh
 
       # `hpds audit` exits 1 when it finds errors — expected here, because
       # reporting those findings is the whole point of this workflow. The

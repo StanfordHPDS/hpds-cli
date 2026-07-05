@@ -149,12 +149,8 @@ fn generated_lint_workflow_is_valid_yaml_with_the_lint_steps() {
         "runs hpds format --check: {body}"
     );
     assert!(
-        body.contains("cargo install --git"),
-        "installs hpds via the cargo fallback: {body}"
-    );
-    assert!(
-        body.contains("release install script"),
-        "comment flags the placeholder install step: {body}"
+        body.contains(&installer_one_liner()),
+        "installs hpds via the release installer script: {body}"
     );
 }
 
@@ -225,12 +221,8 @@ fn generated_audit_workflow_is_valid_yaml_with_the_bot_steps() {
 
     // Steps: install, audit to JSON without dying on findings, report.
     assert!(
-        body.contains("cargo install --git"),
-        "installs hpds via the cargo fallback: {body}"
-    );
-    assert!(
-        body.contains("release install script"),
-        "comment flags the placeholder install step: {body}"
+        body.contains(&installer_one_liner()),
+        "installs hpds via the release installer script: {body}"
     );
     assert!(
         body.contains("hpds audit --format json > audit.json"),
@@ -271,6 +263,80 @@ fn generated_audit_workflow_passes_actionlint_when_available() {
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr),
     );
+}
+
+/// The name of the shell installer artifact dist publishes for this crate:
+/// `<package>-installer.sh`. Kept in lockstep with the crate name so the
+/// workflows and the published artifact can never drift apart.
+fn installer_artifact() -> String {
+    format!("{}-installer.sh", env!("CARGO_PKG_NAME"))
+}
+
+/// The exact install command the generated workflows run: curl the latest
+/// shell installer from this repo's releases and pipe it to `sh`.
+fn installer_one_liner() -> String {
+    format!(
+        "curl --proto '=https' --tlsv1.2 -LsSf {}/releases/latest/download/{} | sh",
+        env!("CARGO_PKG_REPOSITORY"),
+        installer_artifact(),
+    )
+}
+
+/// Read a file from the crate root (the source templates live here).
+fn repo_read(rel: &[&str]) -> String {
+    let mut path = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    for part in rel {
+        path.push(part);
+    }
+    fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()))
+}
+
+/// The generated workflows must point at the very artifact dist is
+/// configured to publish. dist emits `<package>-installer.sh` only when the
+/// `shell` installer is enabled; if that installer is ever dropped or the
+/// crate renamed, this test fails so the workflows and dist config stay in
+/// sync.
+#[test]
+fn workflow_installer_matches_dist_shell_installer_artifact() {
+    let dist = repo_read(&["dist-workspace.toml"]);
+    let parsed: toml::Value = toml::from_str(&dist).expect("dist-workspace.toml is valid TOML");
+    let installers = parsed
+        .get("dist")
+        .and_then(|d| d.get("installers"))
+        .and_then(|i| i.as_array())
+        .expect("dist-workspace.toml declares [dist] installers");
+    assert!(
+        installers.iter().any(|i| i.as_str() == Some("shell")),
+        "the shell installer must be enabled to publish {}",
+        installer_artifact()
+    );
+
+    let one_liner = installer_one_liner();
+    for template in [
+        &[
+            "templates",
+            "gha",
+            "lint",
+            ".github",
+            "workflows",
+            "hpds-lint.yml",
+        ][..],
+        &[
+            "templates",
+            "gha",
+            "audit-bot",
+            ".github",
+            "workflows",
+            "hpds-audit.yml",
+        ][..],
+    ] {
+        let body = repo_read(template);
+        assert!(
+            body.contains(&one_liner),
+            "{} must install hpds via `{one_liner}`, got:\n{body}",
+            template.join("/"),
+        );
+    }
 }
 
 fn which_actionlint() -> Result<PathBuf, ()> {

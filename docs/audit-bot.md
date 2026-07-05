@@ -36,9 +36,10 @@ only errors do.
 
 Each run is three steps:
 
-1. Install hpds. Until the release install script ships, the workflow
-   builds from source with `cargo install --git` (a placeholder the
-   template comments loudly about).
+1. Install hpds by piping the release installer script to `sh`, which
+   pulls the latest published release. Until the first `v0.1.0` tag is
+   published no release exists, so this step fails — expected, and the
+   template comment says so.
 2. `hpds audit --format json > audit.json`. The audit exits 1 when it
    finds errors — expected here, so the workflow captures the exit code
    and continues; only exit codes above 1 (usage error, crash) fail the
