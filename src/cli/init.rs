@@ -51,7 +51,8 @@ pub struct InitArgs {
     /// slurm, gha. Attach a variant with `:` — pipeline:make|targets|both,
     /// container:docker|apptainer|both, gha:pr-template+lint+audit-bot.
     /// Without a variant, --yes defaults pipeline to make, container to
-    /// docker, and gha to every workflow
+    /// docker, and gha to every workflow, and reports each defaulted kind
+    /// so the choice is never silent
     #[arg(long = "use", value_delimiter = ',', value_name = "COMPONENTS")]
     pub components: Option<Vec<String>>,
 
@@ -128,6 +129,7 @@ pub fn run(args: InitArgs) -> anyhow::Result<()> {
     for selection in &selections {
         let component = components::find(selection.spec.name)
             .expect("selectable init components are registered");
+        announce_defaulted_kind(selection);
         let ctx = ComponentCtx {
             kind: selection.kind.as_deref(),
             workflows: selection.workflows.as_deref(),
@@ -256,6 +258,11 @@ struct Selection {
     spec: &'static Selectable,
     /// `--kind` to hand the component; `None` lets it prompt.
     kind: Option<String>,
+    /// Whether `kind` was assumed from the component's default (under
+    /// `--yes`, without an explicit `:variant`) rather than chosen by the
+    /// user. When true the run loop announces the choice so the default is
+    /// never silent.
+    kind_defaulted: bool,
     /// gha's workflow list; `None` lets it prompt.
     workflows: Option<Vec<String>>,
 }
@@ -289,8 +296,11 @@ fn resolve_selections(flag: Option<&[String]>, yes: bool) -> anyhow::Result<Vec<
     }
     if yes {
         for selection in &mut selections {
-            if selection.kind.is_none() {
-                selection.kind = selection.spec.default_kind.map(str::to_string);
+            if selection.kind.is_none()
+                && let Some(default) = selection.spec.default_kind
+            {
+                selection.kind = Some(default.to_string());
+                selection.kind_defaulted = true;
             }
             if selection.spec.takes_workflows && selection.workflows.is_none() {
                 selection.workflows = Some(gha::workflow_names());
@@ -298,6 +308,24 @@ fn resolve_selections(flag: Option<&[String]>, yes: bool) -> anyhow::Result<Vec<
         }
     }
     Ok(selections)
+}
+
+/// Announce a kind that `--yes` assumed from the component's default, so
+/// the choice is never silent. Only fires for a defaulted kind on a
+/// variant-bearing component; an explicit `:variant` (the user's own
+/// choice) and kindless components say nothing.
+fn announce_defaulted_kind(selection: &Selection) {
+    if !selection.kind_defaulted {
+        return;
+    }
+    let (Some(kind), Some(kinds)) = (selection.kind.as_deref(), selection.spec.kinds) else {
+        return;
+    };
+    let name = selection.spec.name;
+    let choices = kinds().join("|");
+    ui::println(&format!(
+        "{name}: using kind \"{kind}\" (pass --use {name}:{choices} to choose)"
+    ));
 }
 
 /// Parse one `--use` entry: `name` or `name:variant`, where the variant is
@@ -331,6 +359,7 @@ fn parse_selection(item: &str) -> anyhow::Result<Selection> {
     let mut selection = Selection {
         spec,
         kind: None,
+        kind_defaulted: false,
         workflows: None,
     };
     if let Some(variant) = variant {
@@ -401,6 +430,7 @@ fn prompt_components() -> anyhow::Result<Vec<Selection>> {
         .map(|item| Selection {
             spec: item.0,
             kind: None,
+            kind_defaulted: false,
             workflows: None,
         })
         .collect())
@@ -660,6 +690,41 @@ mod tests {
         let flag = ["pipeline".to_string()];
         let selections = resolve_selections(Some(&flag), false).unwrap();
         assert!(selections[0].kind.is_none());
+    }
+
+    #[test]
+    fn yes_marks_an_assumed_default_kind_as_defaulted() {
+        // A bare component under --yes takes its default kind, and that
+        // choice is flagged so the run loop can announce it.
+        let flag = ["pipeline".to_string(), "container".to_string()];
+        let selections = resolve_selections(Some(&flag), true).unwrap();
+        assert!(
+            selections[0].kind_defaulted,
+            "pipeline's make default is marked defaulted"
+        );
+        assert!(
+            selections[1].kind_defaulted,
+            "container's docker default is marked defaulted"
+        );
+    }
+
+    #[test]
+    fn yes_does_not_mark_an_explicit_variant_as_defaulted() {
+        let flag = ["pipeline:targets".to_string()];
+        let selections = resolve_selections(Some(&flag), true).unwrap();
+        assert_eq!(selections[0].kind.as_deref(), Some("targets"));
+        assert!(
+            !selections[0].kind_defaulted,
+            "an explicit variant is the user's own choice, not a default"
+        );
+    }
+
+    #[test]
+    fn yes_does_not_mark_kindless_components_as_defaulted() {
+        // gha and readme have no kind to default, so nothing is announced.
+        let flag = ["gha".to_string(), "readme".to_string()];
+        let selections = resolve_selections(Some(&flag), true).unwrap();
+        assert!(selections.iter().all(|s| !s.kind_defaulted));
     }
 
     #[test]

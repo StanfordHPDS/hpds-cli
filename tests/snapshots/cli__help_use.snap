@@ -14,7 +14,7 @@ Arguments:
 
 Options:
       --kind <VALUE>
-          Component-specific variant (e.g. make, targets, or both for pipeline)
+          Component-specific variant (e.g. make, targets, or both for pipeline); omit to choose interactively (pipeline's default is make under `hpds init --yes`)
 
   -v, --verbose
           Show more detail (underlying commands, tool names)

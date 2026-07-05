@@ -144,6 +144,52 @@ fn init_yes_pipeline_without_variant_defaults_to_make() {
 }
 
 #[test]
+fn init_yes_pipeline_without_variant_reports_the_chosen_kind() {
+    // The make-vs-targets-vs-both default must never be silent: a bare
+    // `--use pipeline` under --yes announces the kind it picked and how to
+    // override it.
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let assert = hpds()
+        .args(["init", "--yes", "--author", "malcolm", "--use", "pipeline"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+    let stdout = String::from_utf8(assert.get_output().stdout.clone()).unwrap();
+    assert!(
+        stdout.contains("pipeline: using kind \"make\""),
+        "announces the defaulted kind: {stdout}"
+    );
+    assert!(
+        stdout.contains("--use pipeline:make|targets|both"),
+        "says how to choose another kind: {stdout}"
+    );
+}
+
+#[test]
+fn init_yes_explicit_pipeline_variant_is_not_announced_as_a_default() {
+    // An explicit `:variant` is the user's own choice, not an assumed
+    // default, so it must not trigger the chosen-kind notice.
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let assert = hpds()
+        .args([
+            "init",
+            "--yes",
+            "--author",
+            "malcolm",
+            "--use",
+            "pipeline:targets",
+        ])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+    let stdout = String::from_utf8(assert.get_output().stdout.clone()).unwrap();
+    assert!(
+        !stdout.contains("using kind"),
+        "an explicit variant is not announced as a default: {stdout}"
+    );
+}
+
+#[test]
 fn init_yes_pipeline_variant_targets_is_honored() {
     let tmp = tempfile::tempdir().expect("tempdir");
     hpds()

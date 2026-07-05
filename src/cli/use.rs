@@ -23,7 +23,9 @@ pub struct UseArgs {
     #[arg(value_name = "COMPONENT")]
     pub component: Option<String>,
 
-    /// Component-specific variant (e.g. make, targets, or both for pipeline)
+    /// Component-specific variant (e.g. make, targets, or both for
+    /// pipeline); omit to choose interactively (pipeline's default is make
+    /// under `hpds init --yes`)
     #[arg(long, value_name = "VALUE")]
     pub kind: Option<String>,
 
