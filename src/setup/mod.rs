@@ -113,6 +113,10 @@ const DEV_STEPS: &[Step] = &[
         actions: &[Action::Install("tinytex")],
     },
     Step {
+        title: "togi",
+        actions: &[Action::Install("togi")],
+    },
+    Step {
         title: "git setup",
         actions: &[Action::GitSetup],
     },
@@ -555,6 +559,8 @@ mod tests {
             .with_output("gh --version", &probe_fixture("gh.txt"))
             .on_path("rig")
             .with_output("rig --version", &probe_fixture("rig.txt"))
+            .on_path("togi")
+            .with_output("togi --version", &probe_fixture("togi.txt"))
     }
 
     // --- plans ------------------------------------------------------------
@@ -590,7 +596,16 @@ mod tests {
         let titles: Vec<_> = selected.iter().map(|s| s.title).collect();
         assert_eq!(
             titles,
-            vec!["r", "quarto", "uv", "gh", "rig", "tinytex", "git setup"]
+            vec![
+                "r",
+                "quarto",
+                "uv",
+                "gh",
+                "rig",
+                "tinytex",
+                "togi",
+                "git setup"
+            ]
         );
     }
 
@@ -626,6 +641,7 @@ mod tests {
                 "gh --version",
                 "rig --version",
                 "quarto list tools",
+                "togi --version",
                 "hpds git setup",
             ]
         );
@@ -656,7 +672,9 @@ mod tests {
             .on_path("uv")
             .with_output("uv --version", &probe_fixture("uv.txt"))
             .on_path("rig")
-            .with_output("rig --version", &probe_fixture("rig.txt"));
+            .with_output("rig --version", &probe_fixture("rig.txt"))
+            .on_path("togi")
+            .with_output("togi --version", &probe_fixture("togi.txt"));
         let deps = deps_recording_git(Os::Mac, true, &runner, &fetcher, &git_setup);
 
         let results = execute(steps(Profile::Dev), &deps);
@@ -675,7 +693,7 @@ mod tests {
         );
 
         let err = finish(&results, None).expect_err("a failed step fails the run");
-        assert!(err.to_string().contains("1 of 7"), "{err}");
+        assert!(err.to_string().contains("1 of 8"), "{err}");
     }
 
     // --- server profile -------------------------------------------------------

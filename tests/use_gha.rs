@@ -64,7 +64,7 @@ impl Sandbox {
 }
 
 const PR_TEMPLATE: &str = ".github/pull_request_template.md";
-const LINT_WORKFLOW: &str = ".github/workflows/hpds-lint.yml";
+const LINT_WORKFLOW: &str = ".github/workflows/togi-lint.yml";
 const AUDIT_WORKFLOW: &str = ".github/workflows/hpds-audit.yml";
 
 #[test]
@@ -76,7 +76,7 @@ fn use_gha_with_every_workflow_creates_all_files() {
         .success()
         .stdout(
             predicate::str::contains("pull_request_template.md")
-                .and(predicate::str::contains("hpds-lint.yml"))
+                .and(predicate::str::contains("togi-lint.yml"))
                 .and(predicate::str::contains("hpds-audit.yml")),
         );
 
@@ -143,14 +143,14 @@ fn generated_lint_workflow_is_valid_yaml_with_the_lint_steps() {
         "workflow has a jobs section: {body}"
     );
 
-    assert!(body.contains("hpds lint"), "runs hpds lint: {body}");
+    assert!(body.contains("togi lint"), "runs togi lint: {body}");
     assert!(
-        body.contains("hpds format --check"),
-        "runs hpds format --check: {body}"
+        body.contains("togi format --check"),
+        "runs togi format --check: {body}"
     );
     assert!(
-        body.contains(&installer_one_liner()),
-        "installs hpds via the release installer script: {body}"
+        body.contains(TOGI_INSTALLER_ONE_LINER),
+        "installs togi via its release installer script: {body}"
     );
 }
 
@@ -272,8 +272,8 @@ fn installer_artifact() -> String {
     format!("{}-installer.sh", env!("CARGO_PKG_NAME"))
 }
 
-/// The exact install command the generated workflows run: curl the latest
-/// shell installer from this repo's releases and pipe it to `sh`.
+/// The exact install command the generated audit workflow runs: curl the
+/// latest shell installer from this repo's releases and pipe it to `sh`.
 fn installer_one_liner() -> String {
     format!(
         "curl --proto '=https' --tlsv1.2 -LsSf {}/releases/latest/download/{} | sh",
@@ -281,6 +281,13 @@ fn installer_one_liner() -> String {
         installer_artifact(),
     )
 }
+
+/// The exact install command the generated lint workflow runs. The
+/// `togi-installer.sh` artifact name tracks the togi project's cargo-dist
+/// config (its shell installer), hardcoded here on purpose — togi is
+/// separate software, so there is no config in this repo to parse it from.
+const TOGI_INSTALLER_ONE_LINER: &str = "curl --proto '=https' --tlsv1.2 -LsSf \
+     https://github.com/StanfordHPDS/togi/releases/latest/download/togi-installer.sh | sh";
 
 /// Read a file from the crate root (the source templates live here).
 fn repo_read(rel: &[&str]) -> String {
@@ -291,13 +298,13 @@ fn repo_read(rel: &[&str]) -> String {
     fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()))
 }
 
-/// The generated workflows must point at the very artifact dist is
+/// The generated audit workflow must point at the very artifact dist is
 /// configured to publish. dist emits `<package>-installer.sh` only when the
 /// `shell` installer is enabled; if that installer is ever dropped or the
-/// crate renamed, this test fails so the workflows and dist config stay in
+/// crate renamed, this test fails so the workflow and dist config stay in
 /// sync.
 #[test]
-fn workflow_installer_matches_dist_shell_installer_artifact() {
+fn audit_workflow_installer_matches_dist_shell_installer_artifact() {
     let dist = repo_read(&["dist-workspace.toml"]);
     let parsed: toml::Value = toml::from_str(&dist).expect("dist-workspace.toml is valid TOML");
     let installers = parsed
@@ -312,31 +319,41 @@ fn workflow_installer_matches_dist_shell_installer_artifact() {
     );
 
     let one_liner = installer_one_liner();
-    for template in [
-        &[
-            "templates",
-            "gha",
-            "lint",
-            ".github",
-            "workflows",
-            "hpds-lint.yml",
-        ][..],
-        &[
-            "templates",
-            "gha",
-            "audit-bot",
-            ".github",
-            "workflows",
-            "hpds-audit.yml",
-        ][..],
-    ] {
-        let body = repo_read(template);
-        assert!(
-            body.contains(&one_liner),
-            "{} must install hpds via `{one_liner}`, got:\n{body}",
-            template.join("/"),
-        );
-    }
+    let body = repo_read(&[
+        "templates",
+        "gha",
+        "audit-bot",
+        ".github",
+        "workflows",
+        "hpds-audit.yml",
+    ]);
+    assert!(
+        body.contains(&one_liner),
+        "the audit workflow must install hpds via `{one_liner}`, got:\n{body}"
+    );
+}
+
+/// The lint workflow installs togi, not hpds: its installer line is the
+/// hardcoded togi one-liner (which tracks togi's own cargo-dist config),
+/// and no hpds installer step may linger.
+#[test]
+fn lint_workflow_installs_togi_not_hpds() {
+    let body = repo_read(&[
+        "templates",
+        "gha",
+        "lint",
+        ".github",
+        "workflows",
+        "togi-lint.yml",
+    ]);
+    assert!(
+        body.contains(TOGI_INSTALLER_ONE_LINER),
+        "the lint workflow must install togi via `{TOGI_INSTALLER_ONE_LINER}`, got:\n{body}"
+    );
+    assert!(
+        !body.contains(&installer_artifact()),
+        "the lint workflow must not install hpds anymore:\n{body}"
+    );
 }
 
 fn which_actionlint() -> Result<PathBuf, ()> {

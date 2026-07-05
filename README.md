@@ -73,6 +73,10 @@ $ hpds use readme
 $ hpds use pipeline --kind targets
 ```
 
+Formatting and linting the code you write there is
+[togi](https://github.com/StanfordHPDS/togi)'s job (`togi format`, `togi lint`);
+install it with `hpds install togi`.
+
 ### Set up a machine
 
 Install a single tool (idempotent — already-installed tools are a no-op):

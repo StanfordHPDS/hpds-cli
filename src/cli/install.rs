@@ -13,7 +13,7 @@ use super::GlobalArgs;
 
 #[derive(Debug, Args)]
 pub struct InstallArgs {
-    /// Tool to install (r, quarto, uv, gh, rig, tinytex, duckdb)
+    /// Tool to install (r, quarto, uv, gh, rig, tinytex, duckdb, togi)
     #[arg(value_name = "TOOL")]
     pub tool: String,
 

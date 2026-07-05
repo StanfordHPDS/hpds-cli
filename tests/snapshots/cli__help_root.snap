@@ -10,7 +10,7 @@ Commands:
   init         Set up a new or existing project interactively
   project      Project commands (`hpds project init` is an alias for `hpds init`)
   use          Apply a template component to the current project
-  install      Install external software (r, quarto, uv, gh, rig, tinytex, duckdb)
+  install      Install external software (r, quarto, uv, gh, rig, tinytex, duckdb, togi)
   setup        Set up a fresh machine with the lab toolchain
   git          Git helpers: sensible defaults and global ignore vaccination
   repo         GitHub repository helpers

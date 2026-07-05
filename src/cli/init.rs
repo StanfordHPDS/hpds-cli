@@ -152,8 +152,29 @@ pub fn run(args: InitArgs) -> anyhow::Result<()> {
     }
 
     git_forward(&args, &cwd, &name)?;
+    if togi_next_step_applies(&selections, language.as_deref()) {
+        ui::println(
+            "next: format and lint with the lab's togi tool — `togi format` \
+             (install it with `hpds install togi`)",
+        );
+    }
     ui::success(&format!("{name} is set up"));
     Ok(())
+}
+
+/// Whether the closing next steps should point at togi: only when
+/// formatting is relevant — the project has a language whose code togi
+/// formats, or CI was just set up to run togi (the gha lint workflow).
+/// An interactive gha selection has no workflow list yet (the component
+/// prompts for it), so it counts as possibly-lint.
+fn togi_next_step_applies(selections: &[Selection], language: Option<&str>) -> bool {
+    language.is_some()
+        || selections.iter().any(|s| {
+            s.spec.takes_workflows
+                && s.workflows
+                    .as_deref()
+                    .is_none_or(|w| w.iter().any(|name| name == "lint"))
+        })
 }
 
 /// Default project name: the current directory's basename.
@@ -809,6 +830,26 @@ mod tests {
         let out = usage_parts(&err);
         assert!(out.contains("readme"), "{out}");
         assert!(out.contains("--language"), "{out}");
+    }
+
+    #[test]
+    fn togi_next_step_applies_whenever_the_project_has_a_language() {
+        assert!(togi_next_step_applies(&[], Some("r")));
+        assert!(!togi_next_step_applies(&[], None));
+    }
+
+    #[test]
+    fn togi_next_step_follows_the_lint_workflow_without_a_language() {
+        let with_lint = vec![parse_selection("gha:lint").unwrap()];
+        assert!(togi_next_step_applies(&with_lint, None));
+
+        let without_lint = vec![parse_selection("gha:pr-template").unwrap()];
+        assert!(!togi_next_step_applies(&without_lint, None));
+
+        // Interactive gha has no workflow list yet — the multi-select may
+        // still pick lint, so the next step stays on.
+        let undecided = vec![parse_selection("gha").unwrap()];
+        assert!(togi_next_step_applies(&undecided, None));
     }
 
     #[test]

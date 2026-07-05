@@ -164,7 +164,7 @@ impl Walkthrough {
             "gha pr-template"
         );
         assert!(
-            self.path(".github/workflows/hpds-lint.yml").exists(),
+            self.path(".github/workflows/togi-lint.yml").exists(),
             "gha lint workflow"
         );
         assert!(

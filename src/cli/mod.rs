@@ -61,7 +61,9 @@ pub enum Command {
     /// readme, container, slurm, gha), then writes hpds.toml with the
     /// [project] metadata and optionally initializes git and creates the
     /// GitHub repo. Pass --yes to accept every default without prompting.
-    /// `hpds project init` is an alias for this command.
+    /// Formatting and linting the scaffolded project is the separate togi
+    /// tool's job (`hpds install togi`). `hpds project init` is an alias
+    /// for this command.
     Init(init::InitArgs),
     /// Project commands (`hpds project init` is an alias for `hpds init`)
     ///
@@ -74,7 +76,7 @@ pub enum Command {
     /// readme, container, slurm, or gha. Omit the component to list what is
     /// available. Existing files are left untouched unless --force is given.
     Use(r#use::UseArgs),
-    /// Install external software (r, quarto, uv, gh, rig, tinytex, duckdb)
+    /// Install external software (r, quarto, uv, gh, rig, tinytex, duckdb, togi)
     ///
     /// Installs developer tooling onto the machine. Prints exactly what
     /// will run and asks for confirmation before changing anything; pass

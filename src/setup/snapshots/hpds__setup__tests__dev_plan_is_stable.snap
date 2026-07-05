@@ -2,7 +2,7 @@
 source: src/setup/mod.rs
 expression: "plan(Profile::Dev)"
 ---
-hpds setup --profile dev runs these 7 steps:
+hpds setup --profile dev runs these 8 steps:
   1. r
        hpds install r
   2. quarto
@@ -15,5 +15,7 @@ hpds setup --profile dev runs these 7 steps:
        hpds install rig
   6. tinytex
        hpds install tinytex
-  7. git setup
+  7. togi
+       hpds install togi
+  8. git setup
        hpds git setup

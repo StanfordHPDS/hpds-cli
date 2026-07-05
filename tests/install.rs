@@ -90,6 +90,7 @@ fn install_is_a_no_op_when_the_tool_is_already_on_path() {
         ),
         ("duckdb", "duckdb", "v1.5.4 (Variegata) 08e34c447b", "1.5.4"),
         ("r", "R", "R version 4.6.0 (2026-04-24)", "4.6.0"),
+        ("togi", "togi", "togi 0.1.0", "0.1.0"),
     ];
     for (_, exe, version_output, _) in fake_tools {
         let path = bin.path().join(exe);

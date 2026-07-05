@@ -2,7 +2,7 @@
 source: tests/cli.rs
 expression: "help_output(& [\"install\", \"--help\"])"
 ---
-Install external software (r, quarto, uv, gh, rig, tinytex, duckdb)
+Install external software (r, quarto, uv, gh, rig, tinytex, duckdb, togi)
 
 Installs developer tooling onto the machine. Prints exactly what will run and asks for confirmation before changing anything; pass --yes to skip the prompt.
 
@@ -10,7 +10,7 @@ Usage: hpds install [OPTIONS] <TOOL>
 
 Arguments:
   <TOOL>
-          Tool to install (r, quarto, uv, gh, rig, tinytex, duckdb)
+          Tool to install (r, quarto, uv, gh, rig, tinytex, duckdb, togi)
 
 Options:
   -v, --verbose

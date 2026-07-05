@@ -37,7 +37,7 @@ const WORKFLOWS: &[Workflow] = &[
     },
     Workflow {
         name: "lint",
-        description: "workflow running `hpds lint` + `hpds format --check`",
+        description: "workflow running `togi lint` + `togi format --check`",
         dir: "gha/lint",
     },
     Workflow {
@@ -153,19 +153,19 @@ mod tests {
     #[test]
     fn lint_workflow_template_is_valid_yaml() {
         let file = TEMPLATES
-            .get_file("gha/lint/.github/workflows/hpds-lint.yml")
+            .get_file("gha/lint/.github/workflows/togi-lint.yml")
             .expect("lint workflow template is embedded");
         let text = file.contents_utf8().expect("workflow template is UTF-8");
         // The template must render cleanly with the standard variables and
         // the result must be parseable YAML.
         let rendered =
-            crate::templates::render(text, "hpds-lint.yml", &Vars::standard("p", Some("r"), "a"))
+            crate::templates::render(text, "togi-lint.yml", &Vars::standard("p", Some("r"), "a"))
                 .expect("template renders with the standard variables");
         let doc: serde_yaml::Value =
             serde_yaml::from_str(&rendered).expect("rendered workflow parses as YAML");
         assert!(doc.get("jobs").is_some(), "workflow has jobs: {rendered}");
-        assert!(rendered.contains("hpds lint"));
-        assert!(rendered.contains("hpds format --check"));
+        assert!(rendered.contains("togi lint"));
+        assert!(rendered.contains("togi format --check"));
     }
 
     #[test]
@@ -280,7 +280,7 @@ mod tests {
             "{outcomes:?}"
         );
         let pr = tmp.path().join(".github/pull_request_template.md");
-        let wf = tmp.path().join(".github/workflows/hpds-lint.yml");
+        let wf = tmp.path().join(".github/workflows/togi-lint.yml");
         let pr_text = fs::read_to_string(pr).unwrap();
         let wf_text = fs::read_to_string(wf).unwrap();
         assert!(
@@ -288,7 +288,7 @@ mod tests {
             "no unrendered variables: {pr_text}"
         );
         assert!(
-            wf_text.contains("hpds lint"),
+            wf_text.contains("togi lint"),
             "lint step present: {wf_text}"
         );
     }

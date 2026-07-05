@@ -8,6 +8,7 @@ pub const UV: &str = "0.9.5";
 pub const GH: &str = "2.96.0";
 pub const DUCKDB: &str = "1.5.4";
 pub const QUARTO: &str = "1.9.36";
+pub const TOGI: &str = "0.1.0";
 
 #[cfg(test)]
 mod tests {
@@ -22,6 +23,7 @@ mod tests {
             ("gh", GH),
             ("duckdb", DUCKDB),
             ("quarto", QUARTO),
+            ("togi", TOGI),
         ] {
             let parts: Vec<&str> = version.split('.').collect();
             assert_eq!(parts.len(), 3, "{name}: {version}");

@@ -49,6 +49,21 @@ fn extract_commands(markdown: &str) -> Vec<String> {
 }
 
 #[test]
+fn readme_quickstart_says_formatting_comes_from_togi() {
+    // hpds has no format/lint commands; the quickstart must point at the
+    // lab's separate togi tool so nobody goes looking for `hpds format`.
+    let readme = readme();
+    let quickstart = readme
+        .split("## Quickstart")
+        .nth(1)
+        .expect("README has a Quickstart section");
+    assert!(
+        quickstart.contains("togi"),
+        "the quickstart must mention togi for formatting/linting"
+    );
+}
+
+#[test]
 fn readme_shows_a_healthy_number_of_hpds_commands() {
     let commands = extract_commands(&readme());
     assert!(

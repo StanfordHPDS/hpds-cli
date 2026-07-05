@@ -79,7 +79,60 @@ fn init_yes_full_options_produces_a_complete_project() {
     assert!(tmp.path().join("scripts/slurm_job.sh").exists());
     assert!(tmp.path().join("docs/slurm.md").exists());
     assert!(tmp.path().join(".github/pull_request_template.md").exists());
-    assert!(tmp.path().join(".github/workflows/hpds-lint.yml").exists());
+    assert!(tmp.path().join(".github/workflows/togi-lint.yml").exists());
+}
+
+// --- closing next steps -------------------------------------------------------
+
+#[test]
+fn init_with_a_language_closes_with_a_togi_formatting_next_step() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let assert = hpds()
+        .args([
+            "init",
+            "--yes",
+            "--language",
+            "r",
+            "--author",
+            "malcolm",
+            "--use",
+            "readme",
+        ])
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("togi format"));
+    // One line, not a lecture.
+    let stdout = String::from_utf8_lossy(&assert.get_output().stdout).to_string();
+    let togi_lines = stdout.lines().filter(|l| l.contains("togi")).count();
+    assert_eq!(togi_lines, 1, "exactly one togi next-step line: {stdout}");
+}
+
+#[test]
+fn init_lint_workflow_without_a_language_still_mentions_togi() {
+    // The lint workflow runs togi in CI, so the next step applies even
+    // when no project language was given or detected. (The workflow file
+    // name alone also says "togi", so assert on the next-step command.)
+    let tmp = tempfile::tempdir().expect("tempdir");
+    hpds()
+        .args(["init", "--yes", "--author", "malcolm", "--use", "gha:lint"])
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("togi format"));
+}
+
+#[test]
+fn init_without_language_or_lint_workflow_says_nothing_about_togi() {
+    // Nothing to format and no togi-backed CI: the next step would be
+    // noise, so it stays quiet.
+    let tmp = tempfile::tempdir().expect("tempdir");
+    hpds()
+        .args(["init", "--yes", "--author", "malcolm"])
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("togi").not());
 }
 
 #[test]
@@ -217,7 +270,7 @@ fn init_yes_gha_without_variant_applies_every_workflow() {
         .assert()
         .success();
     assert!(tmp.path().join(".github/pull_request_template.md").exists());
-    assert!(tmp.path().join(".github/workflows/hpds-lint.yml").exists());
+    assert!(tmp.path().join(".github/workflows/togi-lint.yml").exists());
     assert!(tmp.path().join(".github/workflows/hpds-audit.yml").exists());
 }
 
@@ -238,7 +291,7 @@ fn init_yes_gha_variant_selects_workflows_with_plus() {
         .success();
     assert!(tmp.path().join(".github/pull_request_template.md").exists());
     assert!(
-        !tmp.path().join(".github/workflows/hpds-lint.yml").exists(),
+        !tmp.path().join(".github/workflows/togi-lint.yml").exists(),
         "only the requested workflow lands"
     );
 }

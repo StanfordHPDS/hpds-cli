@@ -10,6 +10,7 @@ pub mod quarto;
 pub mod r;
 pub mod rig;
 pub mod tinytex;
+pub mod togi;
 pub mod uv;
 
 use std::path::PathBuf;

@@ -9,15 +9,18 @@ use thiserror::Error;
 
 use super::Installer;
 use super::installers::{
-    duckdb::DuckDb, gh::Gh, quarto::Quarto, r::R, rig::Rig, tinytex::TinyTex, uv::Uv,
+    duckdb::DuckDb, gh::Gh, quarto::Quarto, r::R, rig::Rig, tinytex::TinyTex, togi::Togi, uv::Uv,
 };
 
 /// Every tool `hpds install` is meant to manage, implemented or not.
-pub const KNOWN_TOOLS: [&str; 7] = ["r", "quarto", "uv", "gh", "rig", "tinytex", "duckdb"];
+pub const KNOWN_TOOLS: [&str; 8] = [
+    "r", "quarto", "uv", "gh", "rig", "tinytex", "duckdb", "togi",
+];
 
 /// The installers implemented so far. Each new installer is added here to
 /// become reachable from `hpds install <tool>`.
-static INSTALLERS: &[&(dyn Installer + Sync)] = &[&Uv, &Gh, &Rig, &DuckDb, &R, &Quarto, &TinyTex];
+static INSTALLERS: &[&(dyn Installer + Sync)] =
+    &[&Uv, &Gh, &Rig, &DuckDb, &R, &Quarto, &TinyTex, &Togi];
 
 /// A tool name that cannot be dispatched to an installer. Rendered by
 /// `main` with its [`hint`](RegistryError::hint) and exit code 2.
