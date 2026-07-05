@@ -14,6 +14,7 @@ mod runner;
 #[cfg(test)]
 pub(crate) mod test_support;
 
+use std::cell::Cell;
 use std::io::IsTerminal;
 
 use anyhow::anyhow;
@@ -29,13 +30,21 @@ use crate::ui::{self, HintExt};
 pub struct InstallCtx<'a> {
     /// The OS whose install strategy applies.
     pub os: Os,
-    /// Skip confirmation prompts (`--yes`); sudo steps still announce
-    /// themselves.
+    /// Skip confirmation prompts (`--yes`); the plan of what will run is
+    /// still printed.
     pub yes: bool,
     /// Log underlying commands (`-v`).
     pub verbose: bool,
     /// Exact version requested via `--version`, when the tool supports it.
     pub pin: Option<String>,
+    /// A surrounding flow (the `hpds setup` checklist) already had the
+    /// user approve the plan this install belongs to, so the per-install
+    /// confirmation is skipped. Sudo steps still ask individually.
+    pub plan_approved: bool,
+    /// Set once the user confirms this install's own printed plan. The
+    /// plan lists any sudo commands, so that single answer covers them
+    /// and sudo steps must not ask a second time.
+    pub sudo_approved: Cell<bool>,
     /// Seam for process execution and `PATH` probing.
     pub runner: &'a dyn CommandRunner,
     /// Seam for downloading release binaries onto the user's PATH.
@@ -57,14 +66,34 @@ pub trait Installer {
     /// before sudo.
     fn install(&self, ctx: &InstallCtx) -> anyhow::Result<()>;
 
+    /// The concrete commands or downloads [`install`](Installer::install)
+    /// would perform, one line each, mirroring the strategy it picks from
+    /// `ctx`. The shared flow prints these before anything mutates so the
+    /// user can approve exactly what will happen.
+    fn plan(&self, ctx: &InstallCtx) -> Vec<String>;
+
     /// Whether this installer honors `ctx.pin` (`--version`).
     fn supports_pin(&self) -> bool {
         false
     }
 }
 
-/// The shared install flow: idempotence check, announce, install, verify.
+/// The shared install flow: idempotence check, plan, confirm, install,
+/// verify. Nothing mutates the machine until the plan is approved.
 pub fn run_installer(installer: &dyn Installer, ctx: &InstallCtx) -> anyhow::Result<()> {
+    run_installer_with(installer, ctx, std::io::stdin().is_terminal(), &|prompt| {
+        ui::confirm(prompt, true)
+    })
+}
+
+/// [`run_installer`] with interactivity and the confirmation prompt
+/// injected, so every branch of the gate is testable without a terminal.
+fn run_installer_with(
+    installer: &dyn Installer,
+    ctx: &InstallCtx,
+    interactive: bool,
+    confirm: &dyn Fn(&str) -> anyhow::Result<bool>,
+) -> anyhow::Result<()> {
     let name = installer.name();
     if let Some(found) = installer.detect(ctx) {
         match ctx.pin.as_deref() {
@@ -81,8 +110,18 @@ pub fn run_installer(installer: &dyn Installer, ctx: &InstallCtx) -> anyhow::Res
     }
 
     match ctx.pin.as_deref() {
-        Some(pin) => ui::println(&format!("installing {name} {pin}")),
-        None => ui::println(&format!("installing {name}")),
+        Some(pin) => ui::println(&format!("installing {name} {pin} will:")),
+        None => ui::println(&format!("installing {name} will:")),
+    }
+    for line in installer.plan(ctx) {
+        ui::println(&format!("  {line}"));
+    }
+    if approve_install(name, ctx.yes, ctx.plan_approved, interactive, confirm)?
+        == InstallApproval::ConfirmedNow
+    {
+        // The plan the user just approved listed any sudo commands, so
+        // that one answer covers them: sudo steps must not ask again.
+        ctx.sudo_approved.set(true);
     }
     installer.install(ctx)?;
 
@@ -128,8 +167,9 @@ impl InstallCtx<'_> {
 
     /// Run one install step under sudo. The step and its exact command are
     /// always announced; the user is asked before anything runs unless
-    /// `--yes` was given. Non-interactive runs without `--yes` refuse with
-    /// guidance instead of hanging.
+    /// `--yes` was given or this install's plan (which listed the sudo
+    /// command) was already confirmed. Non-interactive runs without
+    /// `--yes` refuse with guidance instead of hanging.
     pub fn run_sudo_step(
         &self,
         what: &str,
@@ -138,9 +178,12 @@ impl InstallCtx<'_> {
     ) -> anyhow::Result<CommandOutput> {
         ui::println(&format!("{what} (needs sudo)"));
         ui::println(&format!("  will run: sudo {program} {}", args.join(" ")));
-        approve_sudo(what, self.yes, std::io::stdin().is_terminal(), |prompt| {
-            ui::confirm(prompt, true)
-        })?;
+        approve_sudo(
+            what,
+            self.yes || self.sudo_approved.get(),
+            std::io::stdin().is_terminal(),
+            |prompt| ui::confirm(prompt, true),
+        )?;
         let mut sudo_args = vec![program];
         sudo_args.extend_from_slice(args);
         self.log_command("sudo", &sudo_args);
@@ -153,6 +196,45 @@ impl InstallCtx<'_> {
         if self.verbose {
             ui::println(&format!("$ {program} {}", args.join(" ")));
         }
+    }
+}
+
+/// How the install gate let a run proceed.
+#[derive(Debug, PartialEq, Eq)]
+enum InstallApproval {
+    /// `--yes`, or a surrounding flow already approved the plan.
+    AlreadyApproved,
+    /// The user answered yes to this install's own confirmation.
+    ConfirmedNow,
+}
+
+/// The install gate, pure in everything but the injected `confirm` so
+/// every branch is unit-testable: `--yes` and an already-approved plan
+/// proceed without asking, an interactive session is asked once, and a
+/// non-interactive session without `--yes` refuses before anything
+/// mutates.
+fn approve_install(
+    name: &str,
+    yes: bool,
+    plan_approved: bool,
+    interactive: bool,
+    confirm: &dyn Fn(&str) -> anyhow::Result<bool>,
+) -> anyhow::Result<InstallApproval> {
+    if yes || plan_approved {
+        return Ok(InstallApproval::AlreadyApproved);
+    }
+    if !interactive {
+        return Err(anyhow!(
+            "installing {name} would change this machine, and hpds cannot ask for \
+             permission in a non-interactive session"
+        ))
+        .hint("re-run with --yes to approve the plan above, or run from an interactive terminal");
+    }
+    if confirm(&format!("install {name} now?"))? {
+        Ok(InstallApproval::ConfirmedNow)
+    } else {
+        Err(anyhow!("install declined: {name}"))
+            .hint(format!("re-run `hpds install {name}` when you are ready"))
     }
 }
 
@@ -235,9 +317,25 @@ mod tests {
             yes: false,
             verbose: false,
             pin: None,
+            plan_approved: false,
+            sudo_approved: Cell::new(false),
             runner,
             fetcher: &PanicFetcher,
         }
+    }
+
+    /// A ctx whose plan was already approved by a surrounding flow, for
+    /// tests of everything downstream of the confirmation gate.
+    fn approved_ctx(runner: &FakeRunner) -> InstallCtx<'_> {
+        InstallCtx {
+            plan_approved: true,
+            ..ctx(runner)
+        }
+    }
+
+    /// A confirm seam for paths that must never ask.
+    fn no_prompt(prompt: &str) -> anyhow::Result<bool> {
+        panic!("this flow must not prompt (asked: {prompt})");
     }
 
     /// Fake installer whose detection result flips after `install` runs,
@@ -275,6 +373,10 @@ mod tests {
             self.installed_on.borrow_mut().push(ctx.os);
             *self.detected.borrow_mut() = self.after_install.clone();
             Ok(())
+        }
+
+        fn plan(&self, _ctx: &InstallCtx) -> Vec<String> {
+            vec!["fake install strategy".to_string()]
         }
 
         fn supports_pin(&self) -> bool {
@@ -381,7 +483,7 @@ mod tests {
         let installer = FakeInstaller::new(Some("1.8.27"), Some("1.9.36"));
         let ctx = InstallCtx {
             pin: Some("1.9.36".to_string()),
-            ..ctx(&runner)
+            ..approved_ctx(&runner)
         };
         run_installer(&installer, &ctx).expect("reinstall must succeed");
         assert_eq!(installer.install_count(), 1);
@@ -391,7 +493,7 @@ mod tests {
     fn absent_tool_is_installed_and_verified() {
         let runner = FakeRunner::default();
         let installer = FakeInstaller::new(None, Some("1.9.36"));
-        run_installer(&installer, &ctx(&runner)).expect("install must succeed");
+        run_installer(&installer, &approved_ctx(&runner)).expect("install must succeed");
         assert_eq!(installer.install_count(), 1);
     }
 
@@ -399,7 +501,7 @@ mod tests {
     fn install_that_leaves_the_tool_off_path_errors_with_guidance() {
         let runner = FakeRunner::default();
         let installer = FakeInstaller::new(None, None);
-        let err = run_installer(&installer, &ctx(&runner)).expect_err("verify must fail");
+        let err = run_installer(&installer, &approved_ctx(&runner)).expect_err("verify must fail");
         let out = render_error(&err, false);
         assert!(out.contains("PATH"), "{out}");
         assert!(out.contains("hint:"), "{out}");
@@ -418,9 +520,12 @@ mod tests {
             fn install(&self, _ctx: &InstallCtx) -> anyhow::Result<()> {
                 Err(anyhow!("download failed"))
             }
+            fn plan(&self, _ctx: &InstallCtx) -> Vec<String> {
+                vec!["fake install strategy".to_string()]
+            }
         }
         let runner = FakeRunner::default();
-        let err = run_installer(&FailingInstaller, &ctx(&runner)).expect_err("must fail");
+        let err = run_installer(&FailingInstaller, &approved_ctx(&runner)).expect_err("must fail");
         assert!(err.to_string().contains("download failed"), "{err}");
     }
 
@@ -452,6 +557,9 @@ mod tests {
                 });
                 Ok(())
             }
+            fn plan(&self, _ctx: &InstallCtx) -> Vec<String> {
+                vec!["fake install strategy".to_string()]
+            }
         }
 
         for (os, want) in [
@@ -463,10 +571,197 @@ mod tests {
             let installer = StrategyInstaller {
                 chosen: RefCell::new(Vec::new()),
             };
-            let ctx = InstallCtx { os, ..ctx(&runner) };
+            let ctx = InstallCtx {
+                os,
+                ..approved_ctx(&runner)
+            };
             run_installer(&installer, &ctx).expect("install must succeed");
             assert_eq!(*installer.chosen.borrow(), vec![want], "{os:?}");
         }
+    }
+
+    // --- the confirmation gate before any mutation --------------------------
+
+    /// Fake installer whose install runs one command through the runner,
+    /// under sudo when asked, so the gate's ordering against real
+    /// mutation is observable in the runner's call log.
+    struct OneStepInstaller {
+        sudo: bool,
+        installed: Cell<bool>,
+    }
+
+    impl OneStepInstaller {
+        fn new(sudo: bool) -> Self {
+            OneStepInstaller {
+                sudo,
+                installed: Cell::new(false),
+            }
+        }
+    }
+
+    impl Installer for OneStepInstaller {
+        fn name(&self) -> &'static str {
+            "faketool"
+        }
+
+        fn detect(&self, _ctx: &InstallCtx) -> Option<String> {
+            // Installed once its command ran, so verification passes.
+            if self.installed.get() {
+                Some("1.0.0".to_string())
+            } else {
+                None
+            }
+        }
+
+        fn install(&self, ctx: &InstallCtx) -> anyhow::Result<()> {
+            if self.sudo {
+                ctx.run_sudo_step("adding faketool", "faker", &["add", "release"])?;
+            } else {
+                ctx.run_step("adding faketool", "faker", &["add", "release"])?;
+            }
+            self.installed.set(true);
+            Ok(())
+        }
+
+        fn plan(&self, _ctx: &InstallCtx) -> Vec<String> {
+            if self.sudo {
+                vec!["sudo faker add release".to_string()]
+            } else {
+                vec!["faker add release".to_string()]
+            }
+        }
+    }
+
+    #[test]
+    fn interactive_install_asks_before_any_command_and_declining_runs_nothing() {
+        let runner = FakeRunner::default();
+        let installer = FakeInstaller::new(None, Some("1.9.36"));
+        let err = run_installer_with(&installer, &ctx(&runner), true, &|_| Ok(false))
+            .expect_err("declining must stop the install");
+        let out = render_error(&err, false);
+        assert!(out.contains("declined"), "{out}");
+        assert!(out.contains("hint:"), "{out}");
+        assert_eq!(installer.install_count(), 0, "nothing may install");
+        assert!(
+            runner.calls.borrow().is_empty(),
+            "zero commands may run: {:?}",
+            runner.calls.borrow()
+        );
+    }
+
+    #[test]
+    fn interactive_install_runs_after_the_user_confirms() {
+        let runner = FakeRunner::default();
+        let installer = FakeInstaller::new(None, Some("1.9.36"));
+        let asked = RefCell::new(0);
+        run_installer_with(&installer, &ctx(&runner), true, &|_| {
+            *asked.borrow_mut() += 1;
+            Ok(true)
+        })
+        .expect("a confirmed install must proceed");
+        assert_eq!(*asked.borrow(), 1, "exactly one confirmation");
+        assert_eq!(installer.install_count(), 1);
+    }
+
+    #[test]
+    fn yes_installs_without_prompting() {
+        let runner = FakeRunner::default();
+        let installer = FakeInstaller::new(None, Some("1.9.36"));
+        let ctx = InstallCtx {
+            yes: true,
+            ..ctx(&runner)
+        };
+        run_installer_with(&installer, &ctx, true, &no_prompt).expect("--yes must not prompt");
+        assert_eq!(installer.install_count(), 1);
+    }
+
+    #[test]
+    fn already_installed_no_ops_without_prompting() {
+        let runner = FakeRunner::default();
+        let installer = FakeInstaller::new(Some("1.8.27"), None);
+        run_installer_with(&installer, &ctx(&runner), true, &no_prompt)
+            .expect("a no-op must not prompt");
+        assert_eq!(installer.install_count(), 0);
+    }
+
+    #[test]
+    fn non_interactive_without_yes_refuses_before_any_command() {
+        let runner = FakeRunner::default();
+        let installer = FakeInstaller::new(None, Some("1.9.36"));
+        let err = run_installer_with(&installer, &ctx(&runner), false, &no_prompt)
+            .expect_err("must refuse without --yes");
+        let out = render_error(&err, false);
+        assert!(out.contains("--yes"), "{out}");
+        assert!(out.contains("hint:"), "{out}");
+        assert_eq!(installer.install_count(), 0, "nothing may install");
+        assert!(runner.calls.borrow().is_empty());
+    }
+
+    #[test]
+    fn a_single_sudo_step_install_prompts_exactly_once() {
+        // The whole install is one sudo step: the plan confirmation must
+        // cover it, so the user sees exactly one prompt.
+        let runner = FakeRunner::default().with_output("sudo faker add release", "");
+        let installer = OneStepInstaller::new(true);
+        let asked = RefCell::new(0);
+        run_installer_with(&installer, &ctx(&runner), true, &|_| {
+            *asked.borrow_mut() += 1;
+            Ok(true)
+        })
+        .expect("a confirmed sudo-only install must run");
+        assert_eq!(*asked.borrow(), 1, "one confirmation covers the sudo step");
+        assert_eq!(*runner.calls.borrow(), vec!["sudo faker add release"]);
+    }
+
+    #[test]
+    fn plan_approved_ctx_installs_without_its_own_prompt() {
+        // `hpds setup` confirms its whole plan up front; each install must
+        // then run without re-asking — but its sudo steps still would (the
+        // plan approval deliberately does not pre-approve sudo).
+        let runner = FakeRunner::default().with_output("faker add release", "");
+        let installer = OneStepInstaller::new(false);
+        let ctx = approved_ctx(&runner);
+        run_installer_with(&installer, &ctx, true, &no_prompt)
+            .expect("an approved plan must not re-prompt");
+        assert_eq!(*runner.calls.borrow(), vec!["faker add release"]);
+        assert!(
+            !ctx.sudo_approved.get(),
+            "a surrounding flow's approval must not silently cover sudo"
+        );
+    }
+
+    #[test]
+    fn approve_install_with_yes_or_an_approved_plan_never_prompts() {
+        for (yes, plan_approved) in [(true, false), (false, true), (true, true)] {
+            let approval = approve_install("quarto", yes, plan_approved, false, &no_prompt)
+                .expect("pre-approved");
+            assert_eq!(approval, InstallApproval::AlreadyApproved);
+        }
+    }
+
+    #[test]
+    fn approve_install_interactive_confirms_and_covers_sudo() {
+        let approval = approve_install("quarto", false, false, true, &|_| Ok(true))
+            .expect("confirmed install must proceed");
+        assert_eq!(approval, InstallApproval::ConfirmedNow);
+    }
+
+    #[test]
+    fn approve_install_interactive_decline_is_an_actionable_error() {
+        let err = approve_install("quarto", false, false, true, &|_| Ok(false))
+            .expect_err("declining must stop the install");
+        let out = render_error(&err, false);
+        assert!(out.contains("declined"), "{out}");
+        assert!(out.contains("hpds install quarto"), "{out}");
+    }
+
+    #[test]
+    fn approve_install_non_interactive_without_yes_refuses_with_guidance() {
+        let err = approve_install("quarto", false, false, false, &no_prompt)
+            .expect_err("must refuse without --yes");
+        let out = render_error(&err, false);
+        assert!(out.contains("quarto"), "{out}");
+        assert!(out.contains("--yes"), "{out}");
     }
 
     // --- steps and sudo gating --------------------------------------------
@@ -505,6 +800,18 @@ mod tests {
             *runner.calls.borrow(),
             vec!["sudo apt-get install -y quarto"]
         );
+    }
+
+    #[test]
+    fn sudo_step_skips_the_prompt_after_the_plan_was_confirmed() {
+        // Tests run without a terminal, so if the confirmed plan did not
+        // cover this step, approve_sudo would refuse instead of running.
+        let runner = FakeRunner::default().with_output("sudo apt-get update", "");
+        let ctx = ctx(&runner);
+        ctx.sudo_approved.set(true);
+        ctx.run_sudo_step("refreshing package lists", "apt-get", &["update"])
+            .expect("a confirmed plan must cover its sudo steps");
+        assert_eq!(*runner.calls.borrow(), vec!["sudo apt-get update"]);
     }
 
     #[test]

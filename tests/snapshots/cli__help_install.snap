@@ -4,7 +4,7 @@ expression: "help_output(& [\"install\", \"--help\"])"
 ---
 Install external software (r, quarto, uv, gh, rig, tinytex, duckdb)
 
-Installs developer tooling onto the machine — distinct from the formatter/linter tools hpds manages internally for `format`/`lint`. Steps that need sudo print exactly what they will run first; pass --yes to skip the confirmation prompts.
+Installs developer tooling onto the machine — distinct from the formatter/linter tools hpds manages internally for `format`/`lint`. Prints exactly what will run and asks for confirmation before changing anything; pass --yes to skip the prompt.
 
 Usage: hpds install [OPTIONS] <TOOL>
 
@@ -23,7 +23,7 @@ Options:
           Suppress all output except errors
 
   -y, --yes
-          Skip confirmation prompts; sudo steps still print what they will run
+          Skip the confirmation prompt; the plan of what will run is still printed first
 
       --no-color
           Disable colored output

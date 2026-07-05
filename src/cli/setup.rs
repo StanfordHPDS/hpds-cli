@@ -86,6 +86,12 @@ pub fn run(args: SetupArgs, global: &GlobalArgs) -> anyhow::Result<()> {
             yes: args.yes,
             verbose: global.verbose,
             pin: None,
+            // The setup flow gates the whole batch itself (checklist or
+            // `--yes`) before anything executes, so the per-install
+            // confirmation would only re-ask what the user already
+            // approved. Sudo steps still confirm individually.
+            plan_approved: true,
+            sudo_approved: std::cell::Cell::new(false),
             runner: &runner,
             fetcher: &fetcher,
         },

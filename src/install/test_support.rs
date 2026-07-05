@@ -187,6 +187,8 @@ pub fn ctx_on<'a>(
         yes: true,
         verbose: false,
         pin: None,
+        plan_approved: false,
+        sudo_approved: std::cell::Cell::new(false),
         runner,
         fetcher,
     }

@@ -174,3 +174,66 @@ fn install_pinned_to_the_installed_version_is_a_no_op() {
         .success()
         .stdout(predicate::str::contains("already installed"));
 }
+
+/// Not installed + non-interactive + no --yes: the plan is printed and
+/// the run refuses before any command executes.
+#[cfg(unix)]
+#[test]
+fn install_without_yes_non_interactively_refuses_before_running_anything() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let bin = tempfile::tempdir().expect("tempdir");
+    let marker = bin.path().join("brew-ran");
+    let brew = bin.path().join("brew");
+    std::fs::write(&brew, format!("#!/bin/sh\ntouch {}\n", marker.display()))
+        .expect("write fake brew");
+    std::fs::set_permissions(&brew, std::fs::Permissions::from_mode(0o755))
+        .expect("mark fake brew executable");
+
+    hpds()
+        .args(["install", "uv"])
+        .env("PATH", format!("{}:/usr/bin:/bin", bin.path().display()))
+        .assert()
+        .failure()
+        .stdout(
+            predicate::str::contains("installing uv will:")
+                .and(predicate::str::contains("brew install uv")),
+        )
+        .stderr(predicate::str::contains("--yes"));
+
+    assert!(!marker.exists(), "no command may run without approval");
+}
+
+/// --yes prints the plan and runs the strategy without prompting; the
+/// fake brew "installs" a uv shim so post-install verification passes.
+#[cfg(unix)]
+#[test]
+fn install_with_yes_prints_the_plan_and_runs_the_strategy() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let bin = tempfile::tempdir().expect("tempdir");
+    let brew = bin.path().join("brew");
+    std::fs::write(
+        &brew,
+        format!(
+            "#!/bin/sh\n\
+             printf '#!/bin/sh\\necho uv 0.9.0\\n' > {dir}/uv\n\
+             chmod +x {dir}/uv\n",
+            dir = bin.path().display()
+        ),
+    )
+    .expect("write fake brew");
+    std::fs::set_permissions(&brew, std::fs::Permissions::from_mode(0o755))
+        .expect("mark fake brew executable");
+
+    hpds()
+        .args(["install", "uv", "--yes"])
+        .env("PATH", format!("{}:/usr/bin:/bin", bin.path().display()))
+        .assert()
+        .success()
+        .stdout(
+            predicate::str::contains("installing uv will:")
+                .and(predicate::str::contains("brew install uv"))
+                .and(predicate::str::contains("uv 0.9.0 installed")),
+        );
+}

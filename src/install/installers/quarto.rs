@@ -48,6 +48,27 @@ impl Installer for Quarto {
         true
     }
 
+    fn plan(&self, ctx: &InstallCtx) -> Vec<String> {
+        let version = ctx
+            .pin
+            .clone()
+            .unwrap_or_else(|| versions::QUARTO.to_string());
+        match ctx.os {
+            Os::Mac | Os::Linux => vec![tree_plan(&version)],
+            Os::Windows => {
+                if on_path(ctx, "winget") {
+                    let mut line = "winget install --id Posit.Quarto --exact".to_string();
+                    if let Some(pin) = ctx.pin.as_deref() {
+                        line.push_str(&format!(" --version {pin}"));
+                    }
+                    vec![line]
+                } else {
+                    vec![tree_plan(&version)]
+                }
+            }
+        }
+    }
+
     fn install(&self, ctx: &InstallCtx) -> anyhow::Result<()> {
         let version = ctx
             .pin
@@ -68,6 +89,19 @@ impl Installer for Quarto {
             }
         }
         Ok(())
+    }
+}
+
+/// One plan line for [`fetch_tree_to_user_dirs`]: the release download
+/// and where the tree and launcher will land.
+fn tree_plan(version: &str) -> String {
+    match (user_opt_dir(), user_bin_dir()) {
+        (Ok(opt), Ok(bin)) => format!(
+            "download quarto {version} into `{}` with a launcher in `{}`",
+            opt.display(),
+            bin.display()
+        ),
+        _ => format!("download the quarto {version} release"),
     }
 }
 
@@ -217,5 +251,22 @@ mod tests {
     #[test]
     fn quarto_supports_version_pins() {
         assert!(Quarto.supports_pin());
+    }
+
+    #[test]
+    fn quarto_plan_mirrors_the_strategy_selection() {
+        let fetcher = FakeFetcher::default();
+        let bare = FakeRunner::default();
+
+        let plan = Quarto.plan(&ctx_on(Os::Linux, &bare, &fetcher));
+        assert_eq!(plan.len(), 1);
+        assert!(plan[0].contains("download quarto"), "{plan:?}");
+        assert!(plan[0].contains(versions::QUARTO), "{plan:?}");
+
+        let with_winget = FakeRunner::default().on_path("winget");
+        assert_eq!(
+            Quarto.plan(&ctx_on(Os::Windows, &with_winget, &fetcher)),
+            vec!["winget install --id Posit.Quarto --exact".to_string()]
+        );
     }
 }

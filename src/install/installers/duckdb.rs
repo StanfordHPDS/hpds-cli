@@ -8,7 +8,7 @@
 use crate::install::{InstallCtx, Installer};
 use crate::tools::{Os, ToolKind, ToolSpec, versions};
 
-use super::{fetch_to_user_bin, on_path};
+use super::{fetch_plan, fetch_to_user_bin, on_path};
 
 pub struct DuckDb;
 
@@ -42,6 +42,22 @@ impl Installer for DuckDb {
 
     fn supports_pin(&self) -> bool {
         true
+    }
+
+    fn plan(&self, ctx: &InstallCtx) -> Vec<String> {
+        let version = ctx
+            .pin
+            .clone()
+            .unwrap_or_else(|| versions::DUCKDB.to_string());
+        match ctx.os {
+            Os::Mac if ctx.pin.is_none() && on_path(ctx, "brew") => {
+                vec!["brew install duckdb".to_string()]
+            }
+            Os::Windows if ctx.pin.is_none() && on_path(ctx, "winget") => {
+                vec!["winget install --id DuckDB.cli --exact".to_string()]
+            }
+            _ => vec![fetch_plan("duckdb", &version)],
+        }
     }
 
     fn install(&self, ctx: &InstallCtx) -> anyhow::Result<()> {
@@ -170,6 +186,33 @@ mod tests {
         DuckDb.install(&ctx).expect("pinned fetch must succeed");
         assert!(runner.calls.borrow().is_empty());
         assert_eq!(fetcher.calls.borrow()[0].version, "1.5.0");
+    }
+
+    #[test]
+    fn duckdb_plan_mirrors_the_strategy_selection() {
+        let fetcher = FakeFetcher::default();
+
+        let with_brew = FakeRunner::default().on_path("brew");
+        assert_eq!(
+            DuckDb.plan(&ctx_on(Os::Mac, &with_brew, &fetcher)),
+            vec!["brew install duckdb".to_string()]
+        );
+
+        let bare = FakeRunner::default();
+        let plan = DuckDb.plan(&ctx_on(Os::Mac, &bare, &fetcher));
+        assert_eq!(plan.len(), 1);
+        assert!(plan[0].contains("download"), "{plan:?}");
+        assert!(plan[0].contains(versions::DUCKDB), "{plan:?}");
+
+        let pinned = InstallCtx {
+            pin: Some("1.5.0".to_string()),
+            ..ctx_on(Os::Mac, &with_brew, &fetcher)
+        };
+        let plan = DuckDb.plan(&pinned);
+        assert!(
+            plan[0].contains("1.5.0"),
+            "a pin must take the release path: {plan:?}"
+        );
     }
 
     #[test]

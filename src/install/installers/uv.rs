@@ -12,7 +12,7 @@ use crate::install::{InstallCtx, Installer};
 use crate::tools::{Os, ToolSpec, versions};
 use crate::ui::HintExt;
 
-use super::{fetch_to_user_bin, on_path};
+use super::{fetch_plan, fetch_to_user_bin, on_path};
 
 pub struct Uv;
 
@@ -27,6 +27,24 @@ impl Installer for Uv {
 
     fn supports_pin(&self) -> bool {
         true
+    }
+
+    fn plan(&self, ctx: &InstallCtx) -> Vec<String> {
+        match ctx.os {
+            Os::Mac | Os::Linux => {
+                if ctx.pin.is_none() && on_path(ctx, "brew") {
+                    vec!["brew install uv".to_string()]
+                } else {
+                    let version = ctx.pin.clone().unwrap_or_else(|| versions::UV.to_string());
+                    vec![fetch_plan("uv", &version)]
+                }
+            }
+            Os::Windows => vec![
+                "nothing: uv on Windows is not supported yet, so only the official \
+                 installer command is printed"
+                    .to_string(),
+            ],
+        }
     }
 
     fn install(&self, ctx: &InstallCtx) -> anyhow::Result<()> {
@@ -131,6 +149,26 @@ mod tests {
         Uv.install(&ctx).expect("pinned fetch must succeed");
         assert!(runner.calls.borrow().is_empty(), "brew cannot pin versions");
         assert_eq!(fetcher.calls.borrow()[0].version, "0.9.9");
+    }
+
+    #[test]
+    fn uv_plan_mirrors_the_strategy_selection() {
+        let fetcher = FakeFetcher::default();
+
+        let with_brew = FakeRunner::default().on_path("brew");
+        assert_eq!(
+            Uv.plan(&ctx_on(Os::Linux, &with_brew, &fetcher)),
+            vec!["brew install uv".to_string()]
+        );
+
+        let bare = FakeRunner::default();
+        let plan = Uv.plan(&ctx_on(Os::Mac, &bare, &fetcher));
+        assert_eq!(plan.len(), 1);
+        assert!(plan[0].contains("download"), "{plan:?}");
+        assert!(plan[0].contains(versions::UV), "{plan:?}");
+
+        let plan = Uv.plan(&ctx_on(Os::Windows, &bare, &fetcher));
+        assert!(plan[0].contains("not supported"), "{plan:?}");
     }
 
     #[test]

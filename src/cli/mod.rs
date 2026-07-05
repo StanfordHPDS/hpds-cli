@@ -98,8 +98,8 @@ pub enum Command {
     ///
     /// Installs developer tooling onto the machine — distinct from the
     /// formatter/linter tools hpds manages internally for `format`/`lint`.
-    /// Steps that need sudo print exactly what they will run first; pass
-    /// --yes to skip the confirmation prompts.
+    /// Prints exactly what will run and asks for confirmation before
+    /// changing anything; pass --yes to skip the prompt.
     Install(install::InstallArgs),
     /// Set up a fresh machine with the lab toolchain
     ///

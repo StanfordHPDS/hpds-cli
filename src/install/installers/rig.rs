@@ -24,6 +24,27 @@ impl Installer for Rig {
         ctx.probe_version("rig")
     }
 
+    fn plan(&self, ctx: &InstallCtx) -> Vec<String> {
+        // Each OS has exactly one strategy; when its package manager is
+        // missing, `install` errors with guidance before running anything.
+        match ctx.os {
+            Os::Mac => vec![
+                "brew tap r-lib/rig".to_string(),
+                "brew install --cask rig".to_string(),
+            ],
+            Os::Linux => vec![
+                "sudo curl -L https://rig.r-pkg.org/deb/rig.gpg \
+                 -o /etc/apt/trusted.gpg.d/rig.gpg"
+                    .to_string(),
+                "register the rig apt repository in /etc/apt/sources.list.d/rig.list (sudo)"
+                    .to_string(),
+                "sudo apt-get update".to_string(),
+                "sudo apt-get install -y r-rig".to_string(),
+            ],
+            Os::Windows => vec!["winget install --id posit.rig --exact".to_string()],
+        }
+    }
+
     fn install(&self, ctx: &InstallCtx) -> anyhow::Result<()> {
         match ctx.os {
             Os::Mac => {
@@ -220,5 +241,28 @@ mod tests {
     #[test]
     fn rig_does_not_support_version_pins() {
         assert!(!Rig.supports_pin());
+    }
+
+    #[test]
+    fn rig_plan_names_the_package_manager_commands_per_os() {
+        let runner = FakeRunner::default();
+        let fetcher = FakeFetcher::default();
+        assert_eq!(
+            Rig.plan(&ctx_on(Os::Mac, &runner, &fetcher)),
+            vec![
+                "brew tap r-lib/rig".to_string(),
+                "brew install --cask rig".to_string()
+            ]
+        );
+        let linux = Rig.plan(&ctx_on(Os::Linux, &runner, &fetcher));
+        assert!(
+            linux.iter().any(|l| l == "sudo apt-get install -y r-rig"),
+            "{linux:?}"
+        );
+        assert_eq!(
+            Rig.plan(&ctx_on(Os::Windows, &runner, &fetcher)),
+            vec!["winget install --id posit.rig --exact".to_string()]
+        );
+        assert!(runner.calls.borrow().is_empty(), "planning must not run");
     }
 }

@@ -21,7 +21,8 @@ pub struct InstallArgs {
     #[arg(long, value_name = "VERSION")]
     pub version: Option<String>,
 
-    /// Skip confirmation prompts; sudo steps still print what they will run
+    /// Skip the confirmation prompt; the plan of what will run is still
+    /// printed first
     #[arg(short = 'y', long)]
     pub yes: bool,
 }
@@ -45,6 +46,8 @@ pub fn run(args: InstallArgs, global: &GlobalArgs) -> anyhow::Result<()> {
         yes: args.yes,
         verbose: global.verbose,
         pin: args.version,
+        plan_approved: false,
+        sudo_approved: std::cell::Cell::new(false),
         runner: &runner,
         fetcher: &fetcher,
     };

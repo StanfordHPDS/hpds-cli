@@ -524,6 +524,10 @@ mod tests {
                 yes,
                 verbose: false,
                 pin: None,
+                // Mirrors the CLI wiring: the setup flow's own gate
+                // approves the batch before any step executes.
+                plan_approved: true,
+                sudo_approved: std::cell::Cell::new(false),
                 runner,
                 fetcher,
             },

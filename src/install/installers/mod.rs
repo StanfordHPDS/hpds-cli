@@ -25,6 +25,18 @@ fn on_path(ctx: &InstallCtx, program: &str) -> bool {
     ctx.runner.which(program).is_some()
 }
 
+/// One plan line for the release-binary strategy: what
+/// [`fetch_to_user_bin`] will download and where it will land.
+fn fetch_plan(tool: &str, version: &str) -> String {
+    match user_bin_dir() {
+        Ok(dir) => format!(
+            "download the {tool} {version} release binary into `{}`",
+            dir.display()
+        ),
+        Err(_) => format!("download the {tool} {version} release binary"),
+    }
+}
+
 /// Download `spec`'s release binary at `version` and place it in the
 /// per-user bin directory, warning when that directory is off `PATH`.
 fn fetch_to_user_bin(ctx: &InstallCtx, spec: &ToolSpec, version: &str) -> anyhow::Result<PathBuf> {
@@ -137,6 +149,8 @@ mod online_tests {
             yes: false,
             verbose: false,
             pin: None,
+            plan_approved: false,
+            sudo_approved: std::cell::Cell::new(false),
             runner,
             fetcher: &PanicFetcher,
         }

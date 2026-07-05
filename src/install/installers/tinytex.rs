@@ -55,6 +55,10 @@ impl Installer for TinyTex {
         tlmgr_version(ctx)
     }
 
+    fn plan(&self, _ctx: &InstallCtx) -> Vec<String> {
+        vec!["quarto install tinytex --update-path".to_string()]
+    }
+
     fn install(&self, ctx: &InstallCtx) -> anyhow::Result<()> {
         if !on_path(ctx, "quarto") {
             return Err(anyhow!(
@@ -124,6 +128,16 @@ mod tests {
 
     fn list_tools_fixture(name: &str) -> String {
         tool_output_fixture(&format!("tinytex/{name}"))
+    }
+
+    #[test]
+    fn tinytex_plan_is_the_quarto_tool_command() {
+        let runner = FakeRunner::default();
+        let fetcher = FakeFetcher::default();
+        assert_eq!(
+            TinyTex.plan(&ctx_on(Os::Mac, &runner, &fetcher)),
+            vec!["quarto install tinytex --update-path".to_string()]
+        );
     }
 
     // --- parsing the recorded listings -------------------------------------

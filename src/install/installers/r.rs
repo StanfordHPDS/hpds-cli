@@ -26,17 +26,36 @@ impl Installer for R {
         true
     }
 
+    fn plan(&self, ctx: &InstallCtx) -> Vec<String> {
+        let mut lines = Vec::new();
+        if let Ok(rig) = registry::find("rig")
+            && rig.detect(ctx).is_none()
+        {
+            lines.push("install rig first (R installs through rig):".to_string());
+            lines.extend(rig.plan(ctx));
+        }
+        let wanted = ctx.pin.as_deref().unwrap_or("release");
+        lines.push(match ctx.os {
+            Os::Mac | Os::Linux => format!("sudo rig add {wanted}"),
+            Os::Windows => format!("rig add {wanted}"),
+        });
+        lines
+    }
+
     fn install(&self, ctx: &InstallCtx) -> anyhow::Result<()> {
         let rig = registry::find("rig")?;
         if rig.detect(ctx).is_none() {
             ui::println("R installs through rig, which is not installed yet; installing rig");
             // rig gets its own ctx: an R `--version` pin must not leak
-            // into the rig install.
+            // into the rig install. The plan approval carries over: this
+            // install's confirmed plan already listed the rig steps.
             let rig_ctx = InstallCtx {
                 os: ctx.os,
                 yes: ctx.yes,
                 verbose: ctx.verbose,
                 pin: None,
+                plan_approved: ctx.plan_approved,
+                sudo_approved: ctx.sudo_approved.clone(),
                 runner: ctx.runner,
                 fetcher: ctx.fetcher,
             };
@@ -234,5 +253,53 @@ mod tests {
     #[test]
     fn r_supports_version_pins() {
         assert!(R.supports_pin());
+    }
+
+    #[test]
+    fn r_plan_is_the_sudo_rig_add_when_rig_is_installed() {
+        let runner = FakeRunner::default()
+            .on_path("rig")
+            .with_output("rig --version", &probe_fixture("rig.txt"));
+        let fetcher = FakeFetcher::default();
+        assert_eq!(
+            R.plan(&ctx_on(Os::Linux, &runner, &fetcher)),
+            vec!["sudo rig add release".to_string()]
+        );
+        assert_eq!(
+            R.plan(&ctx_on(Os::Windows, &runner, &fetcher)),
+            vec!["rig add release".to_string()]
+        );
+    }
+
+    #[test]
+    fn r_plan_includes_the_rig_install_when_rig_is_missing() {
+        let runner = FakeRunner::default().on_path("brew");
+        let fetcher = FakeFetcher::default();
+        let plan = R.plan(&ctx_on(Os::Mac, &runner, &fetcher));
+        assert!(
+            plan.iter().any(|l| l.contains("install rig first")),
+            "{plan:?}"
+        );
+        assert!(
+            plan.iter().any(|l| l == "brew install --cask rig"),
+            "{plan:?}"
+        );
+        assert_eq!(
+            plan.last().map(String::as_str),
+            Some("sudo rig add release")
+        );
+    }
+
+    #[test]
+    fn r_plan_names_the_pinned_version() {
+        let runner = FakeRunner::default()
+            .on_path("rig")
+            .with_output("rig --version", &probe_fixture("rig.txt"));
+        let fetcher = FakeFetcher::default();
+        let ctx = InstallCtx {
+            pin: Some("4.5.1".to_string()),
+            ..ctx_on(Os::Mac, &runner, &fetcher)
+        };
+        assert_eq!(R.plan(&ctx), vec!["sudo rig add 4.5.1".to_string()]);
     }
 }

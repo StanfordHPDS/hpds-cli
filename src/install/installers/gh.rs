@@ -11,7 +11,7 @@ use crate::install::{InstallCtx, Installer};
 use crate::tools::{Os, ToolKind, ToolSpec, versions};
 use crate::ui::HintExt;
 
-use super::{fetch_to_user_bin, on_path};
+use super::{fetch_plan, fetch_to_user_bin, on_path};
 
 pub struct Gh;
 
@@ -49,6 +49,37 @@ impl Installer for Gh {
         true
     }
 
+    fn plan(&self, ctx: &InstallCtx) -> Vec<String> {
+        let version = ctx.pin.clone().unwrap_or_else(|| versions::GH.to_string());
+        match ctx.os {
+            Os::Mac => {
+                if ctx.pin.is_none() && on_path(ctx, "brew") {
+                    vec!["brew install gh".to_string()]
+                } else {
+                    vec![fetch_plan("gh", &version)]
+                }
+            }
+            Os::Linux => {
+                if ctx.pin.is_none() && on_path(ctx, "apt-get") {
+                    apt_plan()
+                } else {
+                    vec![fetch_plan("gh", &version)]
+                }
+            }
+            Os::Windows => {
+                if on_path(ctx, "winget") {
+                    let mut line = "winget install --id GitHub.cli --exact".to_string();
+                    if let Some(pin) = ctx.pin.as_deref() {
+                        line.push_str(&format!(" --version {pin}"));
+                    }
+                    vec![line]
+                } else {
+                    vec![fetch_plan("gh", &version)]
+                }
+            }
+        }
+    }
+
     fn install(&self, ctx: &InstallCtx) -> anyhow::Result<()> {
         let version = ctx.pin.clone().unwrap_or_else(|| versions::GH.to_string());
         match ctx.os {
@@ -80,6 +111,24 @@ impl Installer for Gh {
         }
         Ok(())
     }
+}
+
+/// The plan lines for [`install_from_apt`]: the same commands, one per
+/// line, with the arch spelled as the probe that resolves it.
+fn apt_plan() -> Vec<String> {
+    vec![
+        "sudo mkdir -p -m 755 /etc/apt/keyrings".to_string(),
+        format!(
+            "sudo curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
+             -o {KEYRING}"
+        ),
+        format!("sudo chmod go+r {KEYRING}"),
+        "register the GitHub CLI apt repository in \
+         /etc/apt/sources.list.d/github-cli.list (sudo)"
+            .to_string(),
+        "sudo apt-get update".to_string(),
+        "sudo apt-get install -y gh".to_string(),
+    ]
 }
 
 /// The official GitHub CLI apt repository steps, run natively one command
@@ -280,6 +329,38 @@ mod tests {
             assert!(runner.calls.borrow().is_empty(), "{os:?}");
             assert_eq!(fetcher.calls.borrow()[0].version, "2.90.0", "{os:?}");
         }
+    }
+
+    #[test]
+    fn gh_plan_mirrors_the_strategy_selection() {
+        let fetcher = FakeFetcher::default();
+
+        let with_brew = FakeRunner::default().on_path("brew");
+        assert_eq!(
+            Gh.plan(&ctx_on(Os::Mac, &with_brew, &fetcher)),
+            vec!["brew install gh".to_string()]
+        );
+
+        let bare = FakeRunner::default();
+        let plan = Gh.plan(&ctx_on(Os::Mac, &bare, &fetcher));
+        assert!(plan[0].contains("download"), "{plan:?}");
+        assert!(plan[0].contains(versions::GH), "{plan:?}");
+    }
+
+    #[test]
+    fn gh_plan_on_linux_lists_the_apt_commands() {
+        let runner = FakeRunner::default().on_path("apt-get");
+        let fetcher = FakeFetcher::default();
+        let plan = Gh.plan(&ctx_on(Os::Linux, &runner, &fetcher));
+        assert!(
+            plan.iter().any(|l| l == "sudo apt-get install -y gh"),
+            "{plan:?}"
+        );
+        assert!(
+            plan.iter().filter(|l| l.contains("sudo")).count() >= 4,
+            "every privileged apt step must be visible: {plan:?}"
+        );
+        assert!(runner.calls.borrow().is_empty(), "planning must not run");
     }
 
     #[test]
