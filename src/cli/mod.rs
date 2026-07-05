@@ -7,16 +7,12 @@ mod audit;
 mod audit_all;
 mod completions;
 mod config;
-mod fmt_lint;
-mod format;
 mod git;
 mod init;
 mod install;
-mod lint;
 mod project;
 mod repo;
 mod setup;
-mod tools;
 mod upgrade;
 mod r#use;
 mod version;
@@ -25,7 +21,7 @@ use std::path::PathBuf;
 
 use clap::{Args, Parser, Subcommand};
 
-/// Unified tooling for the Stanford HPDS lab: format, lint, templates,
+/// Unified tooling for the Stanford HPDS lab: project templates, machine
 /// setup, and repo audits.
 #[derive(Debug, Parser)]
 #[command(name = "hpds", version, arg_required_else_help = true)]
@@ -59,22 +55,6 @@ pub struct GlobalArgs {
 
 #[derive(Debug, Subcommand)]
 pub enum Command {
-    /// Format project files in place (R, Python, Quarto, SQL, Markdown)
-    ///
-    /// Discovers files from the given paths (or the whole project when none
-    /// are given), routes each to its formatter behind one interface, and
-    /// rewrites them in place. Pass --check to report what would change
-    /// without touching anything (exit 1 when formatting is needed).
-    /// Respects .gitignore, the [format] config, and any per-tool config the
-    /// project already has (air.toml, ruff.toml, .sqlfluff).
-    Format(format::FormatArgs),
-    /// Report lint violations across the project
-    ///
-    /// Runs each language's linter and prints normalized diagnostics
-    /// (file:line:col, rule, message), exiting 1 when any remain. --fix
-    /// applies safe autofixes first, then reports what is left; --format json
-    /// emits a stable, machine-readable schema.
-    Lint(lint::LintArgs),
     /// Set up a new or existing project interactively
     ///
     /// Walks through the project name, language(s), and components (pipeline,
@@ -96,10 +76,9 @@ pub enum Command {
     Use(r#use::UseArgs),
     /// Install external software (r, quarto, uv, gh, rig, tinytex, duckdb)
     ///
-    /// Installs developer tooling onto the machine — distinct from the
-    /// formatter/linter tools hpds manages internally for `format`/`lint`.
-    /// Prints exactly what will run and asks for confirmation before
-    /// changing anything; pass --yes to skip the prompt.
+    /// Installs developer tooling onto the machine. Prints exactly what
+    /// will run and asks for confirmation before changing anything; pass
+    /// --yes to skip the prompt.
     Install(install::InstallArgs),
     /// Set up a fresh machine with the lab toolchain
     ///
@@ -128,13 +107,6 @@ pub enum Command {
     /// to GitHub as a sticky PR comment or deduplicated issues. --format json
     /// emits the stable schema the audit bot consumes.
     Audit(audit::AuditArgs),
-    /// Manage hpds-installed formatter/linter tools (advanced)
-    ///
-    /// Inspects and maintains the private tool cache hpds downloads on first
-    /// use. `list` shows installed and default versions; `update` refreshes
-    /// to release defaults or config pins; `clean` drops the cache. Most
-    /// users never need this.
-    Tools(tools::ToolsArgs),
     /// Print the resolved configuration and where each value came from
     ///
     /// Prints the fully layered configuration (built-in defaults, then user
@@ -165,8 +137,6 @@ pub fn run(cli: Cli) -> anyhow::Result<()> {
     apply_global_args(&cli.global);
     let global = cli.global;
     match cli.command {
-        Command::Format(args) => format::run(args, &global),
-        Command::Lint(args) => lint::run(args, &global),
         Command::Init(args) => init::run(args),
         Command::Project(args) => project::run(args),
         Command::Use(args) => r#use::run(args, &global),
@@ -175,7 +145,6 @@ pub fn run(cli: Cli) -> anyhow::Result<()> {
         Command::Git(args) => git::run(args),
         Command::Repo(args) => repo::run(args),
         Command::Audit(args) => audit::run(args, &global),
-        Command::Tools(args) => tools::run(args, &global),
         Command::Config(args) => config::run(args, &global),
         Command::Completions(args) => completions::run(args),
         Command::Version => version::run(),
@@ -184,12 +153,11 @@ pub fn run(cli: Cli) -> anyhow::Result<()> {
 }
 
 /// Push the global flags into `ui`'s process-wide state before dispatch:
-/// `--quiet` gates informational stdout output, `--no-color` forces color
-/// off, and `--verbose` enables the `running …` invocation log. `--config`
-/// is consumed by the commands that need it.
+/// `--quiet` gates informational stdout output and `--no-color` forces
+/// color off. `--verbose` and `--config` are consumed by the commands
+/// that need them.
 fn apply_global_args(global: &GlobalArgs) {
     crate::ui::set_quiet(global.quiet);
-    crate::ui::set_verbose(global.verbose);
     crate::ui::set_color_choice(color_choice_for(global.no_color));
 }
 

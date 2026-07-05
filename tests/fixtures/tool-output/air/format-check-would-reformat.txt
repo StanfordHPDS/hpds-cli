@@ -1,2 +1,0 @@
-Would reformat: analysis/model.r
-Would reformat: needs_formatting.R

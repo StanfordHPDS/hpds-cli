@@ -85,7 +85,9 @@ impl Arch {
 }
 
 impl Platform {
-    /// All six supported OS/arch pairs.
+    /// All six supported OS/arch pairs (exercised by platform-matrix
+    /// unit tests; production code detects one platform at runtime).
+    #[cfg(test)]
     pub const ALL: [Platform; 6] = [
         Platform {
             os: Os::Mac,

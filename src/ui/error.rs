@@ -121,14 +121,14 @@ mod tests {
 
     #[test]
     fn renders_hint_as_trailing_hint_line_not_a_cause() {
-        let err: anyhow::Error = Err::<(), _>(anyhow!("`ruff` not found in tool cache"))
-            .hint("run `hpds tools update` to install it")
+        let err: anyhow::Error = Err::<(), _>(anyhow!("`gh` not found on PATH"))
+            .hint("run `hpds install gh` to install it")
             .unwrap_err();
         let out = render_error(&err, false);
         assert_eq!(
             out,
-            "error: `ruff` not found in tool cache\n\
-             hint: run `hpds tools update` to install it"
+            "error: `gh` not found on PATH\n\
+             hint: run `hpds install gh` to install it"
         );
         assert!(!out.contains("caused by"));
     }
@@ -136,13 +136,13 @@ mod tests {
     #[test]
     fn renders_hint_after_cause_chain() {
         let err: anyhow::Error =
-            Err::<(), _>(anyhow!("connection refused").context("could not download ruff"))
+            Err::<(), _>(anyhow!("connection refused").context("could not download gh"))
                 .hint("check your network connection or proxy settings")
                 .unwrap_err();
         let out = render_error(&err, false);
         assert_eq!(
             out,
-            "error: could not download ruff\n\
+            "error: could not download gh\n\
              caused by: connection refused\n\
              hint: check your network connection or proxy settings"
         );

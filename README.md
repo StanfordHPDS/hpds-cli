@@ -4,18 +4,19 @@
 [![Release](https://img.shields.io/github/v/release/StanfordHPDS/hpds-cli?label=release)](https://github.com/StanfordHPDS/hpds-cli/releases/latest)
 
 `hpds` is the command-line tool for the Stanford Health Policy Data Science lab.
-It is a single binary for macOS, Linux, and Windows that does four jobs:
+It is a single binary for macOS, Linux, and Windows that does three jobs:
 
-1. **Format & lint** any lab project — R, Python, Quarto, SQL — behind one stable
-   interface. You run `hpds format`; you never think about the tools underneath.
-2. **Scaffold** projects from lab templates (`hpds init`, `hpds use ...`).
-3. **Set up machines** with the lab toolchain (`hpds install ...`, `hpds setup`).
-4. **Audit repos** against lab standards, locally and across the GitHub org
+1. **Scaffold** projects from lab templates (`hpds init`, `hpds use ...`).
+2. **Set up machines** with the lab toolchain (`hpds install ...`, `hpds setup`).
+3. **Audit repos** against lab standards, locally and across the GitHub org
    (`hpds audit`, `hpds audit all`).
 
+Formatting and linting are provided by the lab's separate
+[togi](https://github.com/StanfordHPDS/togi) tool.
+
 Everything works with zero configuration; `hpds.toml` only overrides defaults. The
-defaults encode the lab's agreements — tidyverse R style, BigQuery SQL dialect,
-snake_case scaffolds, private-first repos in the `StanfordHPDS` org.
+defaults encode the lab's agreements — snake_case scaffolds, private-first repos in
+the `StanfordHPDS` org.
 
 ## Install
 
@@ -52,35 +53,6 @@ hpds 0.1.0   # no-verify
 ```
 
 ## Quickstart
-
-### Format & lint
-
-Format the whole project in place, or check without writing:
-
-```console
-$ hpds format
-✓ 42 files formatted, 3 changed
-
-$ hpds format --check
-would reformat: messy.R
-would reformat: query.sql
-error: 2 of 8 files would be reformatted
-hint: run `hpds format` to apply the changes
-```
-
-Lint reports violations across every language at once, fixes the safe ones with
-`--fix`, and emits a stable JSON schema for tooling:
-
-```console
-$ hpds lint
-violations.py:1:8: F401 [*] `os` imported but unused
-query.sql:1:9: LT01 [*] Unexpected whitespace before comma ','.
-error: found 2 issues (2 fixable with `hpds lint --fix`)
-hint: run `hpds lint --fix` to apply the safe fixes, then fix the rest by hand
-
-$ hpds lint --fix
-$ hpds lint --format json
-```
 
 ### Scaffold a project
 

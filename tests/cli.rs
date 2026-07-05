@@ -26,8 +26,6 @@ macro_rules! help_snapshot {
 }
 
 help_snapshot!(help_root);
-help_snapshot!(help_format, "format");
-help_snapshot!(help_lint, "lint");
 help_snapshot!(help_init, "init");
 help_snapshot!(help_project, "project");
 help_snapshot!(help_project_init, "project", "init");
@@ -42,10 +40,6 @@ help_snapshot!(help_repo_create, "repo", "create");
 help_snapshot!(help_audit, "audit");
 help_snapshot!(help_audit_all, "audit", "all");
 help_snapshot!(help_audit_report_github, "audit", "report-github");
-help_snapshot!(help_tools, "tools");
-help_snapshot!(help_tools_list, "tools", "list");
-help_snapshot!(help_tools_update, "tools", "update");
-help_snapshot!(help_tools_clean, "tools", "clean");
 help_snapshot!(help_config, "config");
 help_snapshot!(help_completions, "completions");
 help_snapshot!(help_version, "version");
@@ -58,6 +52,39 @@ fn version_command_prints_version() {
         .assert()
         .success()
         .stdout(predicate::str::contains(env!("CARGO_PKG_VERSION")));
+}
+
+#[test]
+fn version_command_prints_exactly_the_plain_version() {
+    // One line, no per-tool version list.
+    hpds()
+        .arg("version")
+        .assert()
+        .success()
+        .stdout(predicate::str::diff(format!(
+            "hpds {}\n",
+            env!("CARGO_PKG_VERSION")
+        )));
+}
+
+#[test]
+fn formatting_and_linting_are_not_hpds_commands() {
+    // Formatting/linting is provided by the separate togi tool; hpds no
+    // longer has these commands (nor the tool-cache management that
+    // supported them).
+    for command in ["format", "lint", "tools"] {
+        hpds().arg(command).assert().code(2);
+    }
+    let help = help_output(&["--help"]);
+    for command in ["format", "lint", "tools"] {
+        assert!(
+            !help.lines().any(|line| {
+                line.trim_start().starts_with(&format!("{command} "))
+                    || line.trim_start() == command
+            }),
+            "`hpds --help` must not list `{command}`:\n{help}"
+        );
+    }
 }
 
 #[test]

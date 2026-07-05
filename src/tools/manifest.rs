@@ -38,14 +38,18 @@ impl Manifest {
         }
     }
 
-    /// Read and parse a manifest file.
+    /// Read and parse a manifest file (tests verify installs through it;
+    /// production code only checks the file's presence).
+    #[cfg(test)]
     pub fn load(path: &Path) -> anyhow::Result<Manifest> {
+        const RESET_HINT: &str = "delete the `tools` directory inside the hpds data \
+                                  directory to reset the download cache, then retry";
         let text = std::fs::read_to_string(path)
             .with_context(|| format!("could not read tool manifest `{}`", path.display()))
-            .hint("run `hpds tools clean` to reset the tool cache, then retry")?;
+            .hint(RESET_HINT)?;
         serde_json::from_str(&text)
             .with_context(|| format!("could not parse tool manifest `{}`", path.display()))
-            .hint("run `hpds tools clean` to reset the tool cache, then retry")
+            .hint(RESET_HINT)
     }
 
     /// Write the manifest as pretty-printed JSON, creating parent
@@ -144,7 +148,7 @@ mod tests {
         let rendered = crate::ui::render_error(&err, false);
         assert!(rendered.contains("manifest.json"), "{rendered}");
         assert!(rendered.contains("hint:"), "{rendered}");
-        assert!(rendered.contains("hpds tools clean"), "{rendered}");
+        assert!(rendered.contains("data directory"), "{rendered}");
     }
 
     #[test]

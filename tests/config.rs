@@ -65,10 +65,7 @@ fn config_with_no_files_prints_builtin_defaults() {
         .stdout(
             predicate::str::contains("built-in defaults")
                 .and(predicate::str::contains(r#"status = "active""#))
-                .and(predicate::str::contains(r#"dialect = "bigquery""#))
-                .and(predicate::str::contains(
-                    r#"languages = ["r", "python", "quarto", "sql", "markdown"]"#,
-                )),
+                .and(predicate::str::contains("stale-days = 90")),
         )
         .stderr(predicate::str::is_empty());
 }
@@ -76,13 +73,12 @@ fn config_with_no_files_prints_builtin_defaults() {
 #[test]
 fn config_discovers_project_file_walking_up_from_subdirectory() {
     let sb = Sandbox::new();
-    sb.write_project_config("[sql]\ndialect = \"duckdb\"\n");
+    sb.write_project_config("[audit]\nstale-days = 30\n");
     let nested = sb.project.join("analysis").join("deep");
     fs::create_dir_all(&nested).expect("create nested dirs");
 
     sb.config_cmd_in(&nested).assert().success().stdout(
-        predicate::str::contains(r#"dialect = "duckdb""#)
-            .and(predicate::str::contains("hpds.toml")),
+        predicate::str::contains("stale-days = 30").and(predicate::str::contains("hpds.toml")),
     );
 }
 
@@ -92,25 +88,25 @@ fn discovery_stops_at_git_root() {
     let sb = Sandbox::new();
     fs::write(
         sb.project.parent().unwrap().join("hpds.toml"),
-        "[sql]\ndialect = \"duckdb\"\n",
+        "[audit]\nstale-days = 30\n",
     )
     .expect("write outer hpds.toml");
 
     sb.config_cmd()
         .assert()
         .success()
-        .stdout(predicate::str::contains(r#"dialect = "bigquery""#));
+        .stdout(predicate::str::contains("stale-days = 90"));
 }
 
 #[test]
 fn user_config_overrides_defaults_and_project_overrides_user() {
     let sb = Sandbox::new();
-    sb.write_user_config("[sql]\ndialect = \"duckdb\"\n[project]\nstatus = \"submitted\"\n");
-    sb.write_project_config("[sql]\ndialect = \"postgres\"\n");
+    sb.write_user_config("[audit]\nstale-days = 30\n[project]\nstatus = \"submitted\"\n");
+    sb.write_project_config("[audit]\nstale-days = 45\n");
 
     sb.config_cmd().assert().success().stdout(
-        // project wins for sql.dialect; user's project.status survives.
-        predicate::str::contains(r#"dialect = "postgres""#)
+        // project wins for audit.stale-days; user's project.status survives.
+        predicate::str::contains("stale-days = 45")
             .and(predicate::str::contains(r#"status = "submitted""#)),
     );
 }
@@ -118,14 +114,14 @@ fn user_config_overrides_defaults_and_project_overrides_user() {
 #[test]
 fn explicit_config_flag_overrides_discovery() {
     let sb = Sandbox::new();
-    sb.write_project_config("[sql]\ndialect = \"postgres\"\n");
+    sb.write_project_config("[project]\nstatus = \"submitted\"\n");
     let other = sb.project.join("other.toml");
-    fs::write(&other, "[sql]\ndialect = \"sqlite\"\n").expect("write other.toml");
+    fs::write(&other, "[project]\nstatus = \"published\"\n").expect("write other.toml");
 
     let mut cmd = sb.config_cmd();
     cmd.arg("--config").arg(&other);
     cmd.assert().success().stdout(
-        predicate::str::contains(r#"dialect = "sqlite""#)
+        predicate::str::contains(r#"status = "published""#)
             .and(predicate::str::contains("other.toml")),
     );
 }
@@ -161,6 +157,28 @@ fn unknown_keys_warn_but_do_not_error() {
                 .and(predicate::str::contains("typo-section"))
                 .and(predicate::str::contains("project.frobnicate"))
                 .and(predicate::str::contains("hpds.toml")),
+        );
+}
+
+#[test]
+fn removed_formatting_sections_warn_as_unknown_keys() {
+    // `[format]`, `[lint]`, `[sql]`, and `[tools]` belong to togi now; an
+    // hpds.toml still carrying them loads fine, with a warning per table.
+    let sb = Sandbox::new();
+    sb.write_project_config(
+        "[project]\nstatus = \"active\"\n\n[format]\nlanguages = [\"r\"]\n\n[lint]\nexclude = []\n\n[sql]\ndialect = \"bigquery\"\n\n[tools]\nair = \"0.10.0\"\n",
+    );
+
+    sb.config_cmd()
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(r#"status = "active""#))
+        .stderr(
+            predicate::str::contains("warning:")
+                .and(predicate::str::contains("format"))
+                .and(predicate::str::contains("lint"))
+                .and(predicate::str::contains("sql"))
+                .and(predicate::str::contains("tools")),
         );
 }
 
@@ -207,7 +225,7 @@ fn project_config_may_still_set_audit_stale_days() {
 #[test]
 fn invalid_toml_errors_with_path_and_hint() {
     let sb = Sandbox::new();
-    sb.write_project_config("[sql\ndialect = \"bigquery\"\n");
+    sb.write_project_config("[audit\nstale-days = 30\n");
 
     sb.config_cmd().assert().failure().code(1).stderr(
         predicate::str::contains("error:")
@@ -220,9 +238,7 @@ fn invalid_toml_errors_with_path_and_hint() {
 fn json_format_emits_resolved_config_and_sources() {
     let sb = Sandbox::new();
     sb.write_user_config("[project]\nprimary-author = \"malcolm\"\n");
-    sb.write_project_config(
-        "[sql]\ndialect = \"duckdb\"\n[tools]\nair = \"0.10.0\"\n[tools.ruff]\nargs = [\"--fast\"]\n",
-    );
+    sb.write_project_config("[audit]\nstale-days = 30\n");
 
     let assert = sb
         .config_cmd()
@@ -233,11 +249,9 @@ fn json_format_emits_resolved_config_and_sources() {
     let stdout = String::from_utf8(assert.get_output().stdout.clone()).expect("utf-8 stdout");
     let value: serde_json::Value = serde_json::from_str(&stdout).expect("stdout should be JSON");
 
-    assert_eq!(value["config"]["sql"]["dialect"], "duckdb");
+    assert_eq!(value["config"]["audit"]["stale-days"], 30);
     assert_eq!(value["config"]["project"]["primary-author"], "malcolm");
     assert_eq!(value["config"]["project"]["status"], "active");
-    assert_eq!(value["config"]["tools"]["air"]["version"], "0.10.0");
-    assert_eq!(value["config"]["tools"]["ruff"]["args"][0], "--fast");
     let project_source = value["sources"]["project"]
         .as_str()
         .expect("project source should be a path");
@@ -261,19 +275,5 @@ fn json_sources_are_null_when_no_files_contribute() {
     let value: serde_json::Value = serde_json::from_str(&stdout).expect("stdout should be JSON");
     assert!(value["sources"]["user"].is_null());
     assert!(value["sources"]["project"].is_null());
-    assert_eq!(value["config"]["sql"]["dialect"], "bigquery");
-}
-
-#[test]
-fn tool_pins_and_args_render_in_text_output() {
-    let sb = Sandbox::new();
-    sb.write_project_config(
-        "[tools]\nair = \"0.10.0\"\n[tools.ruff]\nargs = [\"--fast\", \"--quiet\"]\n",
-    );
-
-    sb.config_cmd().assert().success().stdout(
-        predicate::str::contains(r#"air = "0.10.0""#)
-            .and(predicate::str::contains("[tools.ruff]"))
-            .and(predicate::str::contains(r#"args = ["--fast", "--quiet"]"#)),
-    );
+    assert_eq!(value["config"]["audit"]["stale-days"], 90);
 }

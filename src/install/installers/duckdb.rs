@@ -6,7 +6,7 @@
 //! binary. A `--version` pin always takes the release-binary path.
 
 use crate::install::{InstallCtx, Installer};
-use crate::tools::{Os, ToolKind, ToolSpec, versions};
+use crate::tools::{Os, ToolSpec, versions};
 
 use super::{fetch_plan, fetch_to_user_bin, on_path};
 
@@ -19,15 +19,13 @@ pub(super) fn release_spec(os: Os) -> ToolSpec {
     ToolSpec {
         name: "duckdb",
         default_version: versions::DUCKDB,
-        kind: ToolKind::GithubBinary {
-            repo: "duckdb/duckdb",
-            asset_pattern: match os {
-                Os::Mac => "duckdb_cli-osx-universal.zip",
-                Os::Linux => "duckdb_cli-linux-{alt-arch}.zip",
-                Os::Windows => "duckdb_cli-windows-{alt-arch}.zip",
-            },
-            checksum_pattern: None,
+        repo: "duckdb/duckdb",
+        asset_pattern: match os {
+            Os::Mac => "duckdb_cli-osx-universal.zip",
+            Os::Linux => "duckdb_cli-linux-{alt-arch}.zip",
+            Os::Windows => "duckdb_cli-windows-{alt-arch}.zip",
         },
+        checksum_pattern: None,
     }
 }
 
@@ -226,8 +224,8 @@ mod tests {
         for (os, arch, want) in cases {
             let platform = Platform { os, arch };
             assert_eq!(
-                release_spec(os).asset_name(platform, "1.5.4").as_deref(),
-                Some(want),
+                release_spec(os).asset_name(platform, "1.5.4"),
+                want,
                 "{os:?}/{arch:?}"
             );
         }

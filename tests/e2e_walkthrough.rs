@@ -3,20 +3,14 @@
 //! at every step.
 //!
 //! The workflow is: scaffold a project (`hpds init --yes` with a full option
-//! set) → commit it so the audit has a clean baseline → format it
-//! (`hpds format`, then `--check`) → lint it (`hpds lint`) → audit it
-//! (`hpds audit`) → resolve its config (`hpds config`).
-//!
-//! The scaffold/audit/config half needs no external tools and runs in the
-//! default offline suite (`walkthrough_offline`). The format/lint half needs
-//! the real managed tools (air, panache, …), so the whole workflow including
-//! those steps lives in the `online` module behind the `online-tests`
-//! feature and `#[ignore]`.
+//! set) → commit it so the audit has a clean baseline → audit it
+//! (`hpds audit`) → resolve its config (`hpds config`). Formatting and
+//! linting belong to the separate togi tool, so they are not part of the
+//! hpds walkthrough.
 //!
 //! Isolation: every step redirects HOME, the git global/system config, and
-//! the hpds config and data (tool-cache) directories into the tempdir, so
-//! the test never reads or writes the developer's real HOME, git config, or
-//! tool cache.
+//! the hpds config and data directories into the tempdir, so the test never
+//! reads or writes the developer's real HOME, git config, or downloads.
 
 use std::fs;
 use std::path::PathBuf;
@@ -82,9 +76,10 @@ impl Walkthrough {
     }
 
     /// A fully isolated `hpds <args...>` invocation from the project dir. All
-    /// state — HOME, git config, hpds config, and the tool cache — points
-    /// into the tempdir.
-    fn hpds_online(&self, args: &[&str]) -> Command {
+    /// state — HOME, git config, hpds config, and the download cache —
+    /// points into the tempdir, and the release-download host points at a
+    /// closed port so no step can ever touch the network.
+    fn hpds(&self, args: &[&str]) -> Command {
         let mut cmd = Command::cargo_bin("hpds").expect("hpds binary should build");
         cmd.current_dir(&self.project)
             .env("HOME", &self.home)
@@ -94,16 +89,8 @@ impl Walkthrough {
             .env("HPDS_DATA_DIR", &self.data_dir)
             .env("GIT_CONFIG_GLOBAL", &self.git_global)
             .env("GIT_CONFIG_SYSTEM", &self.git_system)
+            .env("HPDS_RELEASE_BASE_URL", dead_url())
             .args(args);
-        cmd
-    }
-
-    /// Like [`Walkthrough::hpds_online`] but with the tool-download host
-    /// pointed at a closed port, so the offline steps can never touch the
-    /// network: anything that tried to fetch a tool would fail fast.
-    fn hpds(&self, args: &[&str]) -> Command {
-        let mut cmd = self.hpds_online(args);
-        cmd.env("HPDS_RELEASE_BASE_URL", dead_url());
         cmd
     }
 
@@ -194,7 +181,7 @@ impl Walkthrough {
         self.git(&["commit", "--quiet", "-m", "scaffold project"]);
     }
 
-    /// Step 5: audit the committed project. On a freshly scaffolded repo the
+    /// Step 3: audit the committed project. On a freshly scaffolded repo the
     /// only finding is the Info notice that the GitHub checks were skipped
     /// (no origin remote), so the audit passes.
     fn audit(&self) {
@@ -205,14 +192,14 @@ impl Walkthrough {
         );
     }
 
-    /// Step 6: the resolved, layered config prints and reflects the
+    /// Step 4: the resolved, layered config prints and reflects the
     /// scaffolded `hpds.toml`.
     fn config(&self) {
         self.hpds(&["config"]).assert().success().stdout(
             predicate::str::contains("[project]")
                 .and(predicate::str::contains(r#"status = "active""#))
                 .and(predicate::str::contains(r#"primary-author = "malcolm""#))
-                .and(predicate::str::contains(r#"dialect = "bigquery""#)),
+                .and(predicate::str::contains("stale-days = 90")),
         );
     }
 }
@@ -226,8 +213,8 @@ fn dead_url() -> String {
     format!("http://127.0.0.1:{port}")
 }
 
-/// The tool-free half of the walkthrough: scaffold → commit → audit →
-/// resolve config. Runs in the default suite.
+/// The whole walkthrough: scaffold → commit → audit → resolve config.
+/// Needs no external tools, so it runs in the default offline suite.
 #[test]
 fn walkthrough_offline() {
     let wt = Walkthrough::new();
@@ -235,53 +222,4 @@ fn walkthrough_offline() {
     wt.commit_baseline();
     wt.audit();
     wt.config();
-}
-
-/// The whole walkthrough end to end, including the format/lint steps that
-/// download and run the real managed tools.
-///
-/// Run with: `cargo test --features online-tests -- --ignored`
-#[cfg(feature = "online-tests")]
-mod online {
-    use super::*;
-
-    #[test]
-    #[ignore = "downloads and runs the real managed tools from the network"]
-    fn walkthrough_end_to_end() {
-        let wt = Walkthrough::new();
-
-        // 1–2: scaffold and commit a clean baseline.
-        wt.init();
-        wt.commit_baseline();
-
-        // 3: format the scaffold in place (write mode always exits 0), then
-        // a follow-up --check converges to a clean tree (exit 0). This is
-        // the load-bearing invariant: format is idempotent.
-        wt.hpds_online(&["format"]).assert().success();
-        wt.hpds_online(&["format", "--check"])
-            .assert()
-            .success()
-            .stdout(predicate::str::contains("nothing would change"));
-
-        // Commit the formatting so the audit below starts from a clean tree
-        // again (formatting may have rewritten scaffolded files in place).
-        wt.git(&["add", "-A"]);
-        wt.git(&["commit", "--quiet", "-m", "format scaffold"]);
-
-        // 4: lint runs against the (now formatted) scaffold. Assert only
-        // that it ran and returned a findings-or-clean exit code — never a
-        // usage error (2) or a crash — and did not choke. The scaffolds are
-        // expected clean, but the diagnostic detail is asserted loosely so
-        // this does not depend on path-rendering specifics.
-        let assert = wt.hpds_online(&["lint"]).assert();
-        let code = assert.get_output().status.code();
-        assert!(
-            matches!(code, Some(0) | Some(1)),
-            "lint ran and reported findings-or-clean, got exit {code:?}"
-        );
-
-        // 5–6: the audit and config steps behave as offline.
-        wt.audit();
-        wt.config();
-    }
 }

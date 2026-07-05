@@ -17,8 +17,7 @@ use anyhow::Context;
 use serde_json::Value;
 
 use crate::tools::{
-    Downloader, InstallContext, Platform, ToolCache, ToolKind, ToolSpec, extract_binary,
-    github_agent,
+    Downloader, InstallContext, Platform, ToolCache, ToolSpec, extract_binary, github_agent,
 };
 use crate::ui::{self, HintExt};
 
@@ -217,11 +216,9 @@ fn self_spec() -> ToolSpec {
     ToolSpec {
         name: BINARY_NAME,
         default_version: env!("CARGO_PKG_VERSION"),
-        kind: ToolKind::GithubBinary {
-            repo: REPO,
-            asset_pattern: ASSET_PATTERN,
-            checksum_pattern: Some(CHECKSUM_PATTERN),
-        },
+        repo: REPO,
+        asset_pattern: ASSET_PATTERN,
+        checksum_pattern: Some(CHECKSUM_PATTERN),
     }
 }
 
@@ -341,9 +338,7 @@ impl SelfReplacer for ReleaseReplacer {
         };
         let archive = downloader.fetch_archive(&spec, version, &ctx, staging.path())?;
 
-        let asset = spec
-            .asset_name(platform, version)
-            .expect("hpds releases are GitHub binaries");
+        let asset = spec.asset_name(platform, version);
         let binary_name = platform.binary_name(BINARY_NAME);
         let new_exe = staging.path().join(&binary_name);
         extract_binary(&archive, &asset, &binary_name, &new_exe)?;
@@ -614,8 +609,8 @@ mod tests {
             arch: Arch::Aarch64,
         };
         assert_eq!(
-            self_spec().asset_name(mac, "0.2.0").as_deref(),
-            Some("hpds-aarch64-apple-darwin.tar.gz")
+            self_spec().asset_name(mac, "0.2.0"),
+            "hpds-aarch64-apple-darwin.tar.gz"
         );
         assert_eq!(
             self_spec().checksum_asset_name(mac, "0.2.0").as_deref(),

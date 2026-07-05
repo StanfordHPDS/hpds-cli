@@ -8,7 +8,7 @@
 //! pins natively.
 
 use crate::install::{InstallCtx, Installer};
-use crate::tools::{Os, ToolKind, ToolSpec, versions};
+use crate::tools::{Os, ToolSpec, versions};
 use crate::ui::HintExt;
 
 use super::{fetch_plan, fetch_to_user_bin, on_path};
@@ -24,15 +24,13 @@ pub(super) fn release_spec(os: Os) -> ToolSpec {
     ToolSpec {
         name: "gh",
         default_version: versions::GH,
-        kind: ToolKind::GithubBinary {
-            repo: "cli/cli",
-            asset_pattern: match os {
-                Os::Mac => "gh_{version}_macOS_{alt-arch}.zip",
-                Os::Linux => "gh_{version}_linux_{alt-arch}.tar.gz",
-                Os::Windows => "gh_{version}_windows_{alt-arch}.zip",
-            },
-            checksum_pattern: Some("gh_{version}_checksums.txt"),
+        repo: "cli/cli",
+        asset_pattern: match os {
+            Os::Mac => "gh_{version}_macOS_{alt-arch}.zip",
+            Os::Linux => "gh_{version}_linux_{alt-arch}.tar.gz",
+            Os::Windows => "gh_{version}_windows_{alt-arch}.zip",
         },
+        checksum_pattern: Some("gh_{version}_checksums.txt"),
     }
 }
 
@@ -376,11 +374,7 @@ mod tests {
         ];
         for (os, want) in cases {
             let spec = release_spec(os);
-            assert_eq!(
-                spec.asset_name(arm(os), "2.96.0").as_deref(),
-                Some(want),
-                "{os:?}"
-            );
+            assert_eq!(spec.asset_name(arm(os), "2.96.0"), want, "{os:?}");
             assert_eq!(
                 spec.checksum_asset_name(arm(os), "2.96.0").as_deref(),
                 Some("gh_2.96.0_checksums.txt"),

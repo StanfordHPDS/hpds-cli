@@ -91,18 +91,19 @@ fn every_referenced_repo_path_exists() {
 }
 
 #[test]
-fn contributing_covers_the_three_extension_recipes() {
+fn contributing_covers_the_two_extension_recipes() {
     let md = contributing().to_lowercase();
-    for topic in [
-        "adding a language",
-        "adding a managed tool",
-        "adding an audit check",
-    ] {
+    for topic in ["adding a managed tool", "adding an audit check"] {
         assert!(
             md.contains(topic),
             "CONTRIBUTING.md should walk through {topic}"
         );
     }
+    // The format/lint pipeline moved to togi; its recipe must not linger.
+    assert!(
+        !md.contains("adding a language"),
+        "the adding-a-language recipe belongs to togi now"
+    );
 }
 
 #[test]

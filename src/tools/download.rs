@@ -19,7 +19,7 @@ use sha2::Digest;
 use crate::tools::cache::ToolCache;
 use crate::tools::manifest::Manifest;
 use crate::tools::platform::Platform;
-use crate::tools::spec::{ToolKind, ToolSpec};
+use crate::tools::spec::ToolSpec;
 use crate::ui;
 use crate::ui::HintExt;
 
@@ -34,11 +34,10 @@ const STAGING_PREFIX: &str = ".staging-";
 /// Name of the per-tool advisory lock file inside `<tools>/<name>/`.
 const LOCK_FILE: &str = ".lock";
 
-/// Serializes the sections that draw a download progress bar. Parallel
-/// adapter threads can each hit a first-run tool download at once, and
-/// two live bars interleave on stderr into garbage. First-run downloads
-/// are rare and short, so a plain mutex (one bar at a time, the rest
-/// wait) keeps the rendering simple — no `MultiProgress` coordination.
+/// Serializes the sections that draw a download progress bar. Two live
+/// bars would interleave on stderr into garbage, so a plain mutex (one
+/// bar at a time, the rest wait) keeps the rendering simple — no
+/// `MultiProgress` coordination.
 static PROGRESS_SECTION: Mutex<()> = Mutex::new(());
 
 /// Hold the progress-bar section. A poisoned lock is reclaimed rather
@@ -81,17 +80,20 @@ impl ToolLock {
     pub(crate) fn exclusive(&mut self) -> anyhow::Result<fd_lock::RwLockWriteGuard<'_, fs::File>> {
         self.lock
             .write()
-            .context("could not lock the tool cache")
-            .hint("another hpds process may have crashed; retry, or run `hpds tools clean`")
+            .context("could not lock the download cache")
+            .hint(
+                "another hpds process may have crashed; retry, or delete the `tools` \
+                 directory inside the hpds data directory",
+            )
     }
 }
 
 /// How an install run should talk to the user.
 #[derive(Debug, Clone, Copy)]
 pub struct InstallContext<'a> {
-    /// Human label for progress output, e.g. `"R formatter"`.
+    /// Human label for progress output, e.g. `"gh"`.
     pub label: &'a str,
-    /// The hpds command that triggered the install, e.g. `"hpds format"`;
+    /// The hpds command that triggered the install, e.g. `"hpds install"`;
     /// named in the error when the download needs network and has none.
     pub command: &'a str,
     /// Whether to include the tool name and version in progress output.
@@ -145,16 +147,6 @@ impl Downloader {
         version: &str,
         ctx: &InstallContext,
     ) -> anyhow::Result<PathBuf> {
-        let ToolKind::GithubBinary { repo, .. } = spec.kind else {
-            // Internal misrouting, not a user mistake — but still degrade
-            // to a clear error rather than a panic.
-            return Err(anyhow::anyhow!(
-                "`{}` installs via `uv tool install`, not from a GitHub release",
-                spec.name
-            ))
-            .hint("this is an hpds bug; please report it");
-        };
-
         let binary = self.cache.binary_path(spec.name, version, self.platform);
         if self.is_installed(spec.name, version, &binary) {
             return Ok(binary);
@@ -181,10 +173,10 @@ impl Downloader {
                 .with_context(|| {
                     format!("could not remove corrupt install `{}`", tool_dir.display())
                 })
-                .hint("remove the directory by hand, or run `hpds tools clean`")?;
+                .hint("remove the directory by hand, then retry")?;
         }
 
-        self.install(spec, repo, version, ctx, &name_dir, &tool_dir)?;
+        self.install(spec, version, ctx, &name_dir, &tool_dir)?;
         Ok(binary)
     }
 
@@ -199,23 +191,12 @@ impl Downloader {
         ctx: &InstallContext,
         dest_dir: &Path,
     ) -> anyhow::Result<PathBuf> {
-        let ToolKind::GithubBinary { repo, .. } = spec.kind else {
-            // Internal misrouting, not a user mistake — but still degrade
-            // to a clear error rather than a panic.
-            return Err(anyhow::anyhow!(
-                "`{}` installs via `uv tool install`, not from a GitHub release",
-                spec.name
-            ))
-            .hint("this is an hpds bug; please report it");
-        };
-        let asset = spec
-            .asset_name(self.platform, version)
-            .expect("GithubBinary specs always resolve an asset name");
+        let asset = spec.asset_name(self.platform, version);
         let archive_path = dest_dir.join(&asset);
         let message = fetch_message(ctx.label, spec.name, version, ctx.verbose);
         let (_url, tag, actual_sha256) =
-            self.download_archive(spec, repo, version, &asset, &archive_path, &message, ctx)?;
-        self.verify_checksum(spec, repo, version, &tag, &asset, &actual_sha256, ctx)?;
+            self.download_archive(spec, version, &asset, &archive_path, &message, ctx)?;
+        self.verify_checksum(spec, version, &tag, &asset, &actual_sha256, ctx)?;
         Ok(archive_path)
     }
 
@@ -231,15 +212,12 @@ impl Downloader {
     fn install(
         &self,
         spec: &ToolSpec,
-        repo: &str,
         version: &str,
         ctx: &InstallContext,
         name_dir: &Path,
         tool_dir: &Path,
     ) -> anyhow::Result<()> {
-        let asset = spec
-            .asset_name(self.platform, version)
-            .expect("GithubBinary specs always resolve an asset name");
+        let asset = spec.asset_name(self.platform, version);
 
         // Staging lives inside the tool's own cache directory so the final
         // rename never crosses a filesystem boundary.
@@ -257,10 +235,9 @@ impl Downloader {
         let archive_path = staging.path().join(&asset);
         let message = fetch_message(ctx.label, spec.name, version, ctx.verbose);
         let (url, tag, actual_sha256) =
-            self.download_archive(spec, repo, version, &asset, &archive_path, &message, ctx)?;
+            self.download_archive(spec, version, &asset, &archive_path, &message, ctx)?;
 
-        let checksum =
-            self.verify_checksum(spec, repo, version, &tag, &asset, &actual_sha256, ctx)?;
+        let checksum = self.verify_checksum(spec, version, &tag, &asset, &actual_sha256, ctx)?;
 
         let install_dir = staging.path().join("install");
         fs::create_dir(&install_dir).context("could not create the install staging directory")?;
@@ -287,7 +264,10 @@ impl Downloader {
                     tool_dir.display()
                 )
             })
-            .hint("run `hpds tools clean` to reset the tool cache, then retry")?;
+            .hint(
+                "delete the `tools` directory inside the hpds data directory to reset \
+                 the download cache, then retry",
+            )?;
         Ok(())
     }
 
@@ -299,7 +279,6 @@ impl Downloader {
     fn download_archive(
         &self,
         spec: &ToolSpec,
-        repo: &str,
         version: &str,
         asset: &str,
         dest: &Path,
@@ -308,7 +287,7 @@ impl Downloader {
     ) -> anyhow::Result<(String, String, String)> {
         let mut tried = Vec::new();
         for tag in [version.to_string(), format!("v{version}")] {
-            let url = self.release_url(repo, &tag, asset);
+            let url = self.release_url(spec.repo, &tag, asset);
             match self.agent.get(&url).call() {
                 Ok(mut response) => {
                     let sha256 = stream_to_file(&mut response, dest, message)
@@ -340,8 +319,8 @@ impl Downloader {
             tried.join(" and ")
         ))
         .hint(format!(
-            "check the `[tools.{}]` version pin in hpds.toml, or upgrade hpds \
-             for newer default versions",
+            "check the {} version you asked for (a `--version` pin, when given), \
+             or upgrade hpds for newer default versions",
             spec.name
         ))
     }
@@ -353,7 +332,6 @@ impl Downloader {
     fn verify_checksum(
         &self,
         spec: &ToolSpec,
-        repo: &str,
         version: &str,
         tag: &str,
         asset: &str,
@@ -370,7 +348,7 @@ impl Downloader {
             skip("this tool publishes no checksums");
             return Ok(None);
         };
-        let url = self.release_url(repo, tag, &checksum_asset);
+        let url = self.release_url(spec.repo, tag, &checksum_asset);
         let text = match self.agent.get(&url).call() {
             Ok(mut response) => response
                 .body_mut()
@@ -402,7 +380,7 @@ impl Downloader {
             return Err(anyhow::anyhow!(
                 "the checksum file `{url}` holds no sha256 digest"
             ))
-            .hint("the release looks malformed; retry, or pin a different version in hpds.toml");
+            .hint("the release looks malformed; retry, or pin a different version with --version");
         };
         if expected != actual_sha256 {
             return Err(anyhow::anyhow!(
@@ -500,7 +478,7 @@ pub(crate) fn extract_binary(
         ))
         .hint(
             "the tool's release layout may have changed; pin a different version \
-             in hpds.toml or report an hpds bug",
+             with --version or report an hpds bug",
         );
     }
     Ok(())
@@ -637,30 +615,23 @@ mod tests {
         ToolSpec {
             name: "tool",
             default_version: "1.2.3",
-            kind: ToolKind::GithubBinary {
-                repo: "example/tool",
-                asset_pattern: "tool-{version}-{arch}-{os}.{ext}",
-                checksum_pattern: Some("tool-{version}-{arch}-{os}.{ext}.sha256"),
-            },
+            repo: "example/tool",
+            asset_pattern: "tool-{version}-{arch}-{os}.{ext}",
+            checksum_pattern: Some("tool-{version}-{arch}-{os}.{ext}.sha256"),
         }
     }
 
     fn spec_without_checksums() -> ToolSpec {
         ToolSpec {
-            name: "tool",
-            default_version: "1.2.3",
-            kind: ToolKind::GithubBinary {
-                repo: "example/tool",
-                asset_pattern: "tool-{version}-{arch}-{os}.{ext}",
-                checksum_pattern: None,
-            },
+            checksum_pattern: None,
+            ..spec()
         }
     }
 
     fn ctx() -> InstallContext<'static> {
         InstallContext {
-            label: "R formatter",
-            command: "hpds format",
+            label: "tool",
+            command: "hpds install",
             verbose: false,
         }
     }
@@ -951,7 +922,7 @@ mod tests {
             .expect_err("no network and no cache must fail");
         let rendered = crate::ui::render_error(&err, false);
         assert!(rendered.contains("tool"), "{rendered}");
-        assert!(rendered.contains("hpds format"), "{rendered}");
+        assert!(rendered.contains("hpds install"), "{rendered}");
         assert!(rendered.contains("hint:"), "{rendered}");
     }
 
@@ -987,27 +958,6 @@ mod tests {
     }
 
     #[test]
-    fn uv_tools_are_not_downloadable_from_github() {
-        let uv_spec = ToolSpec {
-            name: "sqlfluff",
-            default_version: "3.4.0",
-            kind: ToolKind::UvTool {
-                package: "sqlfluff",
-            },
-        };
-        let dir = tempfile::tempdir().expect("tempdir");
-        let downloader = Downloader::at_base_url(
-            ToolCache::at(dir.path()),
-            linux(),
-            "http://127.0.0.1:1".to_string(),
-        );
-        let err = downloader
-            .ensure_installed(&uv_spec, "3.4.0", &ctx())
-            .expect_err("uv tools take a different install path");
-        assert!(err.to_string().contains("uv"), "{err}");
-    }
-
-    #[test]
     fn agent_config_carries_the_given_proxy() {
         // github_agent feeds Proxy::try_from_env into agent_with_proxy;
         // testing the explicit-proxy plumbing avoids mutating process-wide
@@ -1027,12 +977,12 @@ mod tests {
     #[test]
     fn fetch_message_hides_tool_names_unless_verbose() {
         assert_eq!(
-            fetch_message("R formatter", "air", "0.10.0", false),
-            "Fetching R formatter…"
+            fetch_message("GitHub CLI", "gh", "2.96.0", false),
+            "Fetching GitHub CLI…"
         );
         assert_eq!(
-            fetch_message("R formatter", "air", "0.10.0", true),
-            "Fetching R formatter (air 0.10.0)…"
+            fetch_message("GitHub CLI", "gh", "2.96.0", true),
+            "Fetching GitHub CLI (gh 2.96.0)…"
         );
     }
 
@@ -1132,60 +1082,47 @@ mod tests {
             .expect_err("checksum mismatch must fail");
         assert!(err.to_string().contains("sha256 mismatch"), "{err}");
     }
-
-    #[test]
-    fn fetch_archive_refuses_a_non_release_tool() {
-        let uv_tool = ToolSpec {
-            name: "sqlfluff",
-            default_version: "1.0.0",
-            kind: ToolKind::UvTool {
-                package: "sqlfluff",
-            },
-        };
-        let dir = tempfile::tempdir().expect("tempdir");
-        let downloader = Downloader::at_base_url(
-            ToolCache::at(dir.path()),
-            linux(),
-            "http://127.0.0.1:1".to_string(),
-        );
-        let err = downloader
-            .fetch_archive(&uv_tool, "1.0.0", &ctx(), dir.path())
-            .expect_err("uv tools have no release archive");
-        assert!(err.to_string().contains("uv tool install"), "{err}");
-    }
 }
 
 #[cfg(all(test, feature = "online-tests"))]
 mod online_tests {
     use super::*;
+    use crate::tools::versions;
 
-    /// Downloads a real air release from GitHub and runs `--version`.
-    /// Run with: `cargo test --features online-tests -- --ignored`
+    /// Downloads a real uv release from GitHub into a temp cache and runs
+    /// `--version`. Run with:
+    /// `cargo test --features online-tests -- --ignored`
     #[test]
     #[ignore = "downloads a real release from GitHub"]
-    fn downloads_real_air_and_runs_version() {
+    fn downloads_a_real_release_and_runs_version() {
         let dir = tempfile::tempdir().expect("tempdir");
         let cache = ToolCache::at(dir.path());
         let platform = Platform::current().expect("supported platform");
-        let spec = ToolSpec::builtin("air").expect("air is built in");
+        let spec = ToolSpec {
+            name: "uv",
+            default_version: versions::UV,
+            repo: "astral-sh/uv",
+            asset_pattern: "uv-{arch}-{os}.{ext}",
+            checksum_pattern: Some("uv-{arch}-{os}.{ext}.sha256"),
+        };
         let ctx = InstallContext {
-            label: "R formatter",
-            command: "hpds format",
+            label: "uv",
+            command: "hpds install",
             verbose: true,
         };
 
         let binary = Downloader::new(cache, platform)
             .ensure_installed(&spec, spec.default_version, &ctx)
-            .expect("download and install air");
+            .expect("download and install uv");
         let output = std::process::Command::new(&binary)
             .arg("--version")
             .output()
-            .expect("run air --version");
+            .expect("run uv --version");
         assert!(output.status.success(), "{output:?}");
         let stdout = String::from_utf8_lossy(&output.stdout);
         assert!(
             stdout.contains(spec.default_version),
-            "air --version must report {}: {stdout}",
+            "uv --version must report {}: {stdout}",
             spec.default_version
         );
     }

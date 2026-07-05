@@ -114,8 +114,7 @@ mod online_tests {
         if already_installed("uv") {
             return;
         }
-        let spec = ToolSpec::builtin("uv").expect("uv is built in");
-        fetch_and_probe(&spec, versions::UV);
+        fetch_and_probe(&super::uv::release_spec(), versions::UV);
     }
 
     #[test]

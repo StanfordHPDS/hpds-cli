@@ -91,19 +91,12 @@ fn every_documented_toml_example_parses_with_no_unknown_keys() {
 }
 
 /// Every config key hpds parses today, dotted. Mirrors the parse surface in
-/// `src/config/raw.rs`; `<name>` stands for any managed-tool name.
+/// `src/config/raw.rs`.
 const CANONICAL_KEYS: &[&str] = &[
     "project.status",
     "project.primary-author",
-    "format.languages",
-    "format.exclude",
-    "lint.languages",
-    "lint.exclude",
-    "sql.dialect",
     "audit.stale-days",
     "audit.required-watchers",
-    "tools.<name>.version",
-    "tools.<name>.args",
 ];
 
 #[test]
@@ -129,15 +122,12 @@ fn every_parsed_config_key_is_documented() {
 
 #[test]
 fn the_annotated_example_exercises_every_fixed_key() {
-    // The fixed (non-tool) keys must all appear in the doc's TOML examples,
-    // so "documented" is anchored to something the binary actually parsed.
+    // Every key must appear in the doc's TOML examples, so "documented" is
+    // anchored to something the binary actually parsed.
     let example: String = toml_blocks(&doc()).join("\n");
     for leaf in [
         "status",
         "primary-author",
-        "languages",
-        "exclude",
-        "dialect",
         "stale-days",
         "required-watchers",
     ] {
@@ -146,8 +136,11 @@ fn the_annotated_example_exercises_every_fixed_key() {
             "the TOML examples should set `{leaf}` so the reference is executable"
         );
     }
-    assert!(
-        example.contains("[tools"),
-        "the TOML examples should show a [tools] pin or [tools.<name>] table"
-    );
+    // The formatter/linter tables belong to togi now, not hpds.toml.
+    for gone in ["[format]", "[lint]", "[sql]", "[tools]"] {
+        assert!(
+            !example.contains(gone),
+            "the reference must not document the retired `{gone}` table"
+        );
+    }
 }

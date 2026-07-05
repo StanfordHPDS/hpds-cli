@@ -1,1 +1,0 @@
-Trailing   spaces   collapse   here.

@@ -9,7 +9,7 @@
 
 use crate::install::fetch::{user_bin_dir, user_opt_dir};
 use crate::install::{InstallCtx, Installer};
-use crate::tools::{Os, ToolKind, ToolSpec, versions};
+use crate::tools::{Os, ToolSpec, versions};
 use crate::ui;
 
 use super::on_path;
@@ -23,15 +23,13 @@ pub(super) fn release_spec(os: Os) -> ToolSpec {
     ToolSpec {
         name: "quarto",
         default_version: versions::QUARTO,
-        kind: ToolKind::GithubBinary {
-            repo: "quarto-dev/quarto-cli",
-            asset_pattern: match os {
-                Os::Mac => "quarto-{version}-macos.tar.gz",
-                Os::Linux => "quarto-{version}-linux-{alt-arch}.tar.gz",
-                Os::Windows => "quarto-{version}-win.zip",
-            },
-            checksum_pattern: Some("quarto-{version}-checksums.txt"),
+        repo: "quarto-dev/quarto-cli",
+        asset_pattern: match os {
+            Os::Mac => "quarto-{version}-macos.tar.gz",
+            Os::Linux => "quarto-{version}-linux-{alt-arch}.tar.gz",
+            Os::Windows => "quarto-{version}-win.zip",
         },
+        checksum_pattern: Some("quarto-{version}-checksums.txt"),
     }
 }
 
@@ -235,11 +233,7 @@ mod tests {
         for (os, arch, want) in cases {
             let platform = Platform { os, arch };
             let spec = release_spec(os);
-            assert_eq!(
-                spec.asset_name(platform, "1.9.36").as_deref(),
-                Some(want),
-                "{os:?}/{arch:?}"
-            );
+            assert_eq!(spec.asset_name(platform, "1.9.36"), want, "{os:?}/{arch:?}");
             assert_eq!(
                 spec.checksum_asset_name(platform, "1.9.36").as_deref(),
                 Some("quarto-1.9.36-checksums.txt"),

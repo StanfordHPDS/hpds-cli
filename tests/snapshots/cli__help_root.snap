@@ -2,13 +2,11 @@
 source: tests/cli.rs
 expression: "help_output(& [\"--help\"])"
 ---
-Unified tooling for the Stanford HPDS lab: format, lint, templates, setup, and repo audits
+Unified tooling for the Stanford HPDS lab: project templates, machine setup, and repo audits
 
 Usage: hpds [OPTIONS] <COMMAND>
 
 Commands:
-  format       Format project files in place (R, Python, Quarto, SQL, Markdown)
-  lint         Report lint violations across the project
   init         Set up a new or existing project interactively
   project      Project commands (`hpds project init` is an alias for `hpds init`)
   use          Apply a template component to the current project
@@ -17,7 +15,6 @@ Commands:
   git          Git helpers: sensible defaults and global ignore vaccination
   repo         GitHub repository helpers
   audit        Audit the current repo (or the whole org) against lab standards
-  tools        Manage hpds-installed formatter/linter tools (advanced)
   config       Print the resolved configuration and where each value came from
   completions  Generate shell completions
   version      Print the hpds version

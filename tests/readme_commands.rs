@@ -89,12 +89,12 @@ fn every_readme_hpds_command_parses() {
 #[test]
 fn extraction_reads_prompts_comments_and_no_verify_markers() {
     let sample = "\
-Run `hpds format` to format (prose, not extracted).
+Run `hpds audit` to audit (prose, not extracted).
 
 ```console
-$ hpds format --check
-3 of 8 files would be reformatted
-hpds lint --fix   # autofix what we can
+$ hpds audit --strict
+0 errors, 0 warnings
+hpds git vaccinate   # patch the global ignore
 hpds 0.1.0   # no-verify
 ```
 
@@ -106,6 +106,10 @@ hpds init --yes
 ";
     assert_eq!(
         extract_commands(sample),
-        vec!["hpds format --check", "hpds lint --fix", "hpds init --yes"]
+        vec![
+            "hpds audit --strict",
+            "hpds git vaccinate",
+            "hpds init --yes"
+        ]
     );
 }

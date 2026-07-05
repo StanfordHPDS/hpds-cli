@@ -5,8 +5,10 @@ merged. For user-facing installation and usage, see the [README](README.md). For
 `hpds.toml` keys, see [docs/hpds.toml.md](docs/hpds.toml.md).
 
 `hpds` is deliberately extensible at the source level (no plugin system): adding a
-language, a managed tool, or an audit check is a small, mechanical change to a handful
-of well-known files. The three recipes below name those files and their real symbols.
+managed tool or an audit check is a small, mechanical change to a handful of
+well-known files. The recipes below name those files and their real symbols.
+Formatting and linting live in the lab's separate togi tool; contributions to the
+format/lint pipeline belong there.
 
 ## Development workflow
 
@@ -39,45 +41,32 @@ cargo fmt --check
 Do not weaken or delete tests to get green, and do not reach for `#[allow]` on a
 clippy lint without a genuine reason written in a comment beside it.
 
-## Recipe: adding a language
-
-Adding a language wires a file type through to an underlying formatter/linter. Nothing
-in the command plumbing changes. Work through these files:
-
-1. **Tool spec** — teach `hpds` how to install the underlying tool. Add a default
-   version constant to `src/tools/versions.rs`, then add a `ToolSpec` to
-   `ToolSpec::builtins()` in `src/tools/spec.rs`. Pick the `ToolKind`: a prebuilt
-   release binary is `ToolKind::GithubBinary { repo, asset_pattern, checksum_pattern }`
-   (as air, ruff, and panache use); a Python tool is `ToolKind::UvTool { package }`
-   (as sqlfluff uses).
-
-2. **Language bucket** — in `src/fsx/registry.rs`, add a variant to the `Language`
-   enum, register the file extensions for it in `ExtensionRegistry::with_defaults`, and
-   map its `[format]`/`[lint]` config name in `Language::from_config_name`.
-
-3. **Adapter** — create `src/adapters/<lang>.rs` implementing the `Formatter` and
-   `Linter` traits (and `Adapter`, which just names the tool). Model it on the ruff
-   adapter in `src/adapters/python.rs`: shell out to the managed binary via
-   `ToolCtx::tool_path`, and parse the tool's output into `hpds`'s own `Diagnostic` and
-   `FormatOutcome` types — that normalization is what makes tools swappable. Export the
-   new adapter from `src/adapters/mod.rs`.
-
-4. **Registry line** — wire the bucket to the adapter with one line in
-   `AdapterRegistry::with_defaults` in `src/adapters/registry.rs`. Several buckets may
-   share one adapter instance (Quarto and Markdown both route to panache).
-
-5. **Recorded fixtures** — capture the real tool's output once and check it into
-   `tests/fixtures/tool-output/`, then test your parser against it so the adapter has
-   coverage without invoking the tool during the offline test run.
-
 ## Recipe: adding a managed tool
 
-A "managed tool" is anything `hpds` downloads and runs on the user's behalf (a
-formatter, `uv`, and so on) — the same machinery, without necessarily wiring it to a
-language. Add a default version constant to `src/tools/versions.rs` and a `ToolSpec`
-with the appropriate `ToolKind` to `ToolSpec::builtins()` in `src/tools/spec.rs`. The
-cache, download, checksum, and locking layers pick it up automatically; nothing else
-needs to change for `hpds tools list`/`update`/`clean` to see it.
+A "managed tool" is anything `hpds install` can put on a machine (`uv`, `gh`,
+`duckdb`, and so on). Work through these files:
+
+1. **Installer** — create `src/install/installers/<tool>.rs` with a struct
+   implementing the `Installer` trait: `detect` probes for an existing install
+   through the runner seam, `plan` names the exact steps a run would take, and
+   `install` performs them. Model it on `src/install/installers/gh.rs`: pick a
+   per-OS strategy (package manager when present, release binary otherwise) and
+   never touch the network or the machine directly — go through the `CommandRunner`
+   and `ReleaseFetcher` seams so every strategy is assertable offline.
+
+2. **Release spec** — when the tool ships prebuilt GitHub release binaries, add a
+   default version constant to `src/tools/versions.rs` and a `release_spec()`
+   returning a `ToolSpec` (repo plus asset/checksum filename patterns) in your
+   installer file. The shared downloader handles fetching, checksum verification,
+   and atomic installs.
+
+3. **Registry line** — register the installer in `INSTALLERS` (and its name in
+   `KNOWN_TOOLS`) in `src/install/registry.rs`; that is the single place tools are
+   wired in to `hpds install <tool>`.
+
+4. **Recorded fixtures** — record the tool's real `--version` output once into
+   `tests/fixtures/tool-output/version-probes/` and test detection against it, so
+   the installer has coverage without invoking the tool during the offline run.
 
 ## Recipe: adding an audit check
 

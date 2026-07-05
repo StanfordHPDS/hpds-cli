@@ -1,2 +1,0 @@
-ERROR Failed to format broken.R: Failed to parse due to syntax errors.
-Would reformat: needs_formatting.R

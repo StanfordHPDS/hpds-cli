@@ -6,7 +6,7 @@
 use anyhow::Context;
 use clap::{Args, ValueEnum};
 
-use crate::config::{self, Config, Layer, Loaded};
+use crate::config::{self, Layer, Loaded};
 use crate::ui;
 
 #[derive(Debug, Args)]
@@ -24,8 +24,8 @@ enum OutputFormat {
 
 pub fn run(args: ConfigArgs, global: &super::GlobalArgs) -> anyhow::Result<()> {
     let cwd = std::env::current_dir().context("could not determine the current directory")?;
-    // No CLI flags map onto config keys yet; when they do (e.g. future
-    // format/lint flags) they become this final layer.
+    // No CLI flags map onto config keys yet; when they do they become this
+    // final layer.
     let loaded = config::load(&cwd, global.config.as_deref(), Layer::default())?;
 
     for warning in &loaded.warnings {
@@ -39,8 +39,7 @@ pub fn run(args: ConfigArgs, global: &super::GlobalArgs) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// TOML-shaped text: source comments up top, then the resolved values in
-/// the design order.
+/// TOML-shaped text: source comments up top, then the resolved values.
 fn render_text(loaded: &Loaded) -> String {
     let config = &loaded.config;
     let mut out = String::from("# resolved hpds config\n# sources: built-in defaults\n");
@@ -57,68 +56,15 @@ fn render_text(loaded: &Loaded) -> String {
         toml_string(&config.project.primary_author),
     ));
     out.push_str(&format!(
-        "\n[format]\nlanguages = {}\nexclude = {}\n",
-        toml_array(&config.format.languages),
-        toml_array(&config.format.exclude),
+        "\n[audit]\nstale-days = {}\nrequired-watchers = {}\n",
+        config.audit.stale_days,
+        toml_array(&config.audit.required_watchers),
     ));
-    out.push_str(&format!(
-        "\n[lint]\nlanguages = {}\nexclude = {}\n",
-        toml_array(&config.lint.languages),
-        toml_array(&config.lint.exclude),
-    ));
-    out.push_str(&format!(
-        "\n[sql]\ndialect = {}\n",
-        toml_string(&config.sql.dialect)
-    ));
-    out.push_str(&render_tools_text(config));
-    out
-}
-
-/// `[tools]`: pin-only tools render as `name = "version"`; tools with args
-/// get a `[tools.<name>]` table (with `version` inside when also pinned, so
-/// the output stays valid TOML).
-fn render_tools_text(config: &Config) -> String {
-    let tools = &config.tools;
-    let mut out = String::new();
-
-    let pin_only: Vec<_> = tools
-        .pins
-        .iter()
-        .filter(|(name, _)| !tools.args.contains_key(*name))
-        .collect();
-    if !pin_only.is_empty() {
-        out.push_str("\n[tools]\n");
-        for (name, version) in pin_only {
-            out.push_str(&format!("{name} = {}\n", toml_string(version)));
-        }
-    }
-    for (name, args) in &tools.args {
-        out.push_str(&format!("\n[tools.{name}]\n"));
-        if let Some(version) = tools.pins.get(name) {
-            out.push_str(&format!("version = {}\n", toml_string(version)));
-        }
-        out.push_str(&format!("args = {}\n", toml_array(args)));
-    }
     out
 }
 
 fn render_json(loaded: &Loaded) -> anyhow::Result<String> {
     let config = &loaded.config;
-
-    let mut tools = serde_json::Map::new();
-    let tool_names = config.tools.pins.keys().chain(config.tools.args.keys());
-    for name in tool_names {
-        // BTreeMap keys iterate sorted; chaining may repeat a name, but the
-        // insert below writes the same object twice, so that is harmless.
-        let mut tool = serde_json::Map::new();
-        if let Some(version) = config.tools.pins.get(name) {
-            tool.insert("version".to_string(), serde_json::json!(version));
-        }
-        if let Some(args) = config.tools.args.get(name) {
-            tool.insert("args".to_string(), serde_json::json!(args));
-        }
-        tools.insert(name.clone(), serde_json::Value::Object(tool));
-    }
 
     let path_or_null = |path: &Option<std::path::PathBuf>| {
         path.as_ref()
@@ -136,16 +82,10 @@ fn render_json(loaded: &Loaded) -> anyhow::Result<String> {
                 "status": config.project.status,
                 "primary-author": config.project.primary_author,
             },
-            "format": {
-                "languages": config.format.languages,
-                "exclude": config.format.exclude,
+            "audit": {
+                "stale-days": config.audit.stale_days,
+                "required-watchers": config.audit.required_watchers,
             },
-            "lint": {
-                "languages": config.lint.languages,
-                "exclude": config.lint.exclude,
-            },
-            "sql": { "dialect": config.sql.dialect },
-            "tools": tools,
         },
     });
     serde_json::to_string_pretty(&value).context("could not serialize the resolved config to JSON")
@@ -170,7 +110,7 @@ fn toml_array(items: &[String]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::BTreeMap;
+    use crate::config::Config;
     use std::path::PathBuf;
 
     fn loaded_with(config: Config) -> Loaded {
@@ -194,26 +134,16 @@ mod tests {
     fn text_output_renders_defaults_as_valid_toml_sections() {
         let out = render_text(&loaded_with(Config::default()));
         assert!(out.contains("[project]\nstatus = \"active\"\nprimary-author = \"\""));
-        assert!(out.contains("languages = [\"r\", \"python\", \"quarto\", \"sql\", \"markdown\"]"));
-        assert!(out.contains("[sql]\ndialect = \"bigquery\""));
-        // no tools configured -> no tools section at all
-        assert!(!out.contains("[tools"));
-    }
-
-    #[test]
-    fn text_output_splits_pins_and_arg_tables() {
-        let mut config = Config::default();
-        config.tools.pins = BTreeMap::from([
-            ("air".to_string(), "0.10.0".to_string()),
-            ("ruff".to_string(), "0.14.0".to_string()),
-        ]);
-        config.tools.args = BTreeMap::from([("ruff".to_string(), vec!["--fast".to_string()])]);
-
-        let out = render_text(&loaded_with(config));
-        // pin-only tool under [tools]; pinned tool with args gets a table
-        // with version inside so the output stays valid TOML.
-        assert!(out.contains("[tools]\nair = \"0.10.0\""));
-        assert!(out.contains("[tools.ruff]\nversion = \"0.14.0\"\nargs = [\"--fast\"]"));
+        assert!(out.contains(
+            "[audit]\nstale-days = 90\nrequired-watchers = [\"malcolmbarrett\", \"sherrirose\"]"
+        ));
+        // The whole rendering (minus the comment header) is parseable TOML.
+        let body: String = out
+            .lines()
+            .filter(|line| !line.starts_with('#'))
+            .collect::<Vec<_>>()
+            .join("\n");
+        body.parse::<toml::Table>().expect("output is valid TOML");
     }
 
     #[test]
@@ -229,6 +159,6 @@ mod tests {
         assert!(value["sources"]["user"].is_null());
         assert!(value["sources"]["project"].is_null());
         assert_eq!(value["config"]["project"]["status"], "active");
-        assert_eq!(value["config"]["sql"]["dialect"], "bigquery");
+        assert_eq!(value["config"]["audit"]["stale-days"], 90);
     }
 }

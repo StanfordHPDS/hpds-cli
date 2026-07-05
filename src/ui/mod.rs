@@ -20,7 +20,6 @@ use std::io::IsTerminal;
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 
 static QUIET: AtomicBool = AtomicBool::new(false);
-static VERBOSE: AtomicBool = AtomicBool::new(false);
 
 /// Set the process-wide quiet mode (wired to the global `--quiet` flag).
 /// When quiet, informational stdout output ([`println`], [`success`]) is
@@ -31,17 +30,6 @@ pub fn set_quiet(quiet: bool) {
 
 fn is_quiet() -> bool {
     QUIET.load(Ordering::Relaxed)
-}
-
-/// Set the process-wide verbose mode (wired to the global `--verbose` flag).
-/// When verbose, [`verbose`] lines print to stderr; otherwise they are
-/// suppressed.
-pub fn set_verbose(verbose: bool) {
-    VERBOSE.store(verbose, Ordering::Relaxed);
-}
-
-fn is_verbose() -> bool {
-    VERBOSE.load(Ordering::Relaxed)
 }
 
 /// How color should be decided for output streams. `Auto` (the default)
@@ -126,14 +114,6 @@ pub(crate) const SUCCESS_STYLE: anstyle::Style =
     anstyle::Style::new().fg_color(Some(anstyle::Color::Ansi(anstyle::AnsiColor::Green)));
 pub(crate) const HINT_STYLE: anstyle::Style =
     anstyle::Style::new().fg_color(Some(anstyle::Color::Ansi(anstyle::AnsiColor::Cyan)));
-pub(crate) const INFO_STYLE: anstyle::Style =
-    anstyle::Style::new().fg_color(Some(anstyle::Color::Ansi(anstyle::AnsiColor::Blue)));
-/// The `path:line:col` prefix of a diagnostic line, styled like ruff.
-pub(crate) const DIAGNOSTIC_LOCATION_STYLE: anstyle::Style = anstyle::Style::new()
-    .bold()
-    .fg_color(Some(anstyle::Color::Ansi(anstyle::AnsiColor::Cyan)));
-/// The dimmed prefix of a `-v` "running …" invocation log.
-pub(crate) const VERBOSE_STYLE: anstyle::Style = anstyle::Style::new().dimmed();
 
 /// Wrap `text` in `style` when `use_color` is true; plain text otherwise.
 pub(crate) fn paint(style: anstyle::Style, text: &str, use_color: bool) -> String {
@@ -150,10 +130,6 @@ fn render_success(msg: &str, use_color: bool) -> String {
 
 fn render_warn(msg: &str, use_color: bool) -> String {
     format!("{} {msg}", paint(WARN_STYLE, "warning:", use_color))
-}
-
-fn render_verbose(msg: &str, use_color: bool) -> String {
-    format!("{} {msg}", paint(VERBOSE_STYLE, "running", use_color))
 }
 
 /// Print an unstyled informational line to stdout. Suppressed by `--quiet`.
@@ -183,15 +159,6 @@ pub fn success(msg: &str) {
 /// visible alongside errors.
 pub fn warn(msg: &str) {
     eprintln!("{}", render_warn(msg, stderr_colors()));
-}
-
-/// Print a dimmed `running <command>` line to stderr, but only under
-/// `--verbose`. Always goes to stderr (never stdout), so machine output
-/// like `--format json` stays clean regardless of verbosity.
-pub fn verbose(msg: &str) {
-    if is_verbose() {
-        eprintln!("{}", render_verbose(msg, stderr_colors()));
-    }
 }
 
 #[cfg(test)]
@@ -312,25 +279,5 @@ mod tests {
     #[test]
     fn warn_line_with_color_contains_ansi() {
         assert!(render_warn("careful", true).contains(ESC));
-    }
-
-    #[test]
-    fn verbose_line_without_color_has_running_prefix_and_no_ansi() {
-        let out = render_verbose("/tools/ruff check -- a.py", false);
-        assert_eq!(out, "running /tools/ruff check -- a.py");
-        assert!(!out.contains(ESC));
-    }
-
-    #[test]
-    fn verbose_line_with_color_contains_ansi() {
-        assert!(render_verbose("/tools/ruff check", true).contains(ESC));
-    }
-
-    #[test]
-    fn set_verbose_round_trips() {
-        set_verbose(true);
-        assert!(is_verbose());
-        set_verbose(false);
-        assert!(!is_verbose());
     }
 }

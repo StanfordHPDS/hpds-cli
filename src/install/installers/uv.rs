@@ -16,6 +16,18 @@ use super::{fetch_plan, fetch_to_user_bin, on_path};
 
 pub struct Uv;
 
+/// The uv release archive: Rust-triple asset names with a sha256 sidecar
+/// per asset, the same on every OS.
+pub(super) fn release_spec() -> ToolSpec {
+    ToolSpec {
+        name: "uv",
+        default_version: versions::UV,
+        repo: "astral-sh/uv",
+        asset_pattern: "uv-{arch}-{os}.{ext}",
+        checksum_pattern: Some("uv-{arch}-{os}.{ext}.sha256"),
+    }
+}
+
 impl Installer for Uv {
     fn name(&self) -> &'static str {
         "uv"
@@ -53,11 +65,8 @@ impl Installer for Uv {
                 if ctx.pin.is_none() && on_path(ctx, "brew") {
                     ctx.run_step("installing uv with Homebrew", "brew", &["install", "uv"])?;
                 } else {
-                    // Same release spec the toolchain manager uses to
-                    // bootstrap its private uv copy.
-                    let spec = ToolSpec::builtin("uv").expect("uv is a built-in tool");
                     let version = ctx.pin.clone().unwrap_or_else(|| versions::UV.to_string());
-                    fetch_to_user_bin(ctx, &spec, &version)?;
+                    fetch_to_user_bin(ctx, &release_spec(), &version)?;
                 }
                 Ok(())
             }
