@@ -27,14 +27,19 @@ fn on_path(ctx: &InstallCtx, program: &str) -> bool {
 }
 
 /// One plan line for the release-binary strategy: what
-/// [`fetch_to_user_bin`] will download and where it will land.
-fn fetch_plan(tool: &str, version: &str) -> String {
+/// [`fetch_to_user_bin`] will download, where it comes from (the tool's
+/// GitHub releases), and where it will land.
+fn fetch_plan(spec: &ToolSpec, version: &str) -> String {
+    let ToolSpec { name, repo, .. } = spec;
     match user_bin_dir() {
         Ok(dir) => format!(
-            "download the {tool} {version} release binary into `{}`",
+            "download the {name} {version} release binary from github.com/{repo} \
+             releases into `{}`",
             dir.display()
         ),
-        Err(_) => format!("download the {tool} {version} release binary"),
+        Err(_) => {
+            format!("download the {name} {version} release binary from github.com/{repo} releases")
+        }
     }
 }
 

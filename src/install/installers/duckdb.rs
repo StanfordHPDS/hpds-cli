@@ -54,7 +54,7 @@ impl Installer for DuckDb {
             Os::Windows if ctx.pin.is_none() && on_path(ctx, "winget") => {
                 vec!["winget install --id DuckDB.cli --exact".to_string()]
             }
-            _ => vec![fetch_plan("duckdb", &version)],
+            _ => vec![fetch_plan(&release_spec(ctx.os), &version)],
         }
     }
 
@@ -201,6 +201,10 @@ mod tests {
         assert_eq!(plan.len(), 1);
         assert!(plan[0].contains("download"), "{plan:?}");
         assert!(plan[0].contains(versions::DUCKDB), "{plan:?}");
+        assert!(
+            plan[0].contains("github.com/duckdb/duckdb"),
+            "the plan must name where the binary comes from: {plan:?}"
+        );
 
         let pinned = InstallCtx {
             pin: Some("1.5.0".to_string()),

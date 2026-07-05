@@ -148,9 +148,10 @@ fn happy_path_inits_commits_creates_and_pushes() {
         .args(["repo", "create", "--yes"])
         .assert()
         .success()
-        .stdout(predicate::str::contains(
-            "https://github.com/fake-org/fake-repo",
-        ));
+        .stdout(
+            predicate::str::contains("https://github.com/fake-org/fake-repo")
+                .and(predicate::str::contains("hpds use gha")),
+        );
 
     // git init + initial commit really happened (real git, temp dir).
     assert!(env.project.join(".git").is_dir());
@@ -171,6 +172,53 @@ fn happy_path_inits_commits_creates_and_pushes() {
             "gh repo create StanfordHPDS/myproj --private --source=. --push".to_string(),
         ]
     );
+}
+
+#[test]
+fn yes_prints_a_next_step_for_use_gha_instead_of_prompting() {
+    let env = setup("myproj");
+    fs::write(env.project.join("README.md"), "# hi\n").expect("write file");
+
+    // Under --yes nothing may prompt; the gha offer becomes a one-line
+    // next-step suggestion (the component ships, so no "not available"
+    // notice may appear).
+    hpds(&env)
+        .args(["repo", "create", "--yes"])
+        .assert()
+        .success()
+        .stdout(
+            predicate::str::contains("hpds use gha")
+                .and(predicate::str::contains("not available").not()),
+        );
+}
+
+#[test]
+fn non_interactive_run_suggests_use_gha_without_prompting() {
+    let env = setup("myproj");
+    fs::write(env.project.join("README.md"), "# hi\n").expect("write file");
+    assert!(git_in(&env, &["init"]).status.success());
+    assert!(git_in(&env, &["add", "README.md"]).status.success());
+    assert!(git_in(&env, &["commit", "-m", "first"]).status.success());
+
+    // No --yes, but stdin is not a TTY: the gha offer must not try to
+    // prompt (which would fail the whole run) — it prints the next step.
+    hpds(&env)
+        .args([
+            "repo",
+            "create",
+            "--name",
+            "x",
+            "--org",
+            "y",
+            "--visibility",
+            "private",
+        ])
+        .assert()
+        .success()
+        .stdout(
+            predicate::str::contains("hpds use gha")
+                .and(predicate::str::contains("not available").not()),
+        );
 }
 
 #[test]

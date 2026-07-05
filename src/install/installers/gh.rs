@@ -54,14 +54,14 @@ impl Installer for Gh {
                 if ctx.pin.is_none() && on_path(ctx, "brew") {
                     vec!["brew install gh".to_string()]
                 } else {
-                    vec![fetch_plan("gh", &version)]
+                    vec![fetch_plan(&release_spec(ctx.os), &version)]
                 }
             }
             Os::Linux => {
                 if ctx.pin.is_none() && on_path(ctx, "apt-get") {
                     apt_plan()
                 } else {
-                    vec![fetch_plan("gh", &version)]
+                    vec![fetch_plan(&release_spec(ctx.os), &version)]
                 }
             }
             Os::Windows => {
@@ -72,7 +72,7 @@ impl Installer for Gh {
                     }
                     vec![line]
                 } else {
-                    vec![fetch_plan("gh", &version)]
+                    vec![fetch_plan(&release_spec(ctx.os), &version)]
                 }
             }
         }
@@ -343,6 +343,10 @@ mod tests {
         let plan = Gh.plan(&ctx_on(Os::Mac, &bare, &fetcher));
         assert!(plan[0].contains("download"), "{plan:?}");
         assert!(plan[0].contains(versions::GH), "{plan:?}");
+        assert!(
+            plan[0].contains("github.com/cli/cli"),
+            "the plan must name where the binary comes from: {plan:?}"
+        );
     }
 
     #[test]

@@ -205,6 +205,24 @@ fn install_without_yes_non_interactively_refuses_before_running_anything() {
     assert!(!marker.exists(), "no command may run without approval");
 }
 
+/// The togi plan must say where the binary comes from — its GitHub
+/// releases — not just that "a release binary" will be downloaded. The
+/// non-interactive refusal path prints the plan without running anything.
+#[test]
+fn install_togi_plan_names_the_source_release_repo() {
+    let empty = tempfile::tempdir().expect("tempdir");
+    hpds()
+        .args(["install", "togi"])
+        .env("PATH", empty.path())
+        .assert()
+        .failure()
+        .stdout(
+            predicate::str::contains("installing togi will:")
+                .and(predicate::str::contains("github.com/StanfordHPDS/togi")),
+        )
+        .stderr(predicate::str::contains("--yes"));
+}
+
 /// --yes prints the plan and runs the strategy without prompting; the
 /// fake brew "installs" a uv shim so post-install verification passes.
 #[cfg(unix)]

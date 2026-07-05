@@ -48,7 +48,7 @@ impl Installer for Uv {
                     vec!["brew install uv".to_string()]
                 } else {
                     let version = ctx.pin.clone().unwrap_or_else(|| versions::UV.to_string());
-                    vec![fetch_plan("uv", &version)]
+                    vec![fetch_plan(&release_spec(), &version)]
                 }
             }
             Os::Windows => vec![
@@ -175,6 +175,10 @@ mod tests {
         assert_eq!(plan.len(), 1);
         assert!(plan[0].contains("download"), "{plan:?}");
         assert!(plan[0].contains(versions::UV), "{plan:?}");
+        assert!(
+            plan[0].contains("github.com/astral-sh/uv"),
+            "the plan must name where the binary comes from: {plan:?}"
+        );
 
         let plan = Uv.plan(&ctx_on(Os::Windows, &bare, &fetcher));
         assert!(plan[0].contains("not supported"), "{plan:?}");

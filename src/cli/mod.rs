@@ -132,6 +132,38 @@ pub enum Command {
     /// running binary in place. Does nothing if you already have the latest
     /// version.
     Upgrade,
+    /// Hidden intercept for the former `hpds format` command, which moved
+    /// to the standalone togi tool: parses (swallowing any arguments the
+    /// old command took) and errors with a redirect instead of clap's
+    /// generic "unrecognized subcommand".
+    #[command(hide = true, disable_help_flag = true)]
+    Format(MovedToTogiArgs),
+    /// Hidden intercept for the former `hpds lint` command; see `Format`.
+    #[command(hide = true, disable_help_flag = true)]
+    Lint(MovedToTogiArgs),
+}
+
+/// Swallows whatever arguments the former format/lint commands were
+/// invoked with, so the redirect error is reached instead of a clap
+/// "unexpected argument" complaint.
+#[derive(Debug, Args)]
+pub struct MovedToTogiArgs {
+    #[arg(
+        trailing_var_arg = true,
+        allow_hyphen_values = true,
+        hide = true,
+        value_name = "ARGS"
+    )]
+    pub args: Vec<String>,
+}
+
+/// The usage error for a former format/lint invocation: name the removed
+/// command and point at its togi replacement.
+fn moved_to_togi(command: &str) -> anyhow::Error {
+    usage_error(
+        format!("`hpds {command}` has moved to togi, the lab's standalone formatter and linter"),
+        format!("install it with `hpds install togi`, then run `togi {command}`"),
+    )
 }
 
 /// Dispatch a parsed CLI invocation to its command module.
@@ -145,12 +177,14 @@ pub fn run(cli: Cli) -> anyhow::Result<()> {
         Command::Install(args) => install::run(args, &global),
         Command::Setup(args) => setup::run(args, &global),
         Command::Git(args) => git::run(args),
-        Command::Repo(args) => repo::run(args),
+        Command::Repo(args) => repo::run(args, &global),
         Command::Audit(args) => audit::run(args, &global),
         Command::Config(args) => config::run(args, &global),
         Command::Completions(args) => completions::run(args),
         Command::Version => version::run(),
         Command::Upgrade => upgrade::run(&global),
+        Command::Format(_) => Err(moved_to_togi("format")),
+        Command::Lint(_) => Err(moved_to_togi("lint")),
     }
 }
 

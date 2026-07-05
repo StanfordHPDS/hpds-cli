@@ -42,7 +42,7 @@ impl Installer for Togi {
             .pin
             .clone()
             .unwrap_or_else(|| versions::TOGI.to_string());
-        vec![fetch_plan("togi", &version)]
+        vec![fetch_plan(&release_spec(), &version)]
     }
 
     fn install(&self, ctx: &InstallCtx) -> anyhow::Result<()> {
@@ -124,6 +124,10 @@ mod tests {
             assert_eq!(plan.len(), 1, "{os:?}");
             assert!(plan[0].contains("download"), "{os:?}: {plan:?}");
             assert!(plan[0].contains(versions::TOGI), "{os:?}: {plan:?}");
+            assert!(
+                plan[0].contains("github.com/StanfordHPDS/togi"),
+                "the plan must name where the binary comes from; {os:?}: {plan:?}"
+            );
         }
         assert!(runner.calls.borrow().is_empty(), "planning must not run");
         assert!(fetcher.calls.borrow().is_empty(), "planning must not fetch");

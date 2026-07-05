@@ -90,16 +90,17 @@ impl Installer for Quarto {
     }
 }
 
-/// One plan line for [`fetch_tree_to_user_dirs`]: the release download
-/// and where the tree and launcher will land.
+/// One plan line for [`fetch_tree_to_user_dirs`]: the release download,
+/// where it comes from, and where the tree and launcher will land.
 fn tree_plan(version: &str) -> String {
+    let source = "github.com/quarto-dev/quarto-cli releases";
     match (user_opt_dir(), user_bin_dir()) {
         (Ok(opt), Ok(bin)) => format!(
-            "download quarto {version} into `{}` with a launcher in `{}`",
+            "download quarto {version} from {source} into `{}` with a launcher in `{}`",
             opt.display(),
             bin.display()
         ),
-        _ => format!("download the quarto {version} release"),
+        _ => format!("download the quarto {version} release from {source}"),
     }
 }
 
@@ -256,6 +257,10 @@ mod tests {
         assert_eq!(plan.len(), 1);
         assert!(plan[0].contains("download quarto"), "{plan:?}");
         assert!(plan[0].contains(versions::QUARTO), "{plan:?}");
+        assert!(
+            plan[0].contains("github.com/quarto-dev/quarto-cli"),
+            "the plan must name where the release comes from: {plan:?}"
+        );
 
         let with_winget = FakeRunner::default().on_path("winget");
         assert_eq!(

@@ -28,6 +28,17 @@ fn is_non_interactive(flag: bool, stdin_is_tty: bool) -> bool {
     flag || !stdin_is_tty
 }
 
+/// Whether prompting is possible right now: the process has not been
+/// marked non-interactive and stdin is a terminal. Callers with an
+/// optional prompt (offer something, or just print a suggestion) check
+/// this instead of letting the prompt wrapper fail the whole run.
+pub fn can_prompt() -> bool {
+    !is_non_interactive(
+        NON_INTERACTIVE.load(Ordering::Relaxed),
+        std::io::stdin().is_terminal(),
+    )
+}
+
 fn ensure_interactive(prompt: &str) -> anyhow::Result<()> {
     if is_non_interactive(
         NON_INTERACTIVE.load(Ordering::Relaxed),

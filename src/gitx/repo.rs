@@ -91,16 +91,6 @@ pub fn create(opts: CreateOptions) -> anyhow::Result<()> {
     ensure_initial_commit(&cwd, opts.yes)?;
     gh_repo_create(&cwd, &org, &name, visibility)?;
     ui::success(&format!("created and pushed {org}/{name}"));
-
-    // The design: offer `hpds use gha` afterward. The gha component is not
-    // implemented yet (M3), so print a notice instead of prompting; once it
-    // ships, prompt here (and skip silently under --yes). The notice itself
-    // intentionally prints even under --yes: --yes suppresses prompts, not
-    // informational output, and the AC only requires skipping the *prompt*.
-    ui::println(
-        "note: GitHub Actions setup (`hpds use gha`) is not available yet; \
-         run it once it ships to add CI to this repo",
-    );
     Ok(())
 }
 

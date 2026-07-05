@@ -88,6 +88,44 @@ fn formatting_and_linting_are_not_hpds_commands() {
 }
 
 #[test]
+fn former_format_and_lint_commands_redirect_to_togi() {
+    // These two used to be hpds commands; instead of clap's generic
+    // "unrecognized subcommand", they get a usage error (exit 2, error +
+    // hint on stderr) that points at togi.
+    for command in ["format", "lint"] {
+        hpds()
+            .arg(command)
+            .assert()
+            .code(2)
+            .stdout(predicate::str::is_empty())
+            .stderr(
+                predicate::str::contains("error:")
+                    .and(predicate::str::contains(format!("hpds {command}")))
+                    .and(predicate::str::contains("hint:"))
+                    .and(predicate::str::contains("hpds install togi"))
+                    .and(predicate::str::contains(format!("togi {command}"))),
+            );
+    }
+}
+
+#[test]
+fn former_format_and_lint_commands_redirect_even_with_arguments() {
+    // Old muscle memory comes with flags and paths attached; the redirect
+    // must swallow them rather than fail on an unexpected argument.
+    for args in [
+        vec!["format", "--check", "."],
+        vec!["lint", "--fix"],
+        vec!["format", "R/analysis.R"],
+    ] {
+        hpds()
+            .args(&args)
+            .assert()
+            .code(2)
+            .stderr(predicate::str::contains("togi").and(predicate::str::contains("hint:")));
+    }
+}
+
+#[test]
 fn version_flag_prints_version() {
     hpds()
         .arg("--version")
