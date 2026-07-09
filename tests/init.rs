@@ -125,10 +125,11 @@ fn init_lint_workflow_without_a_language_still_mentions_togi() {
 #[test]
 fn init_without_language_or_lint_workflow_says_nothing_about_togi() {
     // Nothing to format and no togi-backed CI: the next step would be
-    // noise, so it stays quiet.
+    // noise, so it stays quiet. (An explicit --use avoids the default set's
+    // gha lint workflow, which would otherwise pull in a togi next step.)
     let tmp = tempfile::tempdir().expect("tempdir");
     hpds()
-        .args(["init", "--yes", "--author", "malcolm"])
+        .args(["init", "--yes", "--author", "malcolm", "--use", "pipeline"])
         .current_dir(tmp.path())
         .assert()
         .success()
@@ -152,18 +153,50 @@ fn project_init_alias_accepts_the_same_flags() {
 // --- defaults under --yes ----------------------------------------------------
 
 #[test]
-fn init_yes_alone_writes_hpds_toml_and_nothing_else() {
+fn init_yes_alone_applies_the_default_component_set() {
+    // With no --use, --yes scaffolds the default set: pipeline (make) and
+    // gha (every workflow). readme needs a language, so with none detected
+    // it is skipped with a notice rather than failing the run.
     let tmp = tempfile::tempdir().expect("tempdir");
-    hpds()
+    let assert = hpds()
         .args(["init", "--yes", "--author", "malcolm"])
         .current_dir(tmp.path())
         .assert()
         .success();
     assert!(tmp.path().join("hpds.toml").exists());
-    // No components requested, no git flags: nothing else appears.
-    assert!(!tmp.path().join("Makefile").exists());
+    assert!(tmp.path().join("Makefile").exists(), "pipeline default");
+    assert!(
+        tmp.path().join(".github/workflows/togi-lint.yml").exists(),
+        "gha default"
+    );
+    assert!(tmp.path().join(".github/workflows/hpds-audit.yml").exists());
+    // readme was skipped for lack of a language, and it says so.
+    assert!(!tmp.path().join("README.qmd").exists());
+    assert!(!tmp.path().join("README.md").exists());
+    let stdout = String::from_utf8(assert.get_output().stdout.clone()).unwrap();
+    assert!(
+        stdout.contains("skipped readme"),
+        "announces the skip: {stdout}"
+    );
+    // No git flags: no repo, no vaccination.
     assert!(!tmp.path().join(".git").exists());
     assert!(!tmp.path().join(".gitignore").exists());
+}
+
+#[test]
+fn init_yes_default_set_includes_readme_when_a_language_is_given() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    hpds()
+        .args(["init", "--yes", "--author", "malcolm", "--language", "r"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+    assert!(
+        tmp.path().join("README.qmd").exists(),
+        "readme is in the default set"
+    );
+    assert!(tmp.path().join("Makefile").exists());
+    assert!(tmp.path().join(".github/workflows/togi-lint.yml").exists());
 }
 
 #[test]
@@ -315,6 +348,97 @@ fn init_yes_python_project_gets_readme_md() {
         .success();
     assert!(tmp.path().join("README.md").exists());
     assert!(!tmp.path().join("README.qmd").exists());
+}
+
+// --- target directory ---------------------------------------------------------
+
+#[test]
+fn init_named_dir_creates_and_scaffolds_a_subdirectory() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    hpds()
+        .args([
+            "init",
+            "my-study",
+            "--yes",
+            "--author",
+            "malcolm",
+            "--language",
+            "r",
+        ])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+    let project = tmp.path().join("my-study");
+    assert!(
+        project.join("hpds.toml").exists(),
+        "scaffolds inside the new directory"
+    );
+    let toml = fs::read_to_string(project.join("hpds.toml")).expect("hpds.toml");
+    assert!(
+        toml.contains("my-study"),
+        "name is the new dir's basename: {toml}"
+    );
+    assert!(project.join("Makefile").exists());
+    assert!(project.join("README.qmd").exists());
+    // The parent directory is left clean — nothing scaffolded in place.
+    assert!(!tmp.path().join("hpds.toml").exists());
+    assert!(!tmp.path().join("Makefile").exists());
+}
+
+#[test]
+fn init_yes_into_a_nonempty_nonproject_dir_is_refused() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    fs::write(tmp.path().join("keep.txt"), "mine\n").expect("seed a file");
+    hpds()
+        .args(["init", "--yes", "--author", "malcolm"])
+        .current_dir(tmp.path())
+        .assert()
+        .failure()
+        .stderr(
+            predicate::str::contains("not empty")
+                .and(predicate::str::contains("--force"))
+                .and(predicate::str::contains("hint:")),
+        );
+    // Nothing written; the user's file is untouched.
+    assert!(!tmp.path().join("hpds.toml").exists());
+    assert_eq!(
+        fs::read_to_string(tmp.path().join("keep.txt")).unwrap(),
+        "mine\n"
+    );
+}
+
+#[test]
+fn init_force_scaffolds_into_a_nonempty_dir() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    fs::write(tmp.path().join("keep.txt"), "mine\n").expect("seed a file");
+    hpds()
+        .args(["init", "--yes", "--author", "malcolm", "--force"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+    assert!(tmp.path().join("hpds.toml").exists());
+    assert!(
+        tmp.path().join("keep.txt").exists(),
+        "the existing file is left in place"
+    );
+}
+
+#[test]
+fn init_yes_rerun_over_an_existing_project_is_not_gated() {
+    // A directory that already holds hpds.toml is a legitimate re-run, even
+    // with other files present — the non-empty guard does not apply.
+    let tmp = tempfile::tempdir().expect("tempdir");
+    fs::write(tmp.path().join("hpds.toml"), "# mine\n").expect("seed hpds.toml");
+    fs::write(tmp.path().join("keep.txt"), "mine\n").expect("seed a file");
+    hpds()
+        .args(["init", "--yes", "--author", "malcolm", "--force"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+    assert!(
+        tmp.path().join("Makefile").exists(),
+        "default components apply on a re-run"
+    );
 }
 
 // --- primary-author default: a GitHub login, never git user.name ------------

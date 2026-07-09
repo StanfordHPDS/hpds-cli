@@ -6,7 +6,11 @@ Set up a new or existing project interactively (alias for `hpds init`)
 
 Identical to `hpds init`: the interactive project-setup wizard. See `hpds init --help` for every option.
 
-Usage: hpds project init [OPTIONS]
+Usage: hpds project init [OPTIONS] [DIR]
+
+Arguments:
+  [DIR]
+          Directory to create and scaffold. Omit or use "." for the current directory; a name that does not exist is created (e.g. `hpds init my-study` makes ./my-study/)
 
 Options:
   -v, --verbose
@@ -16,7 +20,7 @@ Options:
           Accept the default for every unanswered question; never prompt
 
       --name <NAME>
-          Project name [default: the current directory's name]
+          Project name [default: the target directory's name]
 
   -q, --quiet
           Suppress all output except errors

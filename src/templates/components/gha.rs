@@ -121,7 +121,7 @@ impl fmt::Display for Choice {
 /// pointer at `--workflows` when the process cannot prompt).
 fn prompt() -> anyhow::Result<Vec<&'static Workflow>> {
     let options = WORKFLOWS.iter().map(Choice).collect();
-    let chosen = ui::multiselect("Which GitHub Actions pieces should be added?", options)
+    let chosen = ui::multiselect_all("Which GitHub Actions pieces should be added?", options)
         .with_context(|| {
             format!(
                 "could not choose gha workflows; non-interactively, pass \

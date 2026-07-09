@@ -85,10 +85,16 @@ pub fn select<T: Display>(prompt: &str, options: Vec<T>) -> anyhow::Result<T> {
         .with_context(|| format!("could not read an answer to \"{prompt}\""))
 }
 
-/// Ask the user to pick any number of `options`.
-pub fn multiselect<T: Display>(prompt: &str, options: Vec<T>) -> anyhow::Result<Vec<T>> {
+/// Ask the user to pick any number of `options`, with the ones at
+/// `default_indices` pre-selected — an opt-out checklist over a subset.
+pub fn multiselect_with_defaults<T: Display>(
+    prompt: &str,
+    options: Vec<T>,
+    default_indices: &[usize],
+) -> anyhow::Result<Vec<T>> {
     ensure_interactive(prompt)?;
     inquire::MultiSelect::new(prompt, options)
+        .with_default(default_indices)
         .prompt()
         .with_context(|| format!("could not read an answer to \"{prompt}\""))
 }

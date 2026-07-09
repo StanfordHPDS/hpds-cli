@@ -6,7 +6,11 @@ Set up a new or existing project interactively
 
 Walks through the project name, language(s), and components (pipeline, readme, container, slurm, gha), then writes hpds.toml with the [project] metadata and optionally initializes git and creates the GitHub repo. Pass --yes to accept every default without prompting. Formatting and linting the scaffolded project is the separate togi tool's job (`hpds install togi`). `hpds project init` is an alias for this command.
 
-Usage: hpds init [OPTIONS]
+Usage: hpds init [OPTIONS] [DIR]
+
+Arguments:
+  [DIR]
+          Directory to create and scaffold. Omit or use "." for the current directory; a name that does not exist is created (e.g. `hpds init my-study` makes ./my-study/)
 
 Options:
   -v, --verbose
@@ -16,7 +20,7 @@ Options:
           Accept the default for every unanswered question; never prompt
 
       --name <NAME>
-          Project name [default: the current directory's name]
+          Project name [default: the target directory's name]
 
   -q, --quiet
           Suppress all output except errors

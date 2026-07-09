@@ -1,22 +1,33 @@
 //! `hpds init` — project setup wizard. Also reachable as
 //! `hpds project init`.
 //!
+//! Takes an optional target directory: `hpds init my-study` creates
+//! `./my-study/` and scaffolds inside it, while a bare `hpds init` (or
+//! `hpds init .`) scaffolds the current directory in place. Scaffolding
+//! into a directory that already holds unrelated work — non-empty and not
+//! already an hpds project — is confirmed first, and refused under `--yes`
+//! without `--force`.
+//!
 //! Interactive: prompts for name, description, language, a multi-select
 //! of template components, and the primary author, then offers `git init`,
 //! project `.gitignore` vaccination, and GitHub repo creation. Every
 //! prompt has a flag-driven equivalent, so `--yes` (plus flags) runs the
 //! whole thing without asking anything: defaults are the directory name,
 //! an empty description, the detected language, the GitHub login gh is
-//! authenticated as (else an empty author), and no components. Under
-//! `--yes` the git-forward steps run only when their flags (`--git-init`,
-//! `--vaccinate`, `--repo-create`) ask for them.
+//! authenticated as (else an empty author), and the default component set
+//! (pipeline, readme, gha). Under `--yes` the git-forward steps run only
+//! when their flags (`--git-init`, `--vaccinate`, `--repo-create`) ask for
+//! them.
 //!
 //! Components come from the `hpds use` registry; `--use` accepts an
-//! optional `:variant` per component (e.g. `pipeline:targets`). Without a
-//! variant, `--yes` applies non-interactive defaults: pipeline renders the
-//! `make` kind, container the `docker` kind, and gha every workflow.
+//! optional `:variant` per component (e.g. `pipeline:targets`) and, when
+//! given, replaces the default set. Without a variant, `--yes` applies
+//! non-interactive defaults: pipeline renders the `make` kind, container
+//! the `docker` kind, and gha every workflow. A default component that
+//! needs a language (readme) is skipped with a notice when no language was
+//! given or detected.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use anyhow::Context;
 use clap::Args;
@@ -30,11 +41,17 @@ use super::r#use;
 
 #[derive(Debug, Args)]
 pub struct InitArgs {
+    /// Directory to create and scaffold. Omit or use "." for the current
+    /// directory; a name that does not exist is created (e.g.
+    /// `hpds init my-study` makes ./my-study/)
+    #[arg(value_name = "DIR")]
+    pub dir: Option<String>,
+
     /// Accept the default for every unanswered question; never prompt
     #[arg(short = 'y', long)]
     pub yes: bool,
 
-    /// Project name [default: the current directory's name]
+    /// Project name [default: the target directory's name]
     #[arg(long, value_name = "NAME")]
     pub name: Option<String>,
 
@@ -88,11 +105,20 @@ pub fn run(args: InitArgs) -> anyhow::Result<()> {
         ui::set_non_interactive(true);
     }
     let cwd = std::env::current_dir().context("could not determine the current directory")?;
+    let target = resolve_target_dir(args.dir.as_deref(), &cwd)?;
+    if !confirm_scaffold_into(&target, args.yes, args.force)? {
+        return Ok(());
+    }
+    // Everything below writes relative to the target, and the git-forward
+    // helpers (vaccinate, repo create) act on the process working
+    // directory — so make the target the working directory once, up front.
+    std::env::set_current_dir(&target)
+        .with_context(|| format!("could not enter {}", target.display()))?;
 
     let name = gitx::repo::resolve_with(
         args.name.clone(),
         args.yes,
-        || default_project_name(&cwd),
+        || default_project_name(&target),
         |d| ui::text("Project name", d),
     )?;
     let description = gitx::repo::resolve_with(
@@ -101,11 +127,19 @@ pub fn run(args: InitArgs) -> anyhow::Result<()> {
         || Ok(String::new()),
         |d| ui::text("Project description (one line)", d),
     )?;
-    let language = resolve_language(args.language.clone(), args.yes, &cwd)?;
+    let language = resolve_language(args.language.clone(), args.yes, &target)?;
     // Selections are validated before the author is resolved: bad flags
     // should fail fast, and the author default may ask gh (a subprocess,
     // possibly the network) for the login.
     let selections = resolve_selections(args.components.as_deref(), args.yes)?;
+    // A defaulted component that needs a language it does not have is
+    // skipped (with a notice) rather than failing the run; an explicit
+    // `--use` keeps it so the request fails loudly below.
+    let selections = if language.is_none() && args.components.is_none() {
+        drop_language_needing(selections)
+    } else {
+        selections
+    };
     ensure_language_for(&selections, language.as_deref())?;
     let author = gitx::repo::resolve_with(args.author.clone(), args.yes, default_author, |d| {
         ui::text("Primary author (GitHub username)", d)
@@ -117,7 +151,7 @@ pub fn run(args: InitArgs) -> anyhow::Result<()> {
     // writes. Existing files go through the engine's conflict handling —
     // never overwritten without --force.
     let outcome = write_rendered(
-        &cwd.join("hpds.toml"),
+        &target.join("hpds.toml"),
         hpds_toml(&name, &description, &author).as_bytes(),
         args.force,
     )?;
@@ -134,7 +168,7 @@ pub fn run(args: InitArgs) -> anyhow::Result<()> {
             kind: selection.kind.as_deref(),
             workflows: selection.workflows.as_deref(),
             force: args.force,
-            dest: &cwd,
+            dest: &target,
             vars: vars.clone(),
             guidance: std::cell::RefCell::new(Vec::new()),
         };
@@ -151,7 +185,7 @@ pub fn run(args: InitArgs) -> anyhow::Result<()> {
         ));
     }
 
-    git_forward(&args, &cwd, &name)?;
+    git_forward(&args, &target, &name)?;
     if togi_next_step_applies(&selections, language.as_deref()) {
         ui::println(
             "next: format and lint with the lab's togi tool — `togi format` \
@@ -177,12 +211,84 @@ fn togi_next_step_applies(selections: &[Selection], language: Option<&str>) -> b
         })
 }
 
-/// Default project name: the current directory's basename.
-fn default_project_name(cwd: &Path) -> anyhow::Result<String> {
-    match cwd.file_name().and_then(|n| n.to_str()) {
+/// Resolve the directory init scaffolds into. `None`, `.`, or an empty
+/// string mean the current directory; anything else is a path (relative to
+/// the current directory unless absolute). A path that does not yet exist
+/// is created, so `hpds init my-study` makes `./my-study/` and scaffolds
+/// inside it.
+fn resolve_target_dir(dir: Option<&str>, cwd: &Path) -> anyhow::Result<PathBuf> {
+    let target = match dir.map(str::trim) {
+        None | Some("") | Some(".") => cwd.to_path_buf(),
+        Some(path) => {
+            let path = Path::new(path);
+            if path.is_absolute() {
+                path.to_path_buf()
+            } else {
+                cwd.join(path)
+            }
+        }
+    };
+    if !target.exists() {
+        std::fs::create_dir_all(&target)
+            .with_context(|| format!("could not create {}", target.display()))?;
+    }
+    Ok(target)
+}
+
+/// Guard against scaffolding on top of unrelated work. A target that is
+/// empty (ignoring `.git` and macOS `.DS_Store`) or already an hpds project
+/// (has `hpds.toml`) is fine — the latter is a legitimate re-run. Otherwise
+/// interactively confirm, and non-interactively refuse unless `--force`.
+/// Returns whether to proceed.
+fn confirm_scaffold_into(target: &Path, yes: bool, force: bool) -> anyhow::Result<bool> {
+    if force || target.join("hpds.toml").exists() || !has_other_content(target)? {
+        return Ok(true);
+    }
+    if yes {
+        return Err(super::usage_error(
+            format!(
+                "{} is not empty and is not an hpds project",
+                target.display()
+            ),
+            "pass a new directory name (e.g. `hpds init my-project`), run \
+             from inside the project, or re-run with --force",
+        ));
+    }
+    let proceed = ui::confirm(
+        &format!(
+            "{} is not empty and is not an hpds project — scaffold here anyway?",
+            target.display()
+        ),
+        false,
+    )?;
+    if !proceed {
+        ui::println("cancelled; nothing was written");
+    }
+    Ok(proceed)
+}
+
+/// Whether `dir` holds anything other than a `.git` directory or a macOS
+/// `.DS_Store` — i.e. real content init would be scaffolding on top of. A
+/// freshly `git init`-ed or otherwise-empty directory reads as empty.
+fn has_other_content(dir: &Path) -> anyhow::Result<bool> {
+    for entry in
+        std::fs::read_dir(dir).with_context(|| format!("could not read {}", dir.display()))?
+    {
+        let name = entry?.file_name();
+        if name == ".git" || name == ".DS_Store" {
+            continue;
+        }
+        return Ok(true);
+    }
+    Ok(false)
+}
+
+/// Default project name: the target directory's basename.
+fn default_project_name(target: &Path) -> anyhow::Result<String> {
+    match target.file_name().and_then(|n| n.to_str()) {
         Some(name) if !name.is_empty() => Ok(name.to_string()),
         _ => Err(super::usage_error(
-            "could not derive a project name from the current directory",
+            "could not derive a project name from the target directory",
             "pass one explicitly with --name <NAME>",
         )),
     }
@@ -264,6 +370,50 @@ const SELECTABLE: &[Selectable] = &[
     },
 ];
 
+/// Components selected by default: pre-checked in the interactive
+/// multi-select and applied under `--yes` when `--use` is not given. The
+/// everyday helpers a new lab project wants; container and slurm stay
+/// opt-in.
+const DEFAULT_COMPONENTS: &[&str] = &["pipeline", "readme", "gha"];
+
+/// The default selections (unresolved variants), one per
+/// [`DEFAULT_COMPONENTS`] entry.
+fn default_selections() -> Vec<Selection> {
+    DEFAULT_COMPONENTS
+        .iter()
+        .map(|name| Selection {
+            spec: SELECTABLE
+                .iter()
+                .find(|s| s.name == *name)
+                .expect("default components are selectable"),
+            kind: None,
+            kind_defaulted: false,
+            workflows: None,
+        })
+        .collect()
+}
+
+/// Drop selections whose component needs a language when none is available,
+/// announcing each skip. Used for the `--yes` default set so `hpds init
+/// --yes` never fails on a language it could not know.
+fn drop_language_needing(selections: Vec<Selection>) -> Vec<Selection> {
+    selections
+        .into_iter()
+        .filter(|selection| {
+            if selection.spec.needs_language {
+                ui::println(&format!(
+                    "skipped {}: no project language was given or detected \
+                     (pass --language r|python|both to include it)",
+                    selection.spec.name
+                ));
+                false
+            } else {
+                true
+            }
+        })
+        .collect()
+}
+
 /// Comma-separated selectable names for error hints.
 fn selectable_names() -> String {
     SELECTABLE
@@ -299,7 +449,7 @@ fn resolve_selections(flag: Option<&[String]>, yes: bool) -> anyhow::Result<Vec<
             .filter(|item| !item.is_empty())
             .map(parse_selection)
             .collect::<anyhow::Result<Vec<_>>>()?,
-        None if yes => Vec::new(),
+        None if yes => default_selections(),
         None => prompt_components()?,
     };
     let mut seen = Vec::new();
@@ -445,7 +595,17 @@ fn prompt_components() -> anyhow::Result<Vec<Selection>> {
             MenuItem(spec, description)
         })
         .collect();
-    let picked = ui::multiselect("Components to set up (space to toggle)", options)?;
+    let defaults: Vec<usize> = SELECTABLE
+        .iter()
+        .enumerate()
+        .filter(|(_, spec)| DEFAULT_COMPONENTS.contains(&spec.name))
+        .map(|(index, _)| index)
+        .collect();
+    let picked = ui::multiselect_with_defaults(
+        "Components to set up (space to toggle)",
+        options,
+        &defaults,
+    )?;
     Ok(picked
         .into_iter()
         .map(|item| Selection {
@@ -509,8 +669,8 @@ fn toml_string(value: &str) -> String {
 /// The git-forward steps at the end of init: `git init` (when not already
 /// a repo), project vaccination, and GitHub repo creation. Interactive
 /// runs offer each one; `--yes` runs only what the flags request.
-fn git_forward(args: &InitArgs, cwd: &Path, name: &str) -> anyhow::Result<()> {
-    let already_repo = cwd.join(".git").exists();
+fn git_forward(args: &InitArgs, dir: &Path, name: &str) -> anyhow::Result<()> {
+    let already_repo = dir.join(".git").exists();
     let mut have_repo = already_repo;
     if already_repo {
         if args.git_init {
@@ -520,7 +680,7 @@ fn git_forward(args: &InitArgs, cwd: &Path, name: &str) -> anyhow::Result<()> {
         let do_init =
             args.git_init || (!args.yes && ui::confirm("Initialize a git repository here?", true)?);
         if do_init {
-            gitx::git_init(cwd)?;
+            gitx::git_init(dir)?;
             ui::success("initialized a git repository");
             have_repo = true;
         }
@@ -856,5 +1016,71 @@ mod tests {
     fn default_project_name_is_the_directory_basename() {
         let name = default_project_name(Path::new("/home/user/projects/my-study")).unwrap();
         assert_eq!(name, "my-study");
+    }
+
+    #[test]
+    fn yes_without_use_selects_the_default_component_set() {
+        let selections = resolve_selections(None, true).unwrap();
+        let names: Vec<_> = selections.iter().map(|s| s.spec.name).collect();
+        assert_eq!(names, DEFAULT_COMPONENTS);
+    }
+
+    #[test]
+    fn every_default_component_is_selectable() {
+        for name in DEFAULT_COMPONENTS {
+            assert!(
+                SELECTABLE.iter().any(|s| s.name == *name),
+                "{name} must be a selectable init component"
+            );
+        }
+    }
+
+    #[test]
+    fn drop_language_needing_removes_readme_but_keeps_the_rest() {
+        let selections = vec![
+            parse_selection("pipeline").unwrap(),
+            parse_selection("readme").unwrap(),
+            parse_selection("gha").unwrap(),
+        ];
+        let kept = drop_language_needing(selections);
+        let names: Vec<_> = kept.iter().map(|s| s.spec.name).collect();
+        assert_eq!(names, vec!["pipeline", "gha"]);
+    }
+
+    #[test]
+    fn has_other_content_ignores_git_and_ds_store() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        assert!(
+            !has_other_content(tmp.path()).unwrap(),
+            "an empty directory has no content"
+        );
+        std::fs::create_dir(tmp.path().join(".git")).unwrap();
+        std::fs::write(tmp.path().join(".DS_Store"), b"x").unwrap();
+        assert!(
+            !has_other_content(tmp.path()).unwrap(),
+            ".git and .DS_Store do not count as content"
+        );
+        std::fs::write(tmp.path().join("data.csv"), b"x").unwrap();
+        assert!(
+            has_other_content(tmp.path()).unwrap(),
+            "a real file counts as content"
+        );
+    }
+
+    #[test]
+    fn resolve_target_dir_defaults_to_the_current_directory() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        for dir in [None, Some("."), Some("")] {
+            let target = resolve_target_dir(dir, tmp.path()).unwrap();
+            assert_eq!(target, tmp.path());
+        }
+    }
+
+    #[test]
+    fn resolve_target_dir_creates_a_named_subdirectory() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let target = resolve_target_dir(Some("new-study"), tmp.path()).unwrap();
+        assert_eq!(target, tmp.path().join("new-study"));
+        assert!(target.is_dir(), "the named directory is created");
     }
 }
