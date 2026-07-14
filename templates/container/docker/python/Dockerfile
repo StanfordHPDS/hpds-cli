@@ -1,29 +1,37 @@
-# Docker image for {{project}} (Python).
-#
-# Build:  docker build -t {{project}} .
-# Run:    docker run --rm -it {{project}}
+# syntax=docker/dockerfile:1
 
-# The lab image is a rolling tag rebuilt on the lab's schedule; pinning a
-# release here would fork projects off the shared image.
-# hadolint ignore=DL3007
-FROM stanfordhpds/python-uv:latest
+# hpds is copied from the exact release that generated this file.
+FROM ghcr.io/stanfordhpds/hpds-cli:{{hpds_version}} AS hpds
+
+# uv reads the project's Python requirement and installs that runtime, so the
+# container does not need a separate base image for every Python version.
+FROM debian:trixie-slim
+
+LABEL org.opencontainers.image.title="{{project}}"
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates git \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY --from=hpds /hpds /usr/local/bin/hpds
+COPY --from=ghcr.io/astral-sh/uv:{{uv_version}} /uv /uvx /usr/local/bin/
 
 WORKDIR /project
 
-# uv package-manager configuration: compile bytecode for faster startup and
-# copy (rather than hardlink) packages across filesystem boundaries.
-ENV UV_COMPILE_BYTECODE=1 \
-    UV_LINK_MODE=copy
+ENV UV_PROJECT_ENVIRONMENT=/project/.venv \
+    UV_COMPILE_BYTECODE=1 \
+    UV_LINK_MODE=copy \
+    UV_CACHE_DIR=/project/.cache/uv \
+    PATH="/project/.venv/bin:${PATH}"
 
-# Install dependencies from the lockfile before copying the rest of the
-# project, so this layer stays cached until the lockfile changes.
+# Restore dependencies before copying the source so this layer changes only
+# when pyproject.toml or uv.lock changes.
 COPY pyproject.toml uv.lock ./
-RUN uv sync --locked --no-install-project
+RUN --mount=type=cache,target=/project/.cache/uv \
+    uv sync --locked --no-install-project
 
-# Then copy the project and install it into the environment.
 COPY . .
-RUN uv sync --locked
-
-ENV PATH="/project/.venv/bin:$PATH"
+RUN --mount=type=cache,target=/project/.cache/uv \
+    uv sync --locked
 
 CMD ["python"]

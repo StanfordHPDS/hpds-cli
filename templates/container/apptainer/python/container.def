@@ -1,28 +1,48 @@
-# Apptainer image for {{project}} (Python).
-#
-# Build:  apptainer build container.sif container.def
-# Run:    apptainer run container.sif
+# hpds is a distroless source stage pinned by the template renderer.
+Bootstrap: docker
+From: ghcr.io/stanfordhpds/hpds-cli:{{hpds_version}}
+Stage: hpds
 
 Bootstrap: docker
-From: stanfordhpds/python-uv:latest
+From: ghcr.io/astral-sh/uv:{{uv_version}}
+Stage: uv
+
+# uv provisions the Python version declared by pyproject.toml / uv.lock.
+Bootstrap: docker
+From: debian:trixie-slim
+Stage: final
+
+%files from hpds
+    /hpds /usr/local/bin/hpds
+
+%files from uv
+    /uv /usr/local/bin/uv
+    /uvx /usr/local/bin/uvx
 
 %files
     pyproject.toml /project/pyproject.toml
     uv.lock /project/uv.lock
 
 %post
-    # uv package-manager configuration: compile bytecode for faster startup
-    # and copy (rather than hardlink) packages across filesystem boundaries.
+    apt-get update
+    apt-get install -y --no-install-recommends ca-certificates git
+    rm -rf /var/lib/apt/lists/*
+
+    export HOME=/project
+    export UV_PROJECT_ENVIRONMENT=/project/.venv
     export UV_COMPILE_BYTECODE=1
     export UV_LINK_MODE=copy
     cd /project
     uv sync --locked --no-install-project
 
 %environment
+    export UV_PROJECT_ENVIRONMENT=/project/.venv
     export PATH="/project/.venv/bin:$PATH"
 
 %runscript
-    exec python "$@"
+    exec uv run "$@"
 
 %labels
     Project {{project}}
+    HPDS {{hpds_version}}
+    UV {{uv_version}}

@@ -12,7 +12,8 @@ use std::collections::BTreeMap;
 use super::TemplateError;
 
 /// The substitution map handed to [`render`]: the standard variables
-/// (project, language, year, author) plus anything a component adds.
+/// (project, language, year, author, generating hpds version) plus anything
+/// a component adds.
 #[derive(Debug, Clone, Default)]
 pub struct Vars(BTreeMap<String, String>);
 
@@ -22,15 +23,16 @@ impl Vars {
         Self::default()
     }
 
-    /// The standard variables: project name, author, the current year, and
-    /// the project language when it is known. Components that need the
-    /// language look it up with [`Vars::get`] and ask the user for
-    /// `--language` when it is absent.
+    /// The standard variables: project name, author, the current year, the
+    /// generating hpds version, and the project language when it is known.
+    /// Components that need the language look it up with [`Vars::get`] and
+    /// ask the user for `--language` when it is absent.
     pub fn standard(project: &str, language: Option<&str>, author: &str) -> Self {
         let vars = Self::new()
             .with("project", project)
             .with("author", author)
-            .with("year", current_year().to_string());
+            .with("year", current_year().to_string())
+            .with("hpds_version", env!("CARGO_PKG_VERSION"));
         match language {
             Some(language) => vars.with("language", language),
             None => vars,
@@ -247,11 +249,12 @@ mod tests {
     }
 
     #[test]
-    fn standard_vars_carry_the_four_spec_variables() {
+    fn standard_vars_include_the_generating_hpds_version() {
         let vars = Vars::standard("proj", Some("python"), "Someone");
         assert_eq!(vars.get("project"), Some("proj"));
         assert_eq!(vars.get("language"), Some("python"));
         assert_eq!(vars.get("author"), Some("Someone"));
+        assert_eq!(vars.get("hpds_version"), Some(env!("CARGO_PKG_VERSION")));
         let year: i64 = vars.get("year").unwrap().parse().unwrap();
         assert!(year >= 2026, "year variable is the current year: {year}");
     }

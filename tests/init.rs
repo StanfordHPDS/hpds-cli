@@ -28,7 +28,12 @@ use predicates::prelude::*;
 use std::fs;
 
 fn hpds() -> Command {
-    Command::cargo_bin("hpds").expect("hpds binary should build")
+    let mut cmd = Command::cargo_bin("hpds").expect("hpds binary should build");
+    // Container generation normally resolves this from R-hub. Keep the
+    // init integration suite offline and deterministic when it selects the
+    // R container component.
+    cmd.env("HPDS_R_VERSION", "4.6.1");
+    cmd
 }
 
 fn read(dir: &tempfile::TempDir, rel: &str) -> String {

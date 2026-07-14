@@ -1,22 +1,32 @@
-# Docker image for {{project}} (R).
-#
-# Build:  docker build -t {{project}} .
-# Run:    docker run --rm -it {{project}}
+# syntax=docker/dockerfile:1
 
-# The lab image is a rolling tag rebuilt on the lab's schedule; pinning a
-# release here would fork projects off the shared image.
-# hadolint ignore=DL3007
-FROM stanfordhpds/r-renv:latest
+# hpds and R are both pinned when this template is rendered.
+FROM ghcr.io/stanfordhpds/hpds-cli:{{hpds_version}} AS hpds
+FROM rocker/r-ver:{{r_version}}
+
+LABEL org.opencontainers.image.title="{{project}}"
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        ca-certificates \
+        git \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY --from=hpds /hpds /usr/local/bin/hpds
 
 WORKDIR /project
 
-# Install R packages as prebuilt Linux binaries from Posit Package Manager.
-ENV RENV_CONFIG_REPOS_OVERRIDE=https://packagemanager.posit.co/cran/__linux__/noble/latest
+# Copy the complete renv bootstrap before the project source so the package
+# restore layer changes only when the locked environment changes.
+RUN mkdir -p renv
+COPY renv.lock .Rprofile ./
+COPY renv/activate.R renv/settings.json renv/
 
-# Restore the R library from the lockfile before copying the rest of the
-# project, so this layer stays cached until renv.lock changes.
-COPY renv.lock renv.lock
-RUN R -q -e 'renv::restore()'
+ENV RENV_PATHS_CACHE=/project/.cache/renv \
+    RENV_CONFIG_CACHE_SYMLINKS=FALSE
+
+RUN --mount=type=cache,target=/project/.cache/renv \
+    R -s -e 'renv::restore()'
 
 COPY . .
 

@@ -1,29 +1,55 @@
-# Apptainer image for {{project}} (R + Python).
-#
-# Build:  apptainer build container.sif container.def
-# Run:    apptainer run container.sif <command>
+# hpds is a distroless source stage pinned by the template renderer.
+Bootstrap: docker
+From: ghcr.io/stanfordhpds/hpds-cli:{{hpds_version}}
+Stage: hpds
 
 Bootstrap: docker
-From: stanfordhpds/base:latest
+From: ghcr.io/astral-sh/uv:{{uv_version}}
+Stage: uv
+
+# R is pinned explicitly; uv provisions Python from the project metadata.
+Bootstrap: docker
+From: rocker/r-ver:{{r_version}}
+Stage: final
+
+%files from hpds
+    /hpds /usr/local/bin/hpds
+
+%files from uv
+    /uv /usr/local/bin/uv
+    /uvx /usr/local/bin/uvx
 
 %files
     renv.lock /project/renv.lock
+    .Rprofile /project/.Rprofile
+    renv/activate.R /project/renv/activate.R
+    renv/settings.json /project/renv/settings.json
     pyproject.toml /project/pyproject.toml
     uv.lock /project/uv.lock
 
 %post
-    # Package-manager configuration: R packages come as prebuilt Linux
-    # binaries from Posit Package Manager; uv compiles bytecode and copies
-    # (rather than hardlinks) packages across filesystem boundaries.
-    export RENV_CONFIG_REPOS_OVERRIDE=https://packagemanager.posit.co/cran/__linux__/noble/latest
+    apt-get update
+    apt-get install -y --no-install-recommends \
+        ca-certificates \
+        git
+    rm -rf /var/lib/apt/lists/*
+
+    export HOME=/project
+    export RENV_PATHS_LIBRARY=/project/R-renv-library
+    export UV_PROJECT_ENVIRONMENT=/project/.venv
     export UV_COMPILE_BYTECODE=1
     export UV_LINK_MODE=copy
     cd /project
-    R -q -e 'renv::restore()'
+    R -s -e 'renv::restore()'
+    library_path="$(R -s -e 'cat(renv::paths$library())')"
+    ln -s "$library_path" /project/R-library
     uv sync --locked --no-install-project
 
 %environment
-    export RENV_CONFIG_REPOS_OVERRIDE=https://packagemanager.posit.co/cran/__linux__/noble/latest
+    export RENV_PATHS_LIBRARY=/project/R-renv-library
+    export R_LIBS_SITE=/project/R-library
+    export RENV_CONFIG_AUTOLOADER_ENABLED=FALSE
+    export UV_PROJECT_ENVIRONMENT=/project/.venv
     export PATH="/project/.venv/bin:$PATH"
 
 %runscript
@@ -31,3 +57,6 @@ From: stanfordhpds/base:latest
 
 %labels
     Project {{project}}
+    HPDS {{hpds_version}}
+    UV {{uv_version}}
+    R {{r_version}}

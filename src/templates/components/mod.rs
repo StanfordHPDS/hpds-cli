@@ -36,7 +36,7 @@ pub struct ComponentCtx<'a> {
     pub force: bool,
     /// Project root the component renders into.
     pub dest: &'a Path,
-    /// Standard substitution variables (project, language, year, author).
+    /// Standard substitution variables plus any resolved component values.
     pub vars: Vars,
     /// What-to-do-next lines collected by the component. The command layer
     /// prints them after the file outcomes, so the guidance always follows
