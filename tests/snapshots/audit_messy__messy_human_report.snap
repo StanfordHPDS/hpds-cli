@@ -21,8 +21,6 @@ warnings:
     fix: re-render it (`quarto render report.qmd`) and commit the result
   ! [junk-files] `.DS_Store` is committed (macOS Finder junk)
     fix: run `git rm --cached .DS_Store` and ignore it (`hpds git vaccinate --project` adds the common patterns)
-  ! [junk-files] `report.html` is committed (rendered output of the .qmd next to it)
-    fix: run `git rm --cached report.html` and ignore it (`hpds git vaccinate --project` adds the common patterns)
   ! [gitignore-hygiene] .gitignore is missing the recommended R patterns: .Rhistory, .RData, .Rproj.user, .Rdata, .httr-oauth, .DS_Store
     fix: run `hpds git vaccinate --project` to add them
 
@@ -34,4 +32,4 @@ info:
   • [github] GitHub checks skipped: no origin remote
     fix: if this project should live on GitHub, create the repo (`hpds repo create`) or point origin at it (`git remote add origin <url>`); purely local repos can ignore this
 
-4 errors, 5 warnings, 3 info across 9 checks
+4 errors, 4 warnings, 3 info across 9 checks

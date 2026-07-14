@@ -1,10 +1,7 @@
 //! `junk-files`: committed files that should never be in a repo — editor
-//! and session droppings, caches, rendered `.html` next to its `.qmd`
-//! source, and secrets-looking files.
+//! and session droppings, caches, and secrets-looking files.
 //!
 //! The pattern list lives in exactly one place: [`JUNK_PATTERNS`].
-
-use std::collections::HashSet;
 
 use super::{Check, Finding, Severity, git_failed_finding, tracked_files};
 use crate::audit::AuditCtx;
@@ -19,8 +16,6 @@ enum Matcher {
     Dir(&'static str),
     /// The file's name ends with this suffix (and is longer than it).
     Suffix(&'static str),
-    /// A `.html` file with a committed same-stem `.qmd` beside it.
-    HtmlBesideQmd,
 }
 
 /// One junk pattern: how to match, how bad it is, and what the file is.
@@ -59,11 +54,6 @@ const JUNK_PATTERNS: &[JunkPattern] = &[
         label: "Jupyter checkpoint",
     },
     JunkPattern {
-        matcher: Matcher::HtmlBesideQmd,
-        severity: Severity::Warn,
-        label: "rendered output of the .qmd next to it",
-    },
-    JunkPattern {
         matcher: Matcher::Suffix(".pem"),
         severity: Severity::Error,
         label: "looks like a private key",
@@ -85,13 +75,11 @@ impl Check for JunkFiles {
             Ok(tracked) => tracked,
             Err(err) => return vec![git_failed_finding(self.id(), &err)],
         };
-        let tracked_set: HashSet<&str> = tracked.iter().map(String::as_str).collect();
-
         let mut findings = Vec::new();
         for path in &tracked {
             let Some(pattern) = JUNK_PATTERNS
                 .iter()
-                .find(|pattern| matches(&pattern.matcher, path, &tracked_set))
+                .find(|pattern| matches(&pattern.matcher, path))
             else {
                 continue;
             };
@@ -117,16 +105,12 @@ impl Check for JunkFiles {
 }
 
 /// Does `path` (slash-separated, repo-relative) match this pattern?
-fn matches(matcher: &Matcher, path: &str, tracked: &HashSet<&str>) -> bool {
+fn matches(matcher: &Matcher, path: &str) -> bool {
     let name = path.rsplit('/').next().unwrap_or(path);
     match matcher {
         Matcher::Basename(base) => name == *base,
         Matcher::Dir(dir) => path.split('/').rev().skip(1).any(|part| part == *dir),
         Matcher::Suffix(suffix) => name.len() > suffix.len() && name.ends_with(suffix),
-        Matcher::HtmlBesideQmd => match path.strip_suffix(".html") {
-            Some(stem) => tracked.contains(format!("{stem}.qmd").as_str()),
-            None => false,
-        },
     }
 }
 
@@ -195,17 +179,15 @@ mod tests {
     }
 
     #[test]
-    fn html_next_to_its_qmd_source_warns_but_standalone_html_does_not() {
+    fn rendered_outputs_are_not_junk() {
         let (_tmp, repo) = init_repo();
         write(&repo, "report.qmd", "src\n");
         write(&repo, "report.html", "rendered\n");
+        write(&repo, "report.pdf", "rendered\n");
         write(&repo, "standalone.html", "hand-written\n");
         commit_all(&repo, "add", None);
 
-        let findings = JunkFiles.run(&ctx(&repo));
-        assert_eq!(findings.len(), 1, "{findings:?}");
-        assert!(findings[0].message.contains("report.html"), "{findings:?}");
-        assert_eq!(findings[0].severity, Severity::Warn);
+        assert_eq!(JunkFiles.run(&ctx(&repo)), Vec::new());
     }
 
     #[test]

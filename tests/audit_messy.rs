@@ -65,7 +65,8 @@ impl MessyRepo {
         messy.git(&["branch", "old-work"], None);
 
         // Edit the .qmd source without re-rendering: report.html is now
-        // older than report.qmd by commit date.
+        // older than report.qmd by commit date. Committing a render is
+        // legitimate; only this stale source/output relationship warns.
         messy.append("report.qmd", "\nNewer words the HTML never saw.\n");
         messy.git(&["add", "-A"], None);
         messy.git(

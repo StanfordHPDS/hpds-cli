@@ -42,12 +42,6 @@ expression: messy.redact(&stdout)
       "remediation": "run `git rm --cached .env`, add it to .gitignore, and rotate the secret if the repo was ever pushed"
     },
     {
-      "check_id": "junk-files",
-      "severity": "warn",
-      "message": "`report.html` is committed (rendered output of the .qmd next to it)",
-      "remediation": "run `git rm --cached report.html` and ignore it (`hpds git vaccinate --project` adds the common patterns)"
-    },
-    {
       "check_id": "gitignore-hygiene",
       "severity": "warn",
       "message": ".gitignore is missing the recommended R patterns: .Rhistory, .RData, .Rproj.user, .Rdata, .httr-oauth, .DS_Store",
@@ -80,7 +74,7 @@ expression: messy.redact(&stdout)
   ],
   "summary": {
     "errors": 4,
-    "warnings": 5,
+    "warnings": 4,
     "infos": 3
   }
 }
