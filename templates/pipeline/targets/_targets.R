@@ -1,7 +1,7 @@
-# _targets.R — targets pipeline for {{project}}.
+# _targets.R: targets pipeline for {{project}}.
 #
-# Run the pipeline:     targets::tar_make()
-# Inspect the graph:    targets::tar_visnetwork()
+# Run the pipeline: targets::tar_make()
+# Inspect the graph: targets::tar_visnetwork()
 #
 # renv note: targets and tarchetypes must live in the project library so the
 # pipeline is reproducible. Install and record them with:
@@ -16,18 +16,12 @@ tar_option_set(
   # packages = c("dplyr", "ggplot2")
 )
 
-# Starter pipeline — replace these example targets with your project's real
-# steps. Each tar_target() reruns only when its code or upstream data change.
-list(
-  tar_target(
-    raw_data,
-    data.frame(x = 1:10, y = (1:10)^2)
-  ),
-  tar_target(
-    model,
-    lm(y ~ x, data = raw_data)
-  )
-  # tarchetypes adds literate-programming targets, e.g. render a Quarto
-  # report whenever its upstream targets change:
-  # , tar_quarto(report, "report.qmd")
+# Starter pipeline: replace these name = command pairs with your project's
+# real steps. Each target reruns only when its code or upstream data change.
+tar_plan(
+  raw_data = data.frame(x = 1:10, y = (1:10)^2),
+  reg = lm(y ~ x, data = raw_data)
+
+  # tar_plan() also accepts target factories as unnamed arguments, e.g.:
+  # tar_quarto(report, "report.qmd")
 )

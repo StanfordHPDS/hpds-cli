@@ -152,7 +152,10 @@ fn pipeline_kind_targets_creates_targets_file_with_starter_pipeline() {
     let targets = fs::read_to_string(tmp.path().join("_targets.R")).expect("_targets.R created");
     assert!(targets.contains("library(targets)"), "{targets}");
     assert!(targets.contains("library(tarchetypes)"), "{targets}");
-    assert!(targets.contains("tar_target("), "{targets}");
+    assert!(targets.contains("tar_plan("), "{targets}");
+    assert!(targets.contains("raw_data ="), "{targets}");
+    assert!(targets.contains("model ="), "{targets}");
+    assert!(!targets.contains("tar_target("), "{targets}");
     assert!(targets.contains("renv"), "renv note present: {targets}");
     assert!(
         !tmp.path().join("Makefile").exists(),
