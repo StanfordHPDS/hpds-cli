@@ -2,7 +2,7 @@
 //!
 //! Each installer picks a strategy from the injected OS, probes package
 //! managers through the runner seam, and downloads release binaries
-//! through the fetcher seam — so every strategy is assertable offline.
+//! through the fetcher seam, so every strategy is assertable offline.
 
 pub mod duckdb;
 pub mod gh;
@@ -65,8 +65,8 @@ mod online_tests {
     //! Run with: `cargo test --features online-tests -- --ignored`
     //!
     //! Every test skips (with a note) when the tool is already installed
-    //! on this machine — these must never reinstall or otherwise touch
-    //! real tools — and otherwise touches only a throwaway directory:
+    //! on this machine (these must never reinstall or otherwise touch
+    //! real tools) and otherwise touches only a throwaway directory:
     //! the release is downloaded into a temp cache, placed into a temp
     //! bin dir, and probed with `--version` right there.
 
@@ -162,7 +162,7 @@ mod online_tests {
     }
 
     /// Assert that `installer`'s detection agrees with `probe` being on
-    /// PATH — installing r/quarto/tinytex would mutate this machine's
+    /// PATH: installing r/quarto/tinytex would mutate this machine's
     /// real toolchain, so their online tests only exercise detection
     /// (and skip, with a note, when the tool is absent).
     fn assert_detection_matches_path(installer: &dyn Installer, probe: &str) {

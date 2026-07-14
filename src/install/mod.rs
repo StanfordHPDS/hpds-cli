@@ -716,7 +716,7 @@ mod tests {
     #[test]
     fn plan_approved_ctx_installs_without_its_own_prompt() {
         // `hpds setup` confirms its whole plan up front; each install must
-        // then run without re-asking — but its sudo steps still would (the
+        // then run without re-asking, but its sudo steps still would (the
         // plan approval deliberately does not pre-approve sudo).
         let runner = FakeRunner::default().with_output("faker add release", "");
         let installer = OneStepInstaller::new(false);

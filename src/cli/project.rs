@@ -1,4 +1,4 @@
-//! `hpds project` — project commands; `project init` aliases `hpds init`
+//! `hpds project`: project commands; `project init` aliases `hpds init`
 //!.
 
 use clap::{Args, Subcommand};

@@ -4,7 +4,7 @@
 //! and a stable JSON document.
 //!
 //! Like the rest of the audit core, this module returns data and rendered
-//! strings only — the command layer (`cli::audit_all`) prints, shows
+//! strings only; the command layer (`cli::audit_all`) prints, shows
 //! progress, and writes the report file.
 
 use std::path::{Path, PathBuf};
@@ -110,7 +110,7 @@ pub enum RepoOutcome {
 }
 
 /// Clone `spec` into `dest` (which must not exist yet) and run the
-/// standard audit on the clone. Every failure — clone, config, anything —
+/// standard audit on the clone. Every failure (clone, config, anything)
 /// lands in the returned report; this function never aborts the sweep.
 pub fn audit_spec(spec: &RepoSpec, dest: &Path) -> RepoReport {
     let repo = spec.display_name();
@@ -124,8 +124,8 @@ pub fn audit_spec(spec: &RepoSpec, dest: &Path) -> RepoReport {
 }
 
 /// The standard audit against a fresh clone: layered config from the
-/// clone, the local checks, and — when the clone's `origin` points at
-/// github.com and `gh` is authenticated — the GitHub checks too.
+/// clone, the local checks, and, when the clone's `origin` points at
+/// github.com and `gh` is authenticated, the GitHub checks too.
 /// Config *warnings* (unknown keys) are dropped here: in a sweep across
 /// many repos they are noise for someone who cannot fix them in place.
 fn clone_and_audit(spec: &RepoSpec, dest: &Path) -> anyhow::Result<Vec<Finding>> {
@@ -312,7 +312,7 @@ fn summary_line(reports: &[RepoReport]) -> String {
     }
 }
 
-/// `1 repo` / `2 repos` — for summary lines.
+/// `1 repo` / `2 repos`, for summary lines.
 fn count(n: usize, noun: &str) -> String {
     let s = if n == 1 { "" } else { "s" };
     format!("{n} {noun}{s}")
@@ -414,7 +414,7 @@ fn severity_word(severity: Severity) -> &'static str {
 /// Render the sweep as pretty-printed JSON.
 ///
 /// STABLE schema (like the single-repo report, consumed by tooling):
-/// `org` (string or null), `repos` (array of per-repo objects — audited
+/// `org` (string or null), `repos` (array of per-repo objects; audited
 /// repos use the single-audit shape `{repo, findings, summary}`, failed
 /// repos `{repo, error}`), and `summary` with `repos`, `audited`,
 /// `failed`, `errors`, `warnings`, `infos`.
@@ -520,7 +520,7 @@ mod tests {
     }
 
     /// One audited repo with an error and a warning, one clean repo, one
-    /// failure — the shapes every renderer must handle.
+    /// failure: the shapes every renderer must handle.
     fn mixed_reports() -> Vec<RepoReport> {
         vec![
             audited(

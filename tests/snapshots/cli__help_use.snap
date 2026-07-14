@@ -4,7 +4,7 @@ expression: "help_output(& [\"use\", \"--help\"])"
 ---
 Apply a template component to the current project
 
-Drops a single lab template into the current project — pipeline, readme, container, slurm, or gha. Omit the component to list what is available. Existing files are left untouched unless --force is given.
+Drops a single lab template into the current project: hpds.toml, pipeline, readme, container, slurm, or gha. Omit the component to list what is available. Existing files are left untouched unless --force is given.
 
 Usage: hpds use [OPTIONS] [COMPONENT]
 

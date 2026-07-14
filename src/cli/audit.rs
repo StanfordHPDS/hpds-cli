@@ -1,4 +1,4 @@
-//! `hpds audit` — repo and org audits, plus the bot reporter.
+//! `hpds audit`: repo and org audits, plus the bot reporter.
 //!
 //! The audit core (`crate::audit`) returns data; this layer loads config,
 //! runs the registered checks, prints the report through `ui/`, and turns
@@ -287,7 +287,7 @@ fn failure_message(summary: &Summary, strict: bool) -> String {
     format!("audit found {}", parts.join(" and "))
 }
 
-/// `1 error` / `2 errors` — for [`failure_message`].
+/// `1 error` / `2 errors`, for [`failure_message`].
 fn count(n: usize, noun: &str) -> String {
     let s = if n == 1 { "" } else { "s" };
     format!("{n} {noun}{s}")

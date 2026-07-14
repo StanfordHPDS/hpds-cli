@@ -1,4 +1,4 @@
-//! `stale-artifacts`: committed rendered outputs older than their sources —
+//! `stale-artifacts`: committed rendered outputs older than their sources:
 //! `README.md` older than a `README.qmd`/`README.Rmd` next to it, and
 //! committed `.html`/`.pdf` older than the same-stem `.qmd` beside them.
 //!

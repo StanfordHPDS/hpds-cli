@@ -4,7 +4,7 @@
 //! template, a lint workflow, and the audit-bot workflow. Non-interactively
 //! the selection comes
 //! from `--workflows`; interactively it is a multi-select (not testable
-//! here — assert_cmd never has a TTY, so the no-flag path must fail with
+//! here; assert_cmd never has a TTY, so the no-flag path must fail with
 //! an actionable error instead).
 
 use std::fs;
@@ -284,7 +284,7 @@ fn installer_one_liner() -> String {
 
 /// The exact install command the generated lint workflow runs. The
 /// `togi-installer.sh` artifact name tracks the togi project's cargo-dist
-/// config (its shell installer), hardcoded here on purpose — togi is
+/// config (its shell installer), hardcoded here on purpose; togi is
 /// separate software, so there is no config in this repo to parse it from.
 const TOGI_INSTALLER_ONE_LINER: &str = "curl --proto '=https' --tlsv1.2 -LsSf \
      https://github.com/StanfordHPDS/togi/releases/latest/download/togi-installer.sh | sh";

@@ -1,4 +1,4 @@
-//! `hpds audit all` — command layer for the org sweep: resolve the repo
+//! `hpds audit all`: command layer for the org sweep -- resolve the repo
 //! list (gh enumeration or `--repos-from`), drive the per-repo audits
 //! behind a progress bar, print the table or JSON, write the markdown
 //! report, and turn the results into the exit code.
@@ -205,7 +205,7 @@ fn sweep_failure_message(with_errors: usize, failed: usize) -> String {
     format!("audit sweep found {}", parts.join(" and "))
 }
 
-/// `1 repo` / `2 repos` — for [`sweep_failure_message`].
+/// `1 repo` / `2 repos`, for [`sweep_failure_message`].
 fn count(n: usize, noun: &str) -> String {
     let s = if n == 1 { "" } else { "s" };
     format!("{n} {noun}{s}")

@@ -5,7 +5,7 @@
 //! sets); layers are applied to [`Config::default`] in order, so later
 //! layers win key-by-key.
 //!
-//! This module returns data only — it never prints. Unknown-key warnings are
+//! This module returns data only; it never prints. Unknown-key warnings are
 //! returned on [`Loaded::warnings`] for the caller to report through `ui/`.
 
 mod discover;
@@ -43,7 +43,7 @@ pub struct AuditConfig {
     pub stale_days: u32,
     /// GitHub logins that must watch every lab repo (the project's
     /// primary author is required in addition to these). Overridable via
-    /// *user* config only — see [`strip_user_only_keys`].
+    /// *user* config only; see [`strip_user_only_keys`].
     pub required_watchers: Vec<String>,
 }
 

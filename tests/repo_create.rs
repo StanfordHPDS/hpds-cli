@@ -201,7 +201,7 @@ fn non_interactive_run_suggests_use_gha_without_prompting() {
     assert!(git_in(&env, &["commit", "-m", "first"]).status.success());
 
     // No --yes, but stdin is not a TTY: the gha offer must not try to
-    // prompt (which would fail the whole run) — it prints the next step.
+    // prompt (which would fail the whole run); it prints the next step.
     hpds(&env)
         .args([
             "repo",

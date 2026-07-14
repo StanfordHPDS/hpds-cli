@@ -1,6 +1,6 @@
 //! `gitignore-hygiene`: the repo's `.gitignore` is missing vaccinate
 //! patterns for the languages the repo actually uses. The pattern lists
-//! are the ones `hpds git vaccinate` writes — defined once, in `gitx`.
+//! are the ones `hpds git vaccinate` writes, defined once, in `gitx`.
 
 use std::collections::HashSet;
 

@@ -1,13 +1,13 @@
 //! Embedded project templates and the engine that renders them.
 //!
 //! The engine is pure logic: `{{variable}}` substitution ([`render`]), file
-//! writes with conflict handling ([`write_rendered`], [`apply_dir`] — files
+//! writes with conflict handling ([`write_rendered`], [`apply_dir`]: files
 //! are NEVER overwritten without `force`; conflicts carry a diff-style
 //! preview and are skipped), and idempotent marker-comment blocks for
 //! appending to existing files like `Makefile`/`.gitignore`
 //! ([`append_block`]).
 //!
-//! This module returns outcomes as data and never prints — the `hpds use`
+//! This module returns outcomes as data and never prints; the `hpds use`
 //! command layer renders every outcome through `ui/`.
 
 mod apply;
@@ -48,7 +48,7 @@ pub(crate) static TEST_TEMPLATES: Dir<'static> =
 #[derive(Debug, thiserror::Error)]
 pub enum TemplateError {
     /// A template referenced a `{{variable}}` that is not in the
-    /// substitution map — almost always a typo in the template itself.
+    /// substitution map, almost always a typo in the template itself.
     #[error(
         "unknown template variable `{{{{{name}}}}}` in `{template}` (available: {available}); \
          fix the typo in the template or add the variable to the substitution map"
@@ -107,6 +107,7 @@ mod tests {
     #[test]
     fn production_templates_embed_the_shipped_components() {
         assert!(TEMPLATES.get_dir("readme").is_some());
+        assert!(TEMPLATES.get_dir("hpds-toml").is_some());
         assert!(TEMPLATES.get_dir("slurm").is_some());
         assert!(TEMPLATES.get_dir("container").is_some());
         assert!(TEMPLATES.get_dir("gha").is_some());

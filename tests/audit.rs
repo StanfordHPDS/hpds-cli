@@ -88,7 +88,7 @@ impl Sandbox {
 #[test]
 fn audit_on_a_clean_repo_exits_0_with_only_the_no_remote_notice() {
     // The sandbox repo has no origin remote, so the only finding is the
-    // Info notice that the GitHub checks were skipped — symmetric with
+    // Info notice that the GitHub checks were skipped, symmetric with
     // the gh-unauthenticated notice, and never a failure.
     let sb = Sandbox::new();
     sb.audit_cmd(&[])
@@ -178,7 +178,7 @@ fn audit_json_stdout_is_pure_json_with_warnings_on_stderr() {
     let assert = sb.audit_cmd(&["--format", "json"]).assert().success();
     let output = assert.get_output();
 
-    // The entire piped stdout must be one JSON document — nothing before,
+    // The entire piped stdout must be one JSON document: nothing before,
     // nothing after (a trailing newline aside).
     let stdout = String::from_utf8(output.stdout.clone()).expect("stdout should be UTF-8");
     let value: serde_json::Value =
@@ -259,7 +259,7 @@ fn audit_reads_the_project_config() {
 #[test]
 fn audit_outside_a_git_repo_reports_one_not_a_repo_error() {
     // Regression: every git-backed check used to report its own
-    // "could not inspect the repo" error — seven near-identical findings.
+    // "could not inspect the repo" error: seven near-identical findings.
     // Outside a repo the report must carry exactly one Error saying so.
     let root = tempfile::tempdir().expect("create tempdir");
     let dir = root.path().join("plain-dir");

@@ -1,4 +1,4 @@
-//! `hpds audit report-github` — the audit bot core: consumes the JSON
+//! `hpds audit report-github`, the audit bot core: consumes the JSON
 //! emitted by `hpds audit --format json` and mirrors it to GitHub via `gh`.
 //!
 //! Two modes, one per workflow trigger:
@@ -10,8 +10,8 @@
 //!   issues with the same fingerprint are never duplicated; issues whose
 //!   fingerprint no longer occurs are closed with a comment.
 //!
-//! Like the rest of the audit core this module returns data — plans and
-//! progress lines — and never prints. All `gh` calls sit behind the
+//! Like the rest of the audit core this module returns data (plans and
+//! progress lines) and never prints. All `gh` calls sit behind the
 //! [`GhBot`] trait so every decision is tested against a fake.
 
 use std::process::Command;
@@ -23,7 +23,7 @@ use super::github::model::{self, ModelError};
 use super::{Finding, Severity};
 
 /// HTML marker identifying the sticky PR comment; invisible in rendered
-/// Markdown. Part of the bot's persisted state — changing it orphans
+/// Markdown. Part of the bot's persisted state; changing it orphans
 /// existing comments.
 pub const COMMENT_MARKER: &str = "<!-- hpds-audit -->";
 
@@ -32,7 +32,7 @@ pub const COMMENT_MARKER: &str = "<!-- hpds-audit -->";
 pub const ISSUE_LABEL: &str = "hpds-audit";
 
 /// Marker prefix embedding a finding fingerprint in an issue body. Also
-/// persisted state — see [`COMMENT_MARKER`].
+/// persisted state; see [`COMMENT_MARKER`].
 const FINGERPRINT_PREFIX: &str = "<!-- hpds-audit:fingerprint:";
 const FINGERPRINT_SUFFIX: &str = "-->";
 
@@ -98,7 +98,7 @@ pub fn comment_body(report: &AuditReport) -> String {
     );
 
     if report.findings.is_empty() {
-        out.push_str("✓ no findings — all checks passed\n");
+        out.push_str("✓ no findings -- all checks passed\n");
     } else {
         out.push_str("| severity | check | finding | fix |\n");
         out.push_str("| --- | --- | --- | --- |\n");
@@ -136,7 +136,7 @@ fn table_cell(text: &str) -> String {
     text.replace('|', r"\|").replace(['\r', '\n'], " ")
 }
 
-/// `1 error` / `2 errors` — for the comment summary line.
+/// `1 error` / `2 errors`, for the comment summary line.
 fn plural(n: usize, noun: &str) -> String {
     let s = if n == 1 { "" } else { "s" };
     format!("{n} {noun}{s}")
@@ -235,7 +235,7 @@ pub struct SchedulePlan {
 /// - error findings are grouped by [`fingerprint`] (first-seen order); a
 ///   group whose fingerprint already marks an open issue files nothing;
 /// - open issues (never PRs) whose marked fingerprint no longer occurs are
-///   closed; issues without a parseable marker are left alone — the bot
+///   closed; issues without a parseable marker are left alone: the bot
 ///   only retires state it created.
 pub fn plan_schedule(repo: &str, findings: &[Finding], open: &[IssueSummary]) -> SchedulePlan {
     // Group error findings by fingerprint, keeping first-seen order so
@@ -369,7 +369,7 @@ impl GhCliBot {
     }
 }
 
-/// `{"number": N}` — the only field read off a created issue.
+/// `{"number": N}`, the only field read off a created issue.
 #[derive(Debug, Deserialize)]
 struct CreatedIssue {
     number: u64,
@@ -469,7 +469,7 @@ pub fn run_pr(bot: &dyn GhBot, pr: u64, report: &AuditReport) -> Result<Vec<Stri
 /// progress lines for the command layer to print.
 /// The comment left on an issue as it is closed.
 const RESOLVED_COMMENT: &str =
-    "The latest scheduled `hpds audit` no longer reports this finding — closing.";
+    "The latest scheduled `hpds audit` no longer reports this finding; closing.";
 
 pub fn run_schedule(
     bot: &dyn GhBot,
@@ -1022,7 +1022,7 @@ mod tests {
 
     #[test]
     fn plan_schedule_parses_the_recorded_open_issues_fixture() {
-        // The fixture holds two bot issues (dirty-files, junk-files —
+        // The fixture holds two bot issues (dirty-files, junk-files;
         // fingerprints hashed over acme/demo) and one unmarked human
         // issue. With only dirty-files still failing: junk-files closes,
         // nothing files, the human issue survives.

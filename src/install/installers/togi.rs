@@ -12,8 +12,8 @@ use super::{fetch_plan, fetch_to_user_bin};
 pub struct Togi;
 
 /// The togi release archive: Rust-triple asset names with a sha256
-/// sidecar per asset. Mirrors togi's cargo-dist config — gzip tarballs on
-/// unix, zip on Windows — the same shape this repo publishes.
+/// sidecar per asset. Mirrors togi's cargo-dist config (gzip tarballs on
+/// unix, zip on Windows), the same shape this repo publishes.
 pub(super) fn release_spec() -> ToolSpec {
     ToolSpec {
         name: "togi",
@@ -84,7 +84,7 @@ mod tests {
         for os in [Os::Mac, Os::Linux, Os::Windows] {
             // Even with package managers around: togi has no brew formula
             // in this framework's strategy set, no apt repo, and no winget
-            // package — the release binary is the only path.
+            // package: the release binary is the only path.
             let runner = FakeRunner::default()
                 .on_path("brew")
                 .on_path("apt-get")

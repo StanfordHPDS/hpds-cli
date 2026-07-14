@@ -176,7 +176,7 @@ mod tests {
     #[test]
     fn which_in_resolution_is_directory_major_like_windows() {
         // An earlier PATH directory wins even when only a later-priority
-        // suffix matches there — how Windows itself resolves commands.
+        // suffix matches there, which is how Windows itself resolves commands.
         let first = tempfile::tempdir().expect("create temp dir");
         let second = tempfile::tempdir().expect("create temp dir");
         let shim = first.path().join("quarto.cmd");

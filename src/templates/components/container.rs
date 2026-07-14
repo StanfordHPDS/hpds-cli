@@ -1,4 +1,4 @@
-//! `hpds use container` — Dockerfile and/or Apptainer definition scaffolds
+//! `hpds use container`: Dockerfile and/or Apptainer definition scaffolds
 //! based on slim upstream images plus the pinned hpds release image.
 //!
 //! `--kind docker|apptainer|both` picks the file(s); the project language

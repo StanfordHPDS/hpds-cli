@@ -1,7 +1,7 @@
 //! Installer for the quarto CLI.
 //!
 //! macOS and Linux: the GitHub release tarball, extracted whole under the
-//! per-user `~/.local/opt` with a launcher in `~/.local/bin` — no sudo,
+//! per-user `~/.local/opt` with a launcher in `~/.local/bin`: no sudo,
 //! unlike the system-wide pkg//opt paths. Windows: winget when present
 //! (which runs the official MSI), else the release zip into the same
 //! per-user layout. quarto is a directory tree (`bin/` + `share/`), so the

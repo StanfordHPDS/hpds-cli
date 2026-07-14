@@ -1,5 +1,5 @@
 //! The local audit checks. Each one inspects the repo (shelling out to
-//! `git` where needed) and returns [`Finding`]s — no printing, no mutation.
+//! `git` where needed) and returns [`Finding`]s: no printing, no mutation.
 //!
 //! Shared plumbing lives here: careful `git` invocation (a broken repo
 //! state is data or a finding, never a panic) and the tracked-file listing
@@ -42,7 +42,7 @@ struct GitError {
 }
 
 /// Run `git -C <repo> <args>`, requiring exit 0. Non-zero exit and spawn
-/// failures both come back as [`GitError`] — callers turn that into a
+/// failures both come back as [`GitError`]; callers turn that into a
 /// finding (or treat it as a legitimate state), never a panic.
 fn git(repo: &Path, args: &[&str]) -> Result<String, GitError> {
     let rendered = || args.join(" ");

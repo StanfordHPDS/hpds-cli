@@ -27,11 +27,11 @@ jobs:
 
       # Installs the latest published hpds release. Until the first
       # v0.1.0 tag is published this step fails, because no release
-      # exists yet — that is expected and documents itself.
+      # exists yet; that is expected and documents itself.
       - name: Install hpds
         run: curl --proto '=https' --tlsv1.2 -LsSf https://github.com/StanfordHPDS/hpds-cli/releases/latest/download/hpds-installer.sh | sh
 
-      # `hpds audit` exits 1 when it finds errors — expected here, because
+      # `hpds audit` exits 1 when it finds errors; expected here, because
       # reporting those findings is the whole point of this workflow. The
       # exit code is captured so the JSON always reaches the report step;
       # anything other than 0 or 1 (usage error, crash) still fails the job.

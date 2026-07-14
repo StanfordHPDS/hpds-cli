@@ -431,7 +431,7 @@ pub fn summary(results: &[StepResult]) -> String {
     for result in results {
         match &result.error {
             None => out.push_str(&format!("  ✓ {}\n", result.title)),
-            Some(error) => out.push_str(&format!("  ✗ {} — {error}\n", result.title)),
+            Some(error) => out.push_str(&format!("  ✗ {}: {error}\n", result.title)),
         }
     }
     out
@@ -808,7 +808,7 @@ mod tests {
         ];
         let text = summary(&results);
         assert!(text.contains("✓ quarto"), "{text}");
-        assert!(text.contains("✗ rig — boom"), "{text}");
+        assert!(text.contains("✗ rig: boom"), "{text}");
     }
 
     #[test]

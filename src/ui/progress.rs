@@ -2,7 +2,7 @@
 //!
 //! Bars draw to stderr so they never pollute piped stdout. When stderr is
 //! not a TTY a bar cannot render, so the label is printed once as a plain
-//! notice line instead — long work is never silent.
+//! notice line instead: long work is never silent.
 
 use std::io::IsTerminal;
 
@@ -74,7 +74,7 @@ mod tests {
     #[test]
     fn terminal_progress_bar_draws_its_label_before_any_progress() {
         // A bar that only renders on the first `inc` shows nothing at all
-        // for work that reports no increments (or none yet) — the label
+        // for work that reports no increments (or none yet): the label
         // must be on screen from the moment the bar exists.
         let term = InMemoryTerm::new(24, 80);
         let target = ProgressDrawTarget::term_like(Box::new(term.clone()));

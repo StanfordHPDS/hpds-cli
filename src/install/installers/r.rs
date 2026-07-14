@@ -3,7 +3,7 @@
 //! R always installs through rig: when rig is missing it is installed
 //! first via its registered installer (looked up in the registry, so the
 //! rig strategy lives in one place), then `rig add` puts the requested R
-//! on the machine — the current release, or the exact `--version` pin.
+//! on the machine: the current release, or the exact `--version` pin.
 //! `rig add` writes into system locations on macOS and Linux, so it runs
 //! as a declared sudo step there; on Windows it runs directly.
 

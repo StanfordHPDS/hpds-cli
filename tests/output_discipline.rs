@@ -33,7 +33,7 @@ fn production_code_prints_only_through_ui() {
     }
     assert!(
         offenders.is_empty(),
-        "terminal output outside src/ui/ — use the ui:: helpers instead:\n{}",
+        "terminal output outside src/ui/ -- use the ui:: helpers instead:\n{}",
         offenders.join("\n")
     );
 }
@@ -80,7 +80,7 @@ fn opens_mod_block(trimmed: &str) -> bool {
 /// The (1-indexed line number, line) pairs of `content` that are
 /// production code: everything up to the first `#[cfg(test…)]` attribute
 /// that opens a `mod … {` block. Test modules sit at the bottom of their
-/// files in this codebase, so the rest of such a file is test code —
+/// files in this codebase, so the rest of such a file is test code,
 /// where direct prints are fine, since test output does not go through
 /// ui.
 fn production_lines(content: &str) -> Vec<(usize, &str)> {

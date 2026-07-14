@@ -4,7 +4,7 @@ expression: "help_output(& [\"config\", \"--help\"])"
 ---
 Print the resolved configuration and where each value came from
 
-Prints the fully layered configuration (built-in defaults, then user config, then the project hpds.toml) and the path of each contributing file — the answer to "why did it do that?". --format json for a machine-readable dump. See docs/hpds.toml.md for every key.
+Prints the fully layered configuration (built-in defaults, then user config, then the project hpds.toml) and the path of each contributing file, the answer to "why did it do that?". --format json for a machine-readable dump. See docs/hpds.toml.md for every key.
 
 Usage: hpds config [OPTIONS]
 

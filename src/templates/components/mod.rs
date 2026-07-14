@@ -14,6 +14,7 @@
 pub mod container;
 pub mod fetched;
 pub mod gha;
+pub mod hpds_toml;
 pub mod pipeline;
 pub mod readme;
 pub mod slurm;
@@ -61,6 +62,7 @@ pub struct Component {
 pub static COMPONENTS: &[Component] = &[
     container::COMPONENT,
     gha::COMPONENT,
+    hpds_toml::COMPONENT,
     pipeline::COMPONENT,
     fetched::POSTER,
     readme::COMPONENT,
@@ -153,6 +155,7 @@ mod tests {
     #[test]
     fn find_returns_every_other_registered_component() {
         for name in [
+            "hpds.toml",
             "readme",
             "slurm",
             "container",

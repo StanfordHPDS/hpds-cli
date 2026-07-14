@@ -1,11 +1,11 @@
-//! `hpds init` — project setup wizard. Also reachable as
+//! `hpds init`: project setup wizard. Also reachable as
 //! `hpds project init`.
 //!
 //! Takes an optional target directory: `hpds init my-study` creates
 //! `./my-study/` and scaffolds inside it, while a bare `hpds init` (or
 //! `hpds init .`) scaffolds the current directory in place. Scaffolding
-//! into a directory that already holds unrelated work — non-empty and not
-//! already an hpds project — is confirmed first, and refused under `--yes`
+//! into a directory that already holds unrelated work (non-empty and not
+//! already an hpds project) is confirmed first, and refused under `--yes`
 //! without `--force`.
 //!
 //! Interactive: prompts for name, description, language, a multi-select
@@ -65,7 +65,7 @@ pub struct InitArgs {
     pub language: Option<String>,
 
     /// Components to apply (comma-separated): pipeline, readme, container,
-    /// slurm, gha. Attach a variant with `:` — pipeline:make|targets|both,
+    /// slurm, gha. Attach a variant with `:` -- pipeline:make|targets|both,
     /// container:docker|apptainer|both, gha:pr-template+lint+audit-bot.
     /// Without a variant, --yes defaults pipeline to make, container to
     /// docker, and gha to every workflow, and reports each defaulted kind
@@ -99,7 +99,7 @@ pub struct InitArgs {
 
 pub fn run(args: InitArgs) -> anyhow::Result<()> {
     // Belt and braces: everything below answers prompts from flags under
-    // --yes, so any prompt that would still fire is a bug — make it fail
+    // --yes, so any prompt that would still fire is a bug; make it fail
     // fast instead of hanging a scripted run.
     if args.yes {
         ui::set_non_interactive(true);
@@ -111,7 +111,7 @@ pub fn run(args: InitArgs) -> anyhow::Result<()> {
     }
     // Everything below writes relative to the target, and the git-forward
     // helpers (vaccinate, repo create) act on the process working
-    // directory — so make the target the working directory once, up front.
+    // directory, so make the target the working directory once, up front.
     std::env::set_current_dir(&target)
         .with_context(|| format!("could not enter {}", target.display()))?;
 
@@ -148,11 +148,11 @@ pub fn run(args: InitArgs) -> anyhow::Result<()> {
     let vars = Vars::standard(&name, language.as_deref(), &author);
 
     // hpds.toml first: the project metadata is the one thing init always
-    // writes. Existing files go through the engine's conflict handling —
+    // writes. Existing files go through the engine's conflict handling:
     // never overwritten without --force.
     let outcome = write_rendered(
         &target.join("hpds.toml"),
-        hpds_toml(&name, &description, &author).as_bytes(),
+        components::hpds_toml::render_config(&vars, &description)?.as_bytes(),
         args.force,
     )?;
     let mut conflicts = r#use::report_outcomes(&[FileOutcome {
@@ -188,7 +188,7 @@ pub fn run(args: InitArgs) -> anyhow::Result<()> {
     git_forward(&args, &target, &name)?;
     if togi_next_step_applies(&selections, language.as_deref()) {
         ui::println(
-            "next: format and lint with the lab's togi tool — `togi format` \
+            "next: format and lint with the lab's togi tool, `togi format` \
              (install it with `hpds install togi`)",
         );
     }
@@ -197,7 +197,7 @@ pub fn run(args: InitArgs) -> anyhow::Result<()> {
 }
 
 /// Whether the closing next steps should point at togi: only when
-/// formatting is relevant — the project has a language whose code togi
+/// formatting is relevant, i.e. the project has a language whose code togi
 /// formats, or CI was just set up to run togi (the gha lint workflow).
 /// An interactive gha selection has no workflow list yet (the component
 /// prompts for it), so it counts as possibly-lint.
@@ -237,7 +237,7 @@ fn resolve_target_dir(dir: Option<&str>, cwd: &Path) -> anyhow::Result<PathBuf> 
 
 /// Guard against scaffolding on top of unrelated work. A target that is
 /// empty (ignoring `.git` and macOS `.DS_Store`) or already an hpds project
-/// (has `hpds.toml`) is fine — the latter is a legitimate re-run. Otherwise
+/// (has `hpds.toml`) is fine; the latter is a legitimate re-run. Otherwise
 /// interactively confirm, and non-interactively refuse unless `--force`.
 /// Returns whether to proceed.
 fn confirm_scaffold_into(target: &Path, yes: bool, force: bool) -> anyhow::Result<bool> {
@@ -256,7 +256,7 @@ fn confirm_scaffold_into(target: &Path, yes: bool, force: bool) -> anyhow::Resul
     }
     let proceed = ui::confirm(
         &format!(
-            "{} is not empty and is not an hpds project — scaffold here anyway?",
+            "{} is not empty and is not an hpds project -- scaffold here anyway?",
             target.display()
         ),
         false,
@@ -268,7 +268,7 @@ fn confirm_scaffold_into(target: &Path, yes: bool, force: bool) -> anyhow::Resul
 }
 
 /// Whether `dir` holds anything other than a `.git` directory or a macOS
-/// `.DS_Store` — i.e. real content init would be scaffolding on top of. A
+/// `.DS_Store`, i.e. real content init would be scaffolding on top of. A
 /// freshly `git init`-ed or otherwise-empty directory reads as empty.
 fn has_other_content(dir: &Path) -> anyhow::Result<bool> {
     for entry in
@@ -295,7 +295,7 @@ fn default_project_name(target: &Path) -> anyhow::Result<String> {
 }
 
 /// Default primary author: the login `gh` is authenticated as. The audit
-/// watchers check needs a GitHub LOGIN — git's `user.name` is a display
+/// watchers check needs a GitHub LOGIN; git's `user.name` is a display
 /// name, so it is never used. Without a usable gh, the author stays empty
 /// (and the generated hpds.toml says to fill it in).
 fn default_author() -> anyhow::Result<String> {
@@ -314,7 +314,7 @@ fn resolve_language(flag: Option<String>, yes: bool, cwd: &Path) -> anyhow::Resu
     }
 }
 
-/// One init-selectable component (the embedded ones only — fetched
+/// One init-selectable component (the embedded ones only; fetched
 /// templates like slides land in a subdirectory and are `hpds use`'s job).
 #[derive(Debug)]
 struct Selectable {
@@ -501,7 +501,7 @@ fn announce_defaulted_kind(selection: &Selection) {
 
 /// Parse one `--use` entry: `name` or `name:variant`, where the variant is
 /// a kind (pipeline, container) or a `+`-separated workflow list (gha).
-/// Variants are validated here — before init writes anything — and bad
+/// Variants are validated here, before init writes anything, and bad
 /// ones get hints in init's own `--use name:variant` syntax, not the
 /// `--kind`/`--workflows` flags that only `hpds use` has.
 fn parse_selection(item: &str) -> anyhow::Result<Selection> {
@@ -583,7 +583,7 @@ fn prompt_components() -> anyhow::Result<Vec<Selection>> {
     struct MenuItem(&'static Selectable, &'static str);
     impl std::fmt::Display for MenuItem {
         fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-            write!(f, "{} — {}", self.0.name, self.1)
+            write!(f, "{}: {}", self.0.name, self.1)
         }
     }
     let options = SELECTABLE
@@ -636,34 +636,11 @@ fn ensure_language_for(selections: &[Selection], language: Option<&str>) -> anyh
     }
 }
 
-/// The `hpds.toml` init writes: the documented `[project]` shape, with the
-/// name and description as header comments (they are not config keys).
+/// Test seam for the metadata renderer shared with `hpds use hpds.toml`.
+#[cfg(test)]
 fn hpds_toml(name: &str, description: &str, author: &str) -> String {
-    let mut out = format!("# hpds.toml — hpds configuration for {}\n", one_line(name));
-    let description = one_line(description);
-    if !description.is_empty() {
-        out.push_str(&format!("# {description}\n"));
-    }
-    out.push_str("\n[project]\n");
-    out.push_str("# active | submitted | published | retired\n");
-    out.push_str("status = \"active\"\n");
-    out.push_str("# GitHub username; `hpds audit` checks they watch the repo\n");
-    let author = one_line(author);
-    if author.is_empty() {
-        out.push_str("# fill in your GitHub username (no gh login was detected)\n");
-    }
-    out.push_str(&format!("primary-author = {}\n", toml_string(&author)));
-    out
-}
-
-/// Collapse any line breaks so user input cannot escape a comment line.
-fn one_line(value: &str) -> String {
-    value.replace(['\r', '\n'], " ").trim().to_string()
-}
-
-/// Quote a value as a TOML basic string.
-fn toml_string(value: &str) -> String {
-    format!("\"{}\"", value.replace('\\', "\\\\").replace('"', "\\\""))
+    let vars = Vars::standard(name, None, author);
+    components::hpds_toml::render_config(&vars, description).expect("embedded hpds.toml template")
 }
 
 /// The git-forward steps at the end of init: `git init` (when not already
@@ -930,7 +907,7 @@ mod tests {
         assert!(toml.contains("[project]"), "{toml}");
         assert!(toml.contains("status = \"active\""), "{toml}");
         assert!(toml.contains("primary-author = \"malcolm\""), "{toml}");
-        assert!(toml.contains("# hpds.toml — hpds configuration for malaria-icu"));
+        assert!(toml.contains("# hpds.toml: hpds configuration for malaria-icu"));
         assert!(toml.contains("# ICU malaria outcomes"));
     }
 
@@ -1006,7 +983,7 @@ mod tests {
         let without_lint = vec![parse_selection("gha:pr-template").unwrap()];
         assert!(!togi_next_step_applies(&without_lint, None));
 
-        // Interactive gha has no workflow list yet — the multi-select may
+        // Interactive gha has no workflow list yet; the multi-select may
         // still pick lint, so the next step stays on.
         let undecided = vec![parse_selection("gha").unwrap()];
         assert!(togi_next_step_applies(&undecided, None));

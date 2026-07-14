@@ -290,7 +290,7 @@ mod tests {
             expand_tilde("/abs/ignore", home),
             PathBuf::from("/abs/ignore")
         );
-        // `~user` is not expanded — left for git/the OS to interpret.
+        // `~user` is not expanded, left for git/the OS to interpret.
         assert_eq!(
             expand_tilde("~other/ignore", home),
             PathBuf::from("~other/ignore")

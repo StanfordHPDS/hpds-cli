@@ -1,4 +1,4 @@
-//! `hpds setup` — fresh machine bundle.
+//! `hpds setup`: fresh machine bundle.
 //!
 //! Thin wiring over the engine in `crate::setup`: parse the profile,
 //! short-circuit `--plan`, enforce the server profile's Linux-only rule,

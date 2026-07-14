@@ -1,4 +1,4 @@
-//! `hpds config` — print the resolved, layered configuration.
+//! `hpds config`: print the resolved, layered configuration.
 //!
 //! This is the debugging story for "why did it do that?": every contributing
 //! file's path is shown alongside the fully resolved values.

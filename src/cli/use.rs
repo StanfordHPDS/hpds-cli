@@ -1,4 +1,4 @@
-//! `hpds use` — apply a template component to the current project.
+//! `hpds use`: apply a template component to the current project.
 //!
 //! With no component, lists every registered component with its one-line
 //! description. With a component, builds the [`ComponentCtx`] (kind/force

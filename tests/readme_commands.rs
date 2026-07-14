@@ -64,6 +64,15 @@ fn readme_quickstart_says_formatting_comes_from_togi() {
 }
 
 #[test]
+fn readme_audit_example_recommends_the_hpds_toml_component() {
+    let readme = readme();
+    assert!(
+        readme.contains("fix: run `hpds use hpds.toml`"),
+        "the lifecycle audit example should point at the executable remediation"
+    );
+}
+
+#[test]
 fn readme_shows_a_healthy_number_of_hpds_commands() {
     let commands = extract_commands(&readme());
     assert!(

@@ -1,4 +1,4 @@
-//! `hpds use readme` — a lab-manual structured Markdown README.
+//! `hpds use readme`: a lab-manual structured Markdown README.
 //!
 //! Every project gets `README.md` directly, with starter content tailored
 //! to R, Python, or a project using both. Every variant carries suggested

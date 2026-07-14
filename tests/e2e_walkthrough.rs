@@ -57,7 +57,7 @@ impl Walkthrough {
         }
     }
 
-    /// The project directory's basename — the name the audit reports.
+    /// The project directory's basename, the name the audit reports.
     fn project_name(&self) -> String {
         self.project
             .file_name()
@@ -76,7 +76,7 @@ impl Walkthrough {
     }
 
     /// A fully isolated `hpds <args...>` invocation from the project dir. All
-    /// state — HOME, git config, hpds config, and the download cache —
+    /// state (HOME, git config, hpds config, and the download cache)
     /// points into the tempdir, and the release-download host points at a
     /// closed port so no step can ever touch the network.
     fn hpds(&self, args: &[&str]) -> Command {

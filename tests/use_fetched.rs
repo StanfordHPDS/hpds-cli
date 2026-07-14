@@ -91,7 +91,7 @@ fn poster_rejects_the_workflows_flag_without_fetching() {
 }
 
 /// A successful fetch prints `✓ created <dir>` first, then the `next:`
-/// guidance — the outcome before the advice. Driven with a fake `quarto`
+/// guidance: the outcome before the advice. Driven with a fake `quarto`
 /// on PATH so no network is touched. Unix-only: a script shim cannot
 /// intercept `Command::new` on Windows, which resolves only `.exe`.
 #[cfg(unix)]

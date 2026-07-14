@@ -1,4 +1,4 @@
-//! `junk-files`: committed files that should never be in a repo — editor
+//! `junk-files`: committed files that should never be in a repo: editor
 //! and session droppings, caches, and secrets-looking files.
 //!
 //! The pattern list lives in exactly one place: [`JUNK_PATTERNS`].

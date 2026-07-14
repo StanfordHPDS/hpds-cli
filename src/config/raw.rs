@@ -3,7 +3,7 @@
 //! Unknown keys warn instead of erroring (forward compatibility), so each
 //! table captures unrecognized entries via `#[serde(flatten)]` and we
 //! surface them as dotted key paths. Type errors (e.g. `status = 3`) are
-//! real errors — a wrong type is a mistake, not a future key.
+//! real errors: a wrong type is a mistake, not a future key.
 
 use serde::Deserialize;
 

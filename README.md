@@ -68,6 +68,7 @@ argument lists what's available:
 
 ```console
 $ hpds use
+$ hpds use hpds.toml
 $ hpds use readme
 $ hpds use pipeline --kind targets
 ```
@@ -103,7 +104,7 @@ Audit the current repo against lab standards, or emit JSON for the bot:
 $ hpds audit
 errors:
   ✗ [lifecycle-metadata] the repo has no hpds.toml
-    fix: create hpds.toml with a [project] table setting `status` and `primary-author`
+    fix: run `hpds use hpds.toml`
   ✗ [readme] the repo has no README
     fix: add one, for example with `hpds use readme`
 

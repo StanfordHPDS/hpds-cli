@@ -1,6 +1,6 @@
 //! GitHub-side audit checks, run against the repo's `origin` remote via the
 //! `gh` CLI (`gh api ...`). Like the rest of the audit core, everything here
-//! returns data — findings and strings — and never prints.
+//! returns data (findings and strings) and never prints.
 //!
 //! All external commands sit behind the [`GithubApi`] trait so the checks
 //! are tested against recorded `gh` output (`tests/fixtures/tool-output/gh/`)
@@ -37,7 +37,7 @@ impl std::fmt::Display for RepoSlug {
 /// findings; they never abort the audit.
 #[derive(Debug, thiserror::Error)]
 pub enum GhApiError {
-    /// The endpoint answered HTTP 404 — meaningful to some checks (e.g. a
+    /// The endpoint answered HTTP 404, meaningful to some checks (e.g. a
     /// compare against a commit GitHub has never seen).
     #[error("GitHub answered 404 Not Found")]
     NotFound,
@@ -57,7 +57,7 @@ fn render_detail(detail: &str) -> String {
 }
 
 /// The local commit the default-branch staleness comparison uses, and
-/// where it came from — checks word their findings differently when `HEAD`
+/// where it came from; checks word their findings differently when `HEAD`
 /// stood in for a missing local branch.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LocalTip {
@@ -74,7 +74,7 @@ pub struct LocalTip {
 pub trait GithubApi {
     /// Raw stdout of `gh api <endpoint>`. With `paginate`, gh follows Link
     /// headers and concatenates one JSON document per page (see
-    /// [`model::parse_pages`]); without it, gh fetches the endpoint once —
+    /// [`model::parse_pages`]); without it, gh fetches the endpoint once,
     /// the right mode for single-object endpoints, where pagination only
     /// multiplies round trips (and, for `compare`, response documents).
     fn api(&self, endpoint: &str, paginate: bool) -> Result<String, GhApiError>;
@@ -86,8 +86,8 @@ pub trait GithubApi {
 }
 
 /// The real [`GithubApi`]: shells out to `gh` (and `git`, when a local
-/// checkout exists). Without a checkout — the org sweep's metadata-only
-/// mode — `gh api` runs from the process cwd and local branch lookups
+/// checkout exists). Without a checkout (the org sweep's metadata-only
+/// mode), `gh api` runs from the process cwd and local branch lookups
 /// always answer `None`.
 struct GhCli {
     repo: Option<PathBuf>,
@@ -163,14 +163,14 @@ impl GithubCtx {
     }
 
     /// Fetch a single-object endpoint (no pagination; one JSON document,
-    /// though a paginating proxy may still concatenate — see
+    /// though a paginating proxy may still concatenate; see
     /// [`model::parse_one`]).
     fn api_one(&self, endpoint: &str) -> Result<String, GhApiError> {
         self.api(endpoint, false)
     }
 
     /// Fetch a list endpoint, following pagination (one JSON array per
-    /// page, concatenated — see [`model::parse_pages`]).
+    /// page, concatenated; see [`model::parse_pages`]).
     fn api_pages(&self, endpoint: &str) -> Result<String, GhApiError> {
         self.api(endpoint, true)
     }
@@ -216,7 +216,7 @@ pub enum GithubStatus {
 }
 
 /// A GitHub context for a repo with no local checkout, keyed by slug
-/// alone — the org sweep's `--no-clone` metadata pass. The caller is
+/// alone: the org sweep's `--no-clone` metadata pass. The caller is
 /// responsible for having verified `gh` auth first.
 pub fn ctx_without_checkout(slug: RepoSlug) -> GithubCtx {
     GithubCtx::new(slug, Box::new(GhCli { repo: None }))
@@ -256,7 +256,7 @@ pub fn skipped_notice() -> Finding {
 }
 
 /// The Info notice reported when the GitHub checks are skipped because the
-/// repo has no github.com `origin` remote — symmetric with
+/// repo has no github.com `origin` remote; symmetric with
 /// [`skipped_notice`], so the report always says why those checks are
 /// absent.
 pub fn no_remote_notice() -> Finding {

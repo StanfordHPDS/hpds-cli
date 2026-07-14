@@ -72,9 +72,10 @@ pub enum Command {
     Project(project::ProjectArgs),
     /// Apply a template component to the current project
     ///
-    /// Drops a single lab template into the current project — pipeline,
-    /// readme, container, slurm, or gha. Omit the component to list what is
-    /// available. Existing files are left untouched unless --force is given.
+    /// Drops a single lab template into the current project: hpds.toml,
+    /// pipeline, readme, container, slurm, or gha. Omit the component to list
+    /// what is available. Existing files are left untouched unless --force
+    /// is given.
     Use(r#use::UseArgs),
     /// Install external software (r, quarto, uv, gh, rig, tinytex, duckdb, togi)
     ///
@@ -113,7 +114,7 @@ pub enum Command {
     ///
     /// Prints the fully layered configuration (built-in defaults, then user
     /// config, then the project hpds.toml) and the path of each contributing
-    /// file — the answer to "why did it do that?". --format json for a
+    /// file, the answer to "why did it do that?". --format json for a
     /// machine-readable dump. See docs/hpds.toml.md for every key.
     Config(config::ConfigArgs),
     /// Generate shell completions

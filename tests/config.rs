@@ -129,7 +129,7 @@ fn explicit_config_flag_overrides_discovery() {
 #[test]
 fn explicit_config_flag_with_missing_file_is_a_usage_error() {
     // A bad `--config` value is a usage error (exit 2), like any other
-    // bad flag value — not a runtime failure.
+    // bad flag value, not a runtime failure.
     let sb = Sandbox::new();
     let mut cmd = sb.config_cmd();
     cmd.arg("--config").arg("no-such-file.toml");

@@ -86,7 +86,7 @@ pub fn write_rendered(
 /// land in a temp file in the same directory, which then renames over
 /// `path`, so a crash mid-write can never leave the user's file truncated.
 /// The destination's permissions are preserved. Only for paths that already
-/// exist — creating a brand-new file destroys nothing and uses `fs::write`.
+/// exist; creating a brand-new file destroys nothing and uses `fs::write`.
 pub(super) fn replace_file_atomically(path: &Path, contents: &[u8]) -> std::io::Result<()> {
     use std::io::Write as _;
     let parent = match path.parent() {

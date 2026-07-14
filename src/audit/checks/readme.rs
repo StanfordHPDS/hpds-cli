@@ -16,7 +16,7 @@ impl Check for Readme {
         "readme"
     }
 
-    /// Reads files only, never git — it runs even outside a repository.
+    /// Reads files only, never git; it runs even outside a repository.
     fn needs_repo(&self) -> bool {
         false
     }

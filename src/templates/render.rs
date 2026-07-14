@@ -4,7 +4,7 @@
 //! `{{variable}}` is a hard error at render time to catch typos in
 //! templates. Anything else between doubled braces passes through
 //! untouched, and a `$` immediately before the braces always marks a
-//! GitHub Actions expression (`${{ github }}`, `${{ matrix.os }}`) —
+//! GitHub Actions expression (`${{ github }}`, `${{ matrix.os }}`),
 //! never a variable, even when the contents are identifier-shaped.
 
 use std::collections::BTreeMap;
@@ -77,7 +77,7 @@ pub fn render(template: &str, template_name: &str, vars: &Vars) -> Result<String
         out.push_str(&rest[..start]);
         let after = &rest[start + 2..];
         // `${{ ... }}` is a GitHub Actions expression, never one of our
-        // variables — even when the contents are identifier-shaped, like
+        // variables, even when the contents are identifier-shaped, like
         // `${{ github }}`. The `$` escape hatch keeps such tokens from
         // being rewritten or rejected as unknown variables.
         let dollar_escaped = rest[..start].ends_with('$');

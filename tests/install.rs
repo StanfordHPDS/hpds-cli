@@ -205,8 +205,8 @@ fn install_without_yes_non_interactively_refuses_before_running_anything() {
     assert!(!marker.exists(), "no command may run without approval");
 }
 
-/// The togi plan must say where the binary comes from — its GitHub
-/// releases — not just that "a release binary" will be downloaded. The
+/// The togi plan must say where the binary comes from (its GitHub
+/// releases), not just that "a release binary" will be downloaded. The
 /// non-interactive refusal path prints the plan without running anything.
 #[test]
 fn install_togi_plan_names_the_source_release_repo() {

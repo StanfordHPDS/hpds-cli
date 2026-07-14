@@ -16,7 +16,7 @@ mod tests {
 
     #[test]
     fn pinned_versions_are_bare_semver() {
-        // Bare `X.Y.Z` — no `v` prefix, so they can drop straight into
+        // Bare `X.Y.Z`: no `v` prefix, so they can drop straight into
         // asset patterns.
         for (name, version) in [
             ("uv", UV),

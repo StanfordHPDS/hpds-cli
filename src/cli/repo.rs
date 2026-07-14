@@ -1,4 +1,4 @@
-//! `hpds repo` — GitHub repository helpers.
+//! `hpds repo`: GitHub repository helpers.
 
 use clap::{Args, Subcommand};
 

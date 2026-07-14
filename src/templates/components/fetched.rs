@@ -2,8 +2,8 @@
 //!
 //! Unlike the embedded templates, these live in GitHub repositories and are
 //! fetched at apply time (network required). Quarto templates (slides,
-//! poster) prefer `quarto use template` when quarto is on PATH; otherwise —
-//! and always for the Typst thesis — they are shallow-cloned with `gh` (or
+//! poster) prefer `quarto use template` when quarto is on PATH; otherwise,
+//! and always for the Typst thesis, they are shallow-cloned with `gh` (or
 //! plain `git` when `gh` is absent) and the clone's `.git` directory is
 //! stripped so the files join the user's own project history.
 //!
@@ -149,7 +149,7 @@ impl FetchedTemplate {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Strategy {
     /// `quarto use template <slug> --no-prompt` inside the (empty) new
-    /// subdirectory — quarto refuses non-empty directories.
+    /// subdirectory; quarto refuses non-empty directories.
     QuartoTemplate,
     /// Shallow clone into the subdirectory, then strip `.git`.
     Clone(CloneTool),
@@ -301,7 +301,7 @@ fn fetch(
     }
     // Guidance, not a file outcome: hand it to the command layer, which
     // prints it after the `created ...` report it refers to. The relative
-    // path keeps the advice short — `hpds use` runs from the project root.
+    // path keeps the advice short; `hpds use` runs from the project root.
     ctx.guidance
         .borrow_mut()
         .extend(template.next_steps(&rel_dest, strategy));
@@ -392,8 +392,8 @@ fn is_executable(path: &Path) -> bool {
 
 /// Create `dest` and run `quarto use template` inside it (quarto refuses to
 /// install into a non-empty directory, so it gets a fresh one, mirroring
-/// where the clone strategy lands). If quarto fails, `dest` — including any
-/// partial output — is removed again: a stale directory would make every
+/// where the clone strategy lands). If quarto fails, `dest`, including any
+/// partial output, is removed again: a stale directory would make every
 /// retry fail with `DestExists` instead of repeating the actionable fetch
 /// error. git/gh clean up their own failed clones, so only this path needs
 /// explicit cleanup.
@@ -691,7 +691,7 @@ mod tests {
     }
 
     /// Regression: a failed `quarto use template` must not leave the freshly
-    /// created destination (or quarto's partial output) behind — a stale
+    /// created destination (or quarto's partial output) behind: a stale
     /// directory would make every retry fail with `DestExists` ("may already
     /// be fetched", which is untrue) instead of repeating the actionable
     /// fetch error with the URL and connectivity hint.
@@ -729,7 +729,7 @@ mod tests {
     /// Regression: an offline `quarto use template` dies with a multi-line
     /// Deno stack trace full of raw ANSI codes. The hpds error must keep
     /// only the first meaningful error line (ANSI stripped) alongside the
-    /// repo URL and the connectivity hint — not the whole dump.
+    /// repo URL and the connectivity hint, not the whole dump.
     #[cfg(unix)]
     #[test]
     fn failed_quarto_fetch_truncates_stderr_to_the_first_error_line_without_ansi() {

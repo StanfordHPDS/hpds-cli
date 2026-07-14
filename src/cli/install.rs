@@ -1,4 +1,4 @@
-//! `hpds install` — install external software per platform.
+//! `hpds install`: install external software per platform.
 //!
 //! Thin wiring: look the tool up in the installer registry, build the
 //! [`InstallCtx`] from the flags and this machine's platform, and hand off

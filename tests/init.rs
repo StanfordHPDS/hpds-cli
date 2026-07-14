@@ -8,16 +8,16 @@
 //! # Manual smoke script for the interactive wizard (run in a terminal):
 //! mkdir smoke-hpds-init && cd smoke-hpds-init
 //! hpds init
-//! #  1. "Project name" defaults to smoke-hpds-init — accept it
-//! #  2. "Project description" — type anything
-//! #  3. "Project language" — pick r
-//! #  4. Component multi-select — pick pipeline and readme
-//! #  5. "Primary author (GitHub username)" — defaults to the login gh is
+//! #  1. "Project name" defaults to smoke-hpds-init -- accept it
+//! #  2. "Project description" -- type anything
+//! #  3. "Project language" -- pick r
+//! #  4. Component multi-select -- pick pipeline and readme
+//! #  5. "Primary author (GitHub username)" -- defaults to the login gh is
 //! #     authenticated as (empty without gh); accept
-//! #  6. "Which pipeline kind?" — pick make
-//! #  7. "Initialize a git repository here?" — answer yes
-//! #  8. "Add the lab ignore patterns ...?" — answer yes
-//! #  9. "Create a GitHub repository ...?" — answer no
+//! #  6. "Which pipeline kind?" -- pick make
+//! #  7. "Initialize a git repository here?" -- answer yes
+//! #  8. "Add the lab ignore patterns ...?" -- answer yes
+//! #  9. "Create a GitHub repository ...?" -- answer no
 //! # Verify: hpds.toml ([project] with status/primary-author), Makefile,
 //! # README.md, .git/, and .gitignore containing the vaccinate block.
 //! cd .. && rm -rf smoke-hpds-init
@@ -388,7 +388,7 @@ fn init_named_dir_creates_and_scaffolds_a_subdirectory() {
     assert!(project.join("Makefile").exists());
     assert!(project.join("README.md").exists());
     assert!(!project.join("README.qmd").exists());
-    // The parent directory is left clean — nothing scaffolded in place.
+    // The parent directory is left clean: nothing scaffolded in place.
     assert!(!tmp.path().join("hpds.toml").exists());
     assert!(!tmp.path().join("Makefile").exists());
 }
@@ -434,7 +434,7 @@ fn init_force_scaffolds_into_a_nonempty_dir() {
 #[test]
 fn init_yes_rerun_over_an_existing_project_is_not_gated() {
     // A directory that already holds hpds.toml is a legitimate re-run, even
-    // with other files present — the non-empty guard does not apply.
+    // with other files present; the non-empty guard does not apply.
     let tmp = tempfile::tempdir().expect("tempdir");
     fs::write(tmp.path().join("hpds.toml"), "# mine\n").expect("seed hpds.toml");
     fs::write(tmp.path().join("keep.txt"), "mine\n").expect("seed a file");
@@ -452,7 +452,7 @@ fn init_yes_rerun_over_an_existing_project_is_not_gated() {
 // --- primary-author default: a GitHub login, never git user.name ------------
 
 /// The default primary author must be the login `gh` is authenticated as
-/// (`gh api user -q .login`) — the audit watchers check needs a GitHub
+/// (`gh api user -q .login`): the audit watchers check needs a GitHub
 /// LOGIN, and git's user.name is a display name. Driven with a fake `gh`
 /// on PATH. Unix-only: a script shim cannot intercept `Command::new` on
 /// Windows, which resolves only `.exe`.

@@ -1,4 +1,4 @@
-//! `hpds` — unified tooling for the Stanford HPDS lab.
+//! `hpds`: unified tooling for the Stanford HPDS lab.
 //!
 //! Thin entry point: parse the CLI, dispatch, render top-level errors.
 

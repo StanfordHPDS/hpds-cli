@@ -1,7 +1,7 @@
 //! Installer for TinyTeX, via quarto's bundled tool manager.
 //!
 //! `quarto install tinytex --update-path` is the strategy on every OS, so
-//! quarto must be installed first — a missing quarto is an error pointing
+//! quarto must be installed first: a missing quarto is an error pointing
 //! at `hpds install quarto`. Detection reads the tinytex row of
 //! `quarto list tools`, and falls back to `tlmgr` for TeX installed
 //! outside quarto (which must never be clobbered by a reinstall).
@@ -223,7 +223,7 @@ mod tests {
     #[test]
     fn tinytex_reports_an_external_tex_even_without_tlmgr() {
         // quarto sees an external TeX but tlmgr is off PATH: still
-        // installed — a reinstall over it would clobber the user's TeX.
+        // installed; a reinstall over it would clobber the user's TeX.
         // The stand-in "version" must read sensibly inside the shared
         // "tinytex <version> already installed" message.
         let runner = FakeRunner::default().on_path("quarto").with_output(

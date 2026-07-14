@@ -57,7 +57,7 @@ impl Sandbox {
         }
     }
 
-    /// Sandbox whose PATH contains ONLY real `git` (via a symlink) — no `gh`
+    /// Sandbox whose PATH contains ONLY real `git` (via a symlink): no `gh`
     /// anywhere, so spawning it fails with NotFound.
     fn without_gh() -> Self {
         let (tmp, bin) = Self::base_dirs();
@@ -195,7 +195,7 @@ fn fresh_setup_sets_default_branch_identity_and_vaccinates() {
     assert!(ignore.contains("# >>> hpds vaccinate >>>"));
     assert!(ignore.contains(".Rhistory"));
 
-    // gh was only ever probed for auth state — nothing else.
+    // gh was only ever probed for auth state, nothing else.
     assert_eq!(sb.gh_log(), vec!["gh auth status".to_string()]);
 }
 

@@ -1,4 +1,4 @@
-//! `lifecycle-metadata`: the repo's `hpds.toml` declares its lifecycle —
+//! `lifecycle-metadata`: the repo's `hpds.toml` declares its lifecycle:
 //! a `[project]` table with a valid `status` and a `primary-author`.
 //!
 //! The check reads the repo's own `hpds.toml` (not the layered config),
@@ -16,7 +16,7 @@ impl Check for LifecycleMetadata {
         "lifecycle-metadata"
     }
 
-    /// Reads files only, never git — it runs even outside a repository.
+    /// Reads files only, never git; it runs even outside a repository.
     fn needs_repo(&self) -> bool {
         false
     }
@@ -26,11 +26,7 @@ impl Check for LifecycleMetadata {
         let text = match std::fs::read_to_string(&path) {
             Ok(text) => text,
             Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
-                return vec![self.finding(
-                    "the repo has no hpds.toml",
-                    "create hpds.toml with a [project] table setting `status` and \
-                     `primary-author`",
-                )];
+                return vec![self.finding("the repo has no hpds.toml", "run `hpds use hpds.toml`")];
             }
             Err(err) => {
                 return vec![self.finding(
@@ -121,10 +117,7 @@ mod tests {
         assert_eq!(findings.len(), 1, "{findings:?}");
         assert_eq!(findings[0].severity, Severity::Error);
         assert!(findings[0].message.contains("hpds.toml"), "{findings:?}");
-        assert!(
-            findings[0].remediation.contains("[project]"),
-            "{findings:?}"
-        );
+        assert_eq!(findings[0].remediation, "run `hpds use hpds.toml`");
     }
 
     #[test]

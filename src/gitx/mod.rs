@@ -1,7 +1,7 @@
 //! Git and GitHub helpers: ignore vaccination, git defaults, repo
 //! creation. Named `gitx` to avoid clashing with the `git` binary/concept.
 //!
-//! This module returns data only. It never prints to the terminal — all
+//! This module returns data only. It never prints to the terminal; all
 //! output goes through `ui/`.
 
 pub mod repo;
@@ -73,7 +73,7 @@ fn render_stderr(stderr: &str) -> String {
 }
 
 /// Run `git` with `args` in the current directory and capture its output.
-/// A non-zero exit is NOT an error here — callers decide what it means.
+/// A non-zero exit is NOT an error here: callers decide what it means.
 fn git_output<S: AsRef<OsStr>>(args: &[S]) -> Result<Output, GitxError> {
     let rendered = || {
         args.iter()
@@ -176,7 +176,7 @@ pub enum GhAuth {
 }
 
 /// Probe the GitHub CLI's auth state via `gh auth status`. All three
-/// expected states are data, not errors — only an unexpected spawn failure
+/// expected states are data, not errors; only an unexpected spawn failure
 /// (not "gh missing") is an `Err`.
 pub fn gh_auth() -> anyhow::Result<GhAuth> {
     match Command::new(gh_program()).args(["auth", "status"]).output() {
@@ -191,7 +191,7 @@ pub fn gh_auth() -> anyhow::Result<GhAuth> {
 
 /// The GitHub login of the user `gh` is authenticated as, via
 /// `gh api user -q .login`. `None` when gh is missing, unauthenticated,
-/// offline, or otherwise cannot answer — callers treat the login as a
+/// offline, or otherwise cannot answer; callers treat the login as a
 /// best-effort default, never a hard requirement.
 pub fn gh_login() -> Option<String> {
     let output = Command::new(gh_program())

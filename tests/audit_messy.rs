@@ -5,7 +5,7 @@
 //! this repository): the helper git-inits it with pinned commit dates,
 //! plants junk and secrets files, leaves a merged branch, a stale rendered
 //! artifact, a dirty tracked file, and an untracked file. Everything is
-//! deterministic — there is no `origin` remote, so the GitHub checks never
+//! deterministic: there is no `origin` remote, so the GitHub checks never
 //! probe `gh` and the report is stable offline.
 
 use std::fs;
@@ -192,7 +192,7 @@ fn messy_repo_json_report_is_exact_and_alone_on_stdout() {
         String::from_utf8(assert.get_output().stdout.clone()).expect("stdout should be UTF-8");
 
     // Piped stdout must be exactly one JSON document (plus the trailing
-    // newline) — parse the whole thing, not a fished-out substring.
+    // newline); parse the whole thing, not a fished-out substring.
     let value: serde_json::Value =
         serde_json::from_str(&stdout).expect("entire stdout parses as one JSON document");
     assert_eq!(value["repo"], "audit-messy");

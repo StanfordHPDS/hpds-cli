@@ -1,0 +1,7 @@
+# hpds.toml: hpds configuration for {{project}}
+{{description_note}}
+[project]
+# active | submitted | published | retired
+status = "active"
+# GitHub username; `hpds audit` checks they watch the repo
+{{author_note}}primary-author = {{author_toml}}

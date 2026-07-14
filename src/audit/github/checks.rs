@@ -1,7 +1,7 @@
 //! The six GitHub-side checks. Each one is a pure inspector over
 //! [`GithubCtx`]: it fetches what it needs through the [`GithubApi`] seam,
 //! parses via [`model`], and returns findings. Failures to reach or
-//! understand GitHub become Warn findings on the same check — never a
+//! understand GitHub become Warn findings on the same check: never a
 //! panic, never an aborted audit.
 
 use std::collections::BTreeSet;
@@ -169,7 +169,7 @@ impl Contributors {
     /// listing org members requires the `gh` caller to be an org member
     /// with adequate token scopes, so a 403/404 there silently skips the
     /// flag instead of failing the check; membership can also be private,
-    /// making members invisible and this flag a false positive — hence
+    /// making members invisible and this flag a false positive, hence
     /// Info severity. Bot accounts are excluded from "contributors".
     /// A members payload that arrives but does not parse is NOT skipped:
     /// malformed gh JSON always becomes an error finding.
@@ -819,7 +819,7 @@ mod tests {
     fn staleness_survives_a_multi_page_compare_response() {
         // A comparison spanning >100 commits arrives as several
         // concatenated JSON objects when paginated; the check must report
-        // the (page-repeated) totals, not degrade to could-not-complete —
+        // the (page-repeated) totals, not degrade to could-not-complete:
         // large divergence is exactly the case this check exists for.
         let ctx = ctx(
             staleness_fake("compare-ahead-paginated.json"),

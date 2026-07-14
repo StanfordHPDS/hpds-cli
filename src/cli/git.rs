@@ -1,4 +1,4 @@
-//! `hpds git` — git helpers: defaults + ignore vaccination.
+//! `hpds git`: git helpers: defaults + ignore vaccination.
 
 use clap::{Args, Subcommand};
 
@@ -91,7 +91,7 @@ fn setup(args: SetupArgs) -> anyhow::Result<()> {
 }
 
 /// Set `init.defaultBranch` to `main`, unless the user already chose a
-/// value — an existing setting is reported, never clobbered.
+/// value: an existing setting is reported, never clobbered.
 fn configure_default_branch() -> anyhow::Result<()> {
     match gitx::global_config_get("init.defaultBranch")? {
         Some(current) if current == "main" => {
@@ -130,7 +130,7 @@ enum IdentityAction {
 fn identity_action(flag: Option<String>, current: Option<String>, yes: bool) -> IdentityAction {
     match (flag, current) {
         // Compare trimmed: the flag value is trimmed before any write. An
-        // empty current value never counts as set — a blank flag must
+        // empty current value never counts as set: a blank flag must
         // still fall through to the cannot-be-empty error.
         (Some(value), Some(current)) if !current.is_empty() && value.trim() == current => {
             IdentityAction::AlreadySet(current)

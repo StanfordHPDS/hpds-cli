@@ -1,5 +1,5 @@
 //! `lockfiles`: when the repo uses renv or uv, the corresponding lockfile
-//! must be committed — an uncommitted lockfile means nobody else can
+//! must be committed; an uncommitted lockfile means nobody else can
 //! reproduce the environment.
 
 use std::collections::HashSet;

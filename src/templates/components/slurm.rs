@@ -1,4 +1,4 @@
-//! `hpds use slurm` — an sbatch job script plus its logs directory.
+//! `hpds use slurm`: an sbatch job script plus its logs directory.
 //!
 //! Writes `scripts/slurm_job.sh` (job name from the project, logs under
 //! `logs/`, mail flags commented out, the pipeline running inside the

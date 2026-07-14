@@ -75,7 +75,7 @@ const ROLLUP_SHOWN: usize = 3;
 ///
 /// A single check with more than [`ROLLUP_THRESHOLD`] findings in one
 /// section is collapsed to its first [`ROLLUP_SHOWN`] plus an
-/// "… and N more" line, unless `verbose` — presentation only, so counts
+/// "… and N more" line, unless `verbose`; presentation only, so counts
 /// (and the JSON report) always carry every finding.
 pub fn render_text(
     repo: &str,
@@ -153,7 +153,7 @@ pub fn render_text(
     out
 }
 
-/// `1 error` / `2 errors` — for the summary line.
+/// `1 error` / `2 errors`, for the summary line.
 fn count(n: usize, noun: &str) -> String {
     let s = if n == 1 { "" } else { "s" };
     format!("{n} {noun}{s}")

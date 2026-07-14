@@ -1,7 +1,7 @@
 //! Repo audit core: checks produce [`Finding`]s, and this module turns
 //! them into reports and an exit code.
 //!
-//! This module returns data and rendered strings only — it never prints.
+//! This module returns data and rendered strings only; it never prints.
 //! The command layer (`cli::audit`) does all terminal output through `ui/`.
 
 pub mod all;
@@ -92,7 +92,7 @@ pub fn registry() -> Vec<Box<dyn Check>> {
 }
 
 /// The repository root containing `dir` (so an audit started in a subdir
-/// inspects the whole repo). `None` when `dir` is not inside a git repo —
+/// inspects the whole repo). `None` when `dir` is not inside a git repo;
 /// the command layer then skips the git-backed checks and reports
 /// [`not_a_repo_finding`].
 pub fn repo_root(dir: &std::path::Path) -> Option<PathBuf> {
@@ -120,7 +120,7 @@ pub fn run_checks(checks: &[Box<dyn Check>], ctx: &AuditCtx) -> Vec<Finding> {
 
 /// Exit-code semantics, as a pure function: 1 when any finding is an
 /// [`Severity::Error`], else 0. `strict` promotes [`Severity::Warn`] to
-/// error *for this decision only* — findings keep their real severity in
+/// error *for this decision only*; findings keep their real severity in
 /// all output.
 pub fn exit_code(findings: &[Finding], strict: bool) -> u8 {
     let fails = findings.iter().any(|finding| match finding.severity {

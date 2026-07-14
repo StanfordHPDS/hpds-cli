@@ -1,7 +1,7 @@
-//! `hpds use gha` — GitHub Actions scaffolding under `.github/`.
+//! `hpds use gha`: GitHub Actions scaffolding under `.github/`.
 //!
-//! Offers a menu of workflows — a pull request template, a lint workflow,
-//! and the audit bot — chosen interactively via multi-select or
+//! Offers a menu of workflows (a pull request template, a lint workflow,
+//! and the audit bot) chosen interactively via multi-select or
 //! non-interactively via `--workflows pr-template,lint,audit-bot`.
 
 use std::fmt;
@@ -113,7 +113,7 @@ struct Choice(&'static Workflow);
 
 impl fmt::Display for Choice {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{} — {}", self.0.name, self.0.description)
+        write!(f, "{}: {}", self.0.name, self.0.description)
     }
 }
 

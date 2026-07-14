@@ -41,8 +41,8 @@ fn toml_blocks(md: &str) -> Vec<String> {
 }
 
 /// Run `hpds config` with `toml` supplied as the *user* config layer (via
-/// `HPDS_CONFIG_DIR`, an isolated temp dir) so the block is honored whole
-/// — including `audit.required-watchers`, which project config would strip.
+/// `HPDS_CONFIG_DIR`, an isolated temp dir) so the block is honored whole,
+/// including `audit.required-watchers`, which project config would strip.
 /// Returns (success, combined stderr).
 fn run_config_with(toml: &str) -> (bool, String) {
     let config_dir = tempfile::tempdir().expect("config tempdir");

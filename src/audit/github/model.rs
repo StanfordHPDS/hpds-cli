@@ -3,7 +3,7 @@
 //!
 //! `gh api --paginate` concatenates one JSON document per page back to
 //! back (`[...][...]`), so list endpoints parse through [`parse_pages`],
-//! which flattens the stream. Malformed JSON is an ordinary error here —
+//! which flattens the stream. Malformed JSON is an ordinary error here;
 //! callers convert it into an error [`super::super::Finding`], never a
 //! panic.
 
@@ -22,7 +22,7 @@ pub enum ModelError {
     Timestamp(String),
 }
 
-/// `repos/{owner}/{repo}` — the fields the checks care about.
+/// `repos/{owner}/{repo}`: the fields the checks care about.
 #[derive(Debug, Clone, Deserialize)]
 pub struct RepoInfo {
     pub default_branch: String,
@@ -50,7 +50,7 @@ pub struct BranchSummary {
     pub name: String,
 }
 
-/// `repos/{owner}/{repo}/branches/{branch}` — enough to date the tip.
+/// `repos/{owner}/{repo}/branches/{branch}`: enough to date the tip.
 #[derive(Debug, Clone, Deserialize)]
 pub struct BranchDetail {
     #[allow(dead_code)] // read by tests to pin the recorded shape; checks key on the tip date
@@ -98,8 +98,8 @@ pub struct Release {
 ///
 /// Object endpoints normally answer with exactly one document, but a
 /// paginated `compare` (>100 commits between the refs) repeats the whole
-/// comparison object once per page — same `ahead_by`/`behind_by` totals,
-/// different `commits` window — so the first document always carries
+/// comparison object once per page (same `ahead_by`/`behind_by` totals,
+/// different `commits` window), so the first document always carries
 /// everything the checks read.
 pub fn parse_one<T: DeserializeOwned>(json: &str) -> Result<T, ModelError> {
     match serde_json::Deserializer::from_str(json)

@@ -1,4 +1,4 @@
-//! `hpds upgrade` — self-update from GitHub releases of StanfordHPDS/hpds-cli.
+//! `hpds upgrade`: self-update from GitHub releases of StanfordHPDS/hpds-cli.
 //!
 //! Reuses the tool-download machinery (release-asset resolution, checksum
 //! verification, atomic staging) to fetch the release archive for the
@@ -90,7 +90,7 @@ trait ReleaseSource {
 }
 
 /// Downloads a release and atomically replaces the running executable.
-/// A trait so tests never touch the real binary — production wires in
+/// A trait so tests never touch the real binary; production wires in
 /// [`ReleaseReplacer`]; tests substitute a recording fake.
 trait SelfReplacer {
     /// Fetch the release for the bare `version` and replace the current exe.
@@ -236,7 +236,7 @@ impl ReleaseSource for GithubReleaseSource {
 }
 
 /// The latest release tag via an authenticated `gh`, or `None` when gh is
-/// missing, unauthenticated, offline, or reports no release — every one of
+/// missing, unauthenticated, offline, or reports no release, every one of
 /// which falls back to the REST API, which answers authoritatively.
 fn gh_latest_tag() -> Option<String> {
     if !matches!(
@@ -262,7 +262,7 @@ fn gh_latest_tag() -> Option<String> {
 }
 
 /// The latest release tag via the GitHub REST API. A 404 means the project
-/// has no releases yet — that is `Ok(None)`, not an error.
+/// has no releases yet; that is `Ok(None)`, not an error.
 fn api_latest_tag(agent: &ureq::Agent, base: &str, repo: &str) -> anyhow::Result<Option<String>> {
     let url = format!("{base}/repos/{repo}/releases/latest");
     let response = agent
@@ -392,7 +392,7 @@ mod tests {
     }
 
     /// A [`SelfReplacer`] that records the versions it was asked to install
-    /// and never touches the filesystem — the dev binary is never replaced.
+    /// and never touches the filesystem: the dev binary is never replaced.
     #[derive(Default)]
     struct FakeReplacer {
         replaced: std::cell::RefCell<Vec<String>>,

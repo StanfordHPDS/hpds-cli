@@ -1,8 +1,8 @@
-//! `hpds version` — print the hpds version.
+//! `hpds version`: print the hpds version.
 
 use crate::ui;
 
-/// Print `hpds <version>` — the same value as `hpds --version`, provided
+/// Print `hpds <version>`, the same value as `hpds --version`, provided
 /// as a subcommand for scripts.
 pub fn run() -> anyhow::Result<()> {
     ui::println(&version_report(env!("CARGO_PKG_VERSION")));

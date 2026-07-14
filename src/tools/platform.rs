@@ -29,7 +29,7 @@ pub struct Platform {
 #[derive(Debug, Error)]
 #[error(
     "hpds cannot manage tool installs on `{os}/{arch}`; supported platforms are \
-     x86_64 and aarch64 macOS, Linux, and Windows — install the tools yourself \
+     x86_64 and aarch64 macOS, Linux, and Windows; install the tools yourself \
      and put them on PATH"
 )]
 pub struct UnsupportedPlatform {

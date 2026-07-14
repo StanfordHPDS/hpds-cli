@@ -36,7 +36,7 @@ const LOCK_FILE: &str = ".lock";
 
 /// Serializes the sections that draw a download progress bar. Two live
 /// bars would interleave on stderr into garbage, so a plain mutex (one
-/// bar at a time, the rest wait) keeps the rendering simple — no
+/// bar at a time, the rest wait) keeps the rendering simple: no
 /// `MultiProgress` coordination.
 static PROGRESS_SECTION: Mutex<()> = Mutex::new(());
 
@@ -568,7 +568,7 @@ pub(crate) fn fetch_message(label: &str, name: &str, version: &str, verbose: boo
 ///
 /// Accepts a bare hex digest, `sha256sum` style `<hex>  <file>` lines, and
 /// multi-asset lists (the line mentioning `asset` wins). Falls back to a
-/// bare digest (a line holding nothing else) only — a list that names its
+/// bare digest (a line holding nothing else) only: a list that names its
 /// assets differently must not be matched against the wrong digest. `None`
 /// when no line yields a 64-char hex digest.
 fn parse_checksum(text: &str, asset: &str) -> Option<String> {

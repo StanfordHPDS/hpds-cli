@@ -2,8 +2,8 @@
 //!
 //! Every interactive flow in hpds must have a flag-driven non-interactive
 //! path. These wrappers enforce the output half of that contract:
-//! when the process is non-interactive — the global flag is set (wired to
-//! `--yes`/CI detection later) or stdin is not a TTY — prompting fails with
+//! when the process is non-interactive, i.e. the global flag is set (wired
+//! to `--yes`/CI detection later) or stdin is not a TTY, prompting fails with
 //! an actionable error instead of hanging or panicking.
 
 use std::fmt::Display;
@@ -86,7 +86,7 @@ pub fn select<T: Display>(prompt: &str, options: Vec<T>) -> anyhow::Result<T> {
 }
 
 /// Ask the user to pick any number of `options`, with the ones at
-/// `default_indices` pre-selected — an opt-out checklist over a subset.
+/// `default_indices` pre-selected: an opt-out checklist over a subset.
 pub fn multiselect_with_defaults<T: Display>(
     prompt: &str,
     options: Vec<T>,
@@ -100,7 +100,7 @@ pub fn multiselect_with_defaults<T: Display>(
 }
 
 /// Ask the user to pick any number of `options`, with every option
-/// pre-selected — an opt-out checklist (deselect what you don't want).
+/// pre-selected: an opt-out checklist (deselect what you don't want).
 pub fn multiselect_all<T: Display>(prompt: &str, options: Vec<T>) -> anyhow::Result<Vec<T>> {
     ensure_interactive(prompt)?;
     inquire::MultiSelect::new(prompt, options)

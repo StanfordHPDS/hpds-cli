@@ -125,7 +125,7 @@ pub(crate) fn place(binary: &Path, bin_dir: &Path) -> anyhow::Result<PathBuf> {
 }
 
 /// Extract the whole release archive under `opt_dir` as `<tool>-<version>`
-/// and return that root — the directory holding `bin/<binary_name>`.
+/// and return that root, the directory holding `bin/<binary_name>`.
 /// Handles both archive layouts the tools we manage publish: a single
 /// top-level directory (tarballs) and `bin/` at the archive root (zips).
 /// Replaces any existing install of the same version.

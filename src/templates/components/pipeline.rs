@@ -1,4 +1,4 @@
-//! `hpds use pipeline` — Makefile and/or targets-based pipeline scaffolding.
+//! `hpds use pipeline`: Makefile and/or targets-based pipeline scaffolding.
 //!
 //! Kinds:
 //! - `make`: a Makefile with `clean`, `deep-clean`, and `sync-mtimes`

@@ -1,4 +1,4 @@
-//! `hpds repo create` — create and push a GitHub repo for the current
+//! `hpds repo create`: create and push a GitHub repo for the current
 //! project, following the lab-manual gh flow.
 //!
 //! Flow: verify `gh` auth → resolve name/org/visibility (flags, or defaults
@@ -148,7 +148,7 @@ fn ensure_git_repo(cwd: &Path) -> anyhow::Result<()> {
             ui::warn(&format!(
                 "the current directory is inside an existing git repository \
                  ({}); creating a separate new repository for this directory \
-                 only — press Ctrl-C and `cd` to the repository root if you \
+                 only; press Ctrl-C and `cd` to the repository root if you \
                  meant to publish that project instead",
                 parent.display()
             ));
@@ -171,8 +171,8 @@ enum RepoPosition {
     Toplevel,
     /// `cwd` is nested inside a repository rooted at the given path. A mere
     /// `git rev-parse --git-dir` check would call this "already a repo",
-    /// skip `git init`, and push the PARENT's entire history — potentially
-    /// unrelated, private content — to the new GitHub repo. The design says
+    /// skip `git init`, and push the PARENT's entire history (potentially
+    /// unrelated, private content) to the new GitHub repo. The design says
     /// init runs "if needed", and it is needed here (with a warning).
     NestedInside(std::path::PathBuf),
     /// `cwd` is not inside any repository.
@@ -211,7 +211,7 @@ fn ensure_initial_commit(cwd: &Path, yes: bool) -> anyhow::Result<()> {
     }
     if !yes
         && !ui::confirm(
-            "No commits yet — create an initial commit from the current files?",
+            "No commits yet -- create an initial commit from the current files?",
             true,
         )?
     {
@@ -226,7 +226,7 @@ fn ensure_initial_commit(cwd: &Path, yes: bool) -> anyhow::Result<()> {
         return Err(command_failure("git add", &add))
             .hint("fix the git error above, then re-run `hpds repo create`");
     }
-    // Never commit anything under .beads/ — the issue database is local
+    // Never commit anything under .beads/: the issue database is local
     // state, not project content (and we add no un-ignore rules for it).
     // Un-stage rather than an `:(exclude)` pathspec on `git add`: the
     // exclude form makes git exit 1 with an "ignored paths" complaint.
@@ -267,7 +267,7 @@ fn gh_repo_create(cwd: &Path, org: &str, name: &str, visibility: Visibility) -> 
     let out = gh(cwd, &arg_refs)?;
     if !out.status.success() {
         return Err(command_failure(&format!("gh repo create {target}"), &out)).hint(
-            "check the gh message above — the repo may already exist, or you may \
+            "check the gh message above: the repo may already exist, or you may \
              not have permission to create repos in that organization",
         );
     }

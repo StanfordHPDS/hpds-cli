@@ -1,8 +1,8 @@
 //! Installer for `uv`.
 //!
 //! macOS/Linux: Homebrew when present (and no pin); otherwise the release
-//! binary is downloaded — checksum-verified, through the shared tool
-//! cache — and placed in `~/.local/bin`, the same steps the official
+//! binary is downloaded (checksum-verified, through the shared tool
+//! cache) and placed in `~/.local/bin`, the same steps the official
 //! installer script performs, run natively. Windows: not implemented;
 //! errors cleanly with the official installer command.
 

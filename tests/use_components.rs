@@ -60,6 +60,7 @@ impl Sandbox {
             .env("USERPROFILE", self.home.path())
             .env("XDG_CONFIG_HOME", self.home.path().join(".config"))
             .env("HPDS_CONFIG_DIR", self.home.path().join("hpds-config"))
+            .env("HPDS_GH", self.home.path().join("no-such-gh"))
             .arg("use")
             .args(args);
         cmd
@@ -85,6 +86,47 @@ fn unknown_component_fails_and_names_the_available_ones() {
             .and(predicate::str::contains("readme"))
             .and(predicate::str::contains("slurm")),
     );
+}
+
+#[test]
+fn hpds_toml_component_creates_valid_metadata_without_a_language() {
+    let sandbox = Sandbox::new();
+    let config_dir = sandbox.home.path().join("hpds-config");
+    fs::create_dir_all(&config_dir).expect("create user config directory");
+    fs::write(
+        config_dir.join("config.toml"),
+        "[project]\nprimary-author = \"malcolm\"\n",
+    )
+    .expect("write user config");
+
+    sandbox
+        .hpds_use(&["hpds.toml"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("created hpds.toml"));
+
+    let text = sandbox.read("hpds.toml");
+    let parsed: toml::Value = toml::from_str(&text).expect("generated hpds.toml is valid TOML");
+    assert_eq!(parsed["project"]["status"].as_str(), Some("active"));
+    assert_eq!(
+        parsed["project"]["primary-author"].as_str(),
+        Some("malcolm")
+    );
+    assert!(text.contains(&sandbox.project_name()), "{text}");
+}
+
+#[test]
+fn hpds_toml_component_preserves_an_existing_file_without_force() {
+    let sandbox = Sandbox::new();
+    sandbox.write("hpds.toml", "# mine\n");
+
+    sandbox
+        .hpds_use(&["hpds.toml"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("--force"))
+        .stderr(predicate::str::contains("skipped hpds.toml"));
+    assert_eq!(sandbox.read("hpds.toml"), "# mine\n");
 }
 
 #[test]

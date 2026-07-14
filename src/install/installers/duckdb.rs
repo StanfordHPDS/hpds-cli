@@ -1,7 +1,7 @@
 //! Installer for the `duckdb` CLI.
 //!
 //! macOS: Homebrew when present, else the release binary. Linux: the
-//! release binary into `~/.local/bin` — the same thing duckdb's official
+//! release binary into `~/.local/bin`, the same thing duckdb's official
 //! installer script does. Windows: winget when present, else the release
 //! binary. A `--version` pin always takes the release-binary path.
 
