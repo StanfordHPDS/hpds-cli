@@ -1,10 +1,10 @@
-//! `hpds use slurm` — an sbatch job script plus a short submitting guide.
+//! `hpds use slurm` — an sbatch job script plus its logs directory.
 //!
 //! Writes `scripts/slurm_job.sh` (job name from the project, logs under
-//! `logs/`, mail flags commented out, module loads, the pipeline running
-//! inside the project's Apptainer image), `docs/slurm.md` on how to
-//! submit, and `logs/.gitkeep` so the log directory exists before the
-//! first submission (Slurm does not create it).
+//! `logs/`, mail flags commented out, the pipeline running inside the
+//! project's Apptainer image, and a link to the Sherlock documentation)
+//! and `logs/.gitkeep` so the log directory exists before the first
+//! submission (Slurm does not create it).
 
 use std::path::Path;
 
@@ -15,7 +15,7 @@ use super::{Component, ComponentCtx};
 
 pub static COMPONENT: Component = Component {
     name: "slurm",
-    description: "sbatch job script running inside the Apptainer image, plus docs/slurm.md on submitting",
+    description: "sbatch job script running inside the Apptainer image, with Sherlock guidance",
     run,
 };
 
@@ -51,8 +51,7 @@ fn run_command(language: &str) -> &'static str {
     match language {
         // R and mixed projects: the targets pipeline is the lab default.
         "r" | "both" => "Rscript -e 'targets::tar_make()'",
-        // `scripts/` is where the README's file-structure table puts
-        // analysis code; keep the two templates telling the same story.
+        // Python jobs start from the conventional starter-script path.
         "python" => "uv run python scripts/analysis.py",
         // Unknown language selections still get a working script.
         _ => "make",
@@ -97,14 +96,13 @@ mod tests {
     }
 
     #[test]
-    fn writes_the_job_script_the_docs_and_the_logs_dir() {
+    fn writes_the_job_script_and_the_logs_dir_without_separate_docs() {
         let (tmp, outcomes) = run_in("r");
         let mut paths: Vec<_> = outcomes.iter().map(|o| o.path.clone()).collect();
         paths.sort();
         assert_eq!(
             paths,
             vec![
-                PathBuf::from("docs/slurm.md"),
                 PathBuf::from("logs/.gitkeep"),
                 PathBuf::from("scripts/slurm_job.sh"),
             ]
@@ -114,6 +112,7 @@ mod tests {
             "{outcomes:?}"
         );
         assert!(tmp.path().join("logs").is_dir());
+        assert!(!tmp.path().join("docs/slurm.md").exists());
     }
 
     #[test]
@@ -126,6 +125,17 @@ mod tests {
         );
         assert!(text.contains("logs/"), "logs directory in use: {text}");
         assert!(!text.contains("{{"), "no unrendered variables: {text}");
+    }
+
+    #[test]
+    fn job_prefers_the_sherrir_partition_with_normal_fallback() {
+        let (tmp, _) = run_in("r");
+        let text = script(&tmp);
+        assert!(
+            text.lines()
+                .any(|line| line == "#SBATCH --partition=sherrir,normal"),
+            "partition directive is active and exact: {text}"
+        );
     }
 
     #[test]
@@ -145,11 +155,14 @@ mod tests {
     }
 
     #[test]
-    fn script_loads_modules_and_runs_inside_the_apptainer_image() {
+    fn script_invokes_apptainer_directly_without_loading_a_module() {
         let (tmp, _) = run_in("r");
         let text = script(&tmp);
-        assert!(text.contains("module load"), "module loads: {text}");
         assert!(text.contains("apptainer exec"), "apptainer run: {text}");
+        assert!(
+            !text.contains("module load apptainer"),
+            "does not assume an environment-modules setup: {text}"
+        );
     }
 
     #[test]
@@ -158,8 +171,6 @@ mod tests {
         assert!(script(&tmp).contains("targets::tar_make()"));
         let (tmp, _) = run_in("both");
         assert!(script(&tmp).contains("targets::tar_make()"));
-        // The path must match the `scripts/` layout the README's file
-        // structure table documents.
         let (tmp, _) = run_in("python");
         assert!(script(&tmp).contains("uv run python scripts/analysis.py"));
     }
@@ -191,15 +202,17 @@ mod tests {
     }
 
     #[test]
-    fn docs_explain_how_to_submit() {
+    fn script_points_to_the_sherlock_documentation() {
         let (tmp, _) = run_in("r");
-        let docs = fs::read_to_string(tmp.path().join("docs").join("slurm.md")).unwrap();
+        let text = script(&tmp);
         assert!(
-            docs.contains("sbatch scripts/slurm_job.sh"),
-            "submit command: {docs}"
+            text.contains("https://www.sherlock.stanford.edu/docs/"),
+            "official Sherlock documentation: {text}"
         );
-        assert!(docs.contains("squeue"), "monitoring: {docs}");
-        assert!(!docs.contains("{{"), "no unrendered variables: {docs}");
+        assert!(
+            text.contains("sbatch scripts/slurm_job.sh"),
+            "submit command: {text}"
+        );
     }
 
     #[test]

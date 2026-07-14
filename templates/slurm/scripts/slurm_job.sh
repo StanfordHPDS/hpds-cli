@@ -4,9 +4,10 @@
 #
 #     sbatch scripts/slurm_job.sh
 #
-# See docs/slurm.md for monitoring, logs, and resource tuning.
+# Sherlock documentation: https://www.sherlock.stanford.edu/docs/
 
 #SBATCH --job-name={{project}}
+#SBATCH --partition=sherrir,normal
 #SBATCH --output=logs/%x-%j.out
 #SBATCH --error=logs/%x-%j.err
 #SBATCH --time=01:00:00
@@ -19,9 +20,6 @@
 ##SBATCH --mail-user=your-sunet@stanford.edu
 
 set -euo pipefail
-
-# Load what the job needs; names vary by cluster (`module avail apptainer`).
-module load apptainer
 
 # Run the pipeline inside the project's Apptainer image. Build the image
 # first if you have not: apptainer build container.sif container.def

@@ -644,7 +644,12 @@ mod tests {
         // never drift apart silently.
         let findings = vec![
             finding("dirty-files", Severity::Error, "2 dirty", "commit them"),
-            finding("readme", Severity::Warn, "no readme", "add one"),
+            finding(
+                "gitignore-hygiene",
+                Severity::Warn,
+                "missing patterns",
+                "add them",
+            ),
         ];
         let json = super::super::render_json("demo", &findings).expect("render");
         let report = parse_report(&json).expect("parse back");
@@ -750,7 +755,12 @@ mod tests {
     fn comment_body_tabulates_every_finding() {
         let body = comment_body(&report(vec![
             finding("dirty-files", Severity::Error, "2 dirty files", "commit"),
-            finding("readme", Severity::Warn, "missing sections", "add them"),
+            finding(
+                "gitignore-hygiene",
+                Severity::Warn,
+                "missing patterns",
+                "add them",
+            ),
             finding("lockfiles", Severity::Info, "no lockfile", "commit one"),
         ]));
         // A Markdown table: header, separator, one row per finding.
@@ -764,7 +774,7 @@ mod tests {
             "{body}"
         );
         assert!(
-            body.contains("| warn | `readme` | missing sections | add them |"),
+            body.contains("| warn | `gitignore-hygiene` | missing patterns | add them |"),
             "{body}"
         );
         assert!(
@@ -797,7 +807,7 @@ mod tests {
         let body = comment_body(&report(vec![
             error_finding("dirty-files"),
             error_finding("junk-files"),
-            finding("readme", Severity::Warn, "m", "r"),
+            finding("gitignore-hygiene", Severity::Warn, "m", "r"),
         ]));
         assert!(body.contains("2 errors, 1 warning"), "{body}");
     }
@@ -934,7 +944,7 @@ mod tests {
     #[test]
     fn plan_schedule_ignores_warn_and_info_findings() {
         let findings = vec![
-            finding("readme", Severity::Warn, "m", "r"),
+            finding("gitignore-hygiene", Severity::Warn, "m", "r"),
             finding("lockfiles", Severity::Info, "m", "r"),
         ];
         let plan = plan_schedule("acme/demo", &findings, &[]);
@@ -1173,7 +1183,7 @@ mod tests {
         let bot = FakeBot::default();
         let report = report(vec![
             error_finding("dirty-files"),
-            finding("readme", Severity::Warn, "m", "r"),
+            finding("gitignore-hygiene", Severity::Warn, "m", "r"),
         ]);
         let lines = run_schedule(&bot, "acme/demo", &report).expect("run");
         let calls = bot.calls();

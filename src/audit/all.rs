@@ -527,7 +527,7 @@ mod tests {
                 "acme/messy",
                 vec![
                     finding("junk-files", Severity::Error),
-                    finding("readme", Severity::Warn),
+                    finding("gitignore-hygiene", Severity::Warn),
                 ],
             ),
             audited("acme/clean", vec![]),
@@ -838,7 +838,10 @@ mod tests {
     fn failure_counts_count_error_repos_and_failed_repos() {
         assert_eq!(failure_counts(&mixed_reports()), (1, 1));
         assert_eq!(failure_counts(&[audited("a", vec![])]), (0, 0));
-        let warn_only = vec![audited("a", vec![finding("readme", Severity::Warn)])];
+        let warn_only = vec![audited(
+            "a",
+            vec![finding("gitignore-hygiene", Severity::Warn)],
+        )];
         assert_eq!(failure_counts(&warn_only), (0, 0));
     }
 }

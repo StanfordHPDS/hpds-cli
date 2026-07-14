@@ -111,20 +111,20 @@ fn readme_in_a_detected_python_project_writes_readme_md() {
 }
 
 #[test]
-fn readme_in_a_detected_r_project_writes_readme_qmd() {
+fn readme_in_a_detected_r_project_writes_plain_readme_md() {
     let sandbox = Sandbox::new();
     sandbox.write("renv.lock", "{}\n");
     sandbox
         .hpds_use(&["readme"])
         .assert()
         .success()
-        .stdout(predicate::str::contains("created README.qmd"));
+        .stdout(predicate::str::contains("created README.md"));
 
-    let text = sandbox.read("README.qmd");
-    assert!(!sandbox.path("README.md").exists());
+    let text = sandbox.read("README.md");
+    assert!(!sandbox.path("README.qmd").exists());
     assert!(
-        text.contains("quarto render README.qmd"),
-        "says how it renders to README.md: {text}"
+        !text.contains("quarto render") && !text.starts_with("---"),
+        "README is plain Markdown with no render step: {text}"
     );
 }
 
@@ -188,7 +188,7 @@ fn readme_rejects_the_kind_flag() {
 }
 
 #[test]
-fn slurm_writes_the_script_the_docs_and_the_logs_dir() {
+fn slurm_writes_the_script_and_logs_dir_with_a_sherlock_docs_link() {
     let sandbox = Sandbox::new();
     sandbox
         .hpds_use(&["slurm", "--language", "r"])
@@ -205,11 +205,10 @@ fn slurm_writes_the_script_the_docs_and_the_logs_dir() {
         "r pipeline: {script}"
     );
     assert!(
-        sandbox
-            .read("docs/slurm.md")
-            .contains("sbatch scripts/slurm_job.sh"),
-        "docs say how to submit"
+        script.contains("https://www.sherlock.stanford.edu/docs/"),
+        "script points to Sherlock documentation: {script}"
     );
+    assert!(!sandbox.path("docs/slurm.md").exists());
     assert!(sandbox.path("logs/.gitkeep").exists());
 }
 

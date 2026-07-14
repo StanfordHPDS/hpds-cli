@@ -8,7 +8,7 @@
 Document any important decisions you made and the reasoning behind them,
 so reviewers (and future readers) do not have to reconstruct it.
 Examples: chosen approach vs. alternatives, data handling choices,
-anything a collaborator would want to know before building on this.
+anything a collaborator would want to know before working on this.
 -->
 
 # Anything else reviewers should know?

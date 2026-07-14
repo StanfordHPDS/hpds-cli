@@ -18,9 +18,9 @@ struct Sandbox {
 }
 
 impl Sandbox {
-    /// A real git repo that passes every local check (committed README
-    /// with the lab-manual sections, complete `hpds.toml`), plus an empty
-    /// user-config dir so the developer's real config never leaks in.
+    /// A real git repo that passes every local check (committed README and
+    /// complete `hpds.toml`), plus an empty user-config dir so the
+    /// developer's real config never leaks in.
     fn new() -> Self {
         let root = tempfile::tempdir().expect("create sandbox tempdir");
         let repo = root.path().join("demo-repo");
@@ -34,10 +34,7 @@ impl Sandbox {
             user_dir,
         };
         sandbox.git(&["init", "--quiet"]);
-        sandbox.write(
-            "README.md",
-            "# demo\n\n## Description\n\n## File structure\n\n## How to run\n\n## Dependencies\n",
-        );
+        sandbox.write("README.md", "# demo\n");
         sandbox.write(
             "hpds.toml",
             "[project]\nstatus = \"active\"\nprimary-author = \"malcolm\"\n",

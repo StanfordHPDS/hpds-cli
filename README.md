@@ -15,8 +15,7 @@ Formatting and linting are provided by the lab's separate
 [togi](https://github.com/StanfordHPDS/togi) tool.
 
 Everything works with zero configuration; `hpds.toml` only overrides defaults. The
-defaults encode the lab's agreements — snake_case scaffolds, private-first repos in
-the `StanfordHPDS` org.
+defaults encode the lab's agreements.
 
 ## Install
 
@@ -79,7 +78,7 @@ install it with `hpds install togi`.
 
 ### Set up a machine
 
-Install a single tool (idempotent — already-installed tools are a no-op):
+Install a single tool:
 
 ```console
 $ hpds install quarto
@@ -105,9 +104,8 @@ $ hpds audit
 errors:
   ✗ [lifecycle-metadata] the repo has no hpds.toml
     fix: create hpds.toml with a [project] table setting `status` and `primary-author`
-warnings:
-  ! [readme] `README.md` is missing the lab-manual sections: Description, File structure
-    fix: add the missing `## <section>` headings (`hpds use readme` generates the full structure)
+  ✗ [readme] the repo has no README
+    fix: add one, for example with `hpds use readme`
 
 $ hpds audit --format json
 ```
@@ -133,7 +131,7 @@ $ hpds repo create --org StanfordHPDS
 
 ## Documentation
 
-- [docs/audit-bot.md](docs/audit-bot.md) — how the audit bot files issues and
+- [docs/audit-bot.md](docs/audit-bot.md): how the audit bot files issues and
   comments on pull requests.
 
 ## Development
@@ -154,4 +152,4 @@ Integration tests drive the real binary against fixtures in `tests/fixtures/`.
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+MIT. See [LICENSE](LICENSE).

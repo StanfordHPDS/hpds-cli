@@ -8,7 +8,7 @@ errors:
   ✗ [junk-files] `.env` is committed (looks like an environment/secrets file)
     fix: run `git rm --cached .env`, add it to .gitignore, and rotate the secret if the repo was ever pushed
   ✗ [readme] the repo has no README
-    fix: add one with `hpds use readme` and fill in the lab-manual sections
+    fix: add one, for example with `hpds use readme`
   ✗ [lifecycle-metadata] hpds.toml does not set `project.primary-author`
     fix: add `primary-author = "<github-username>"` under [project] in hpds.toml
   ✗ [lockfiles] the project uses renv but renv.lock is not committed

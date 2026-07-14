@@ -14,8 +14,8 @@ use assert_cmd::Command;
 use predicates::prelude::*;
 
 /// A run directory (cwd for the sweep), an isolated user-config dir, and
-/// two fixture repos: `clean-repo` passes every local check, `messy-repo`
-/// has a committed `.env` (error) and a sectionless README (warning).
+/// two fixture repos: `clean-repo` passes every local check and `messy-repo`
+/// has a committed `.env` plus other audit findings.
 struct OrgSandbox {
     _root: tempfile::TempDir,
     run_dir: PathBuf,
@@ -44,11 +44,7 @@ impl OrgSandbox {
         };
 
         sandbox.git(&sandbox.clean, &["init", "--quiet"]);
-        write(
-            &sandbox.clean,
-            "README.md",
-            "# demo\n\n## Description\n\n## File structure\n\n## How to run\n\n## Dependencies\n",
-        );
+        write(&sandbox.clean, "README.md", "# demo\n");
         write(
             &sandbox.clean,
             "hpds.toml",

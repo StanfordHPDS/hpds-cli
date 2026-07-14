@@ -191,10 +191,10 @@ mod tests {
                 "commit or stash them",
             ),
             finding(
-                "readme",
+                "gitignore-hygiene",
                 Severity::Warn,
-                "README.md is missing required sections",
-                "add the lab-manual minimum sections",
+                ".gitignore is missing recommended patterns",
+                "add the recommended patterns",
             ),
         ]
     }
@@ -312,7 +312,12 @@ mod tests {
 
     #[test]
     fn text_omits_empty_severity_sections() {
-        let only_warn = vec![finding("readme", Severity::Warn, "meh", "fix it")];
+        let only_warn = vec![finding(
+            "gitignore-hygiene",
+            Severity::Warn,
+            "meh",
+            "fix it",
+        )];
         let out = render_text("demo", &only_warn, CHECKS_RUN, false, false);
         assert!(!out.contains("errors:"), "no empty errors section:\n{out}");
         assert!(!out.contains("info:"), "no empty info section:\n{out}");
@@ -357,10 +362,10 @@ mod tests {
             })
             .collect();
         findings.push(finding(
-            "readme",
+            "gitignore-hygiene",
             Severity::Warn,
-            "README.md is missing required sections",
-            "add the lab-manual minimum sections",
+            ".gitignore is missing recommended patterns",
+            "add the recommended patterns",
         ));
         findings
     }
@@ -385,7 +390,7 @@ mod tests {
             "rollup line:\n{out}"
         );
         // The quiet check next to it is untouched.
-        assert!(out.contains("README.md is missing"), "{out}");
+        assert!(out.contains(".gitignore is missing"), "{out}");
     }
 
     #[test]

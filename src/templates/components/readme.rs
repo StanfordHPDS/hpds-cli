@@ -1,9 +1,8 @@
-//! `hpds use readme` — a lab-manual structured README.
+//! `hpds use readme` — a lab-manual structured Markdown README.
 //!
-//! R projects get `README.qmd` (rendered to `README.md` with quarto;
-//! the file says so at the top); everything else gets `README.md`
-//! directly. Both carry the lab-manual minimum sections: description,
-//! file structure, how to run, dependencies.
+//! Every project gets `README.md` directly, with starter content tailored
+//! to R, Python, or a project using both. Every variant carries suggested
+//! sections for description, file structure, how to run, and dependencies.
 
 use crate::templates::{FileOutcome, TEMPLATES, apply_dir};
 use crate::ui::HintExt;
@@ -12,14 +11,13 @@ use super::{Component, ComponentCtx};
 
 pub static COMPONENT: Component = Component {
     name: "readme",
-    description: "README with the lab-manual sections (README.qmd for R projects, README.md otherwise)",
+    description: "README.md with suggested lab-manual sections",
     run,
 };
 
-/// The lab-manual minimum README sections, as heading text (the templates
-/// render each as `## <section>`). The audit's readme check enforces the
-/// same list, so it lives in exactly one place.
-pub const LAB_MANUAL_SECTIONS: &[&str] = &[
+/// Suggested README sections shared by the language-specific templates.
+#[cfg(test)]
+const STARTER_SECTIONS: &[&str] = &[
     "Description",
     "File structure",
     "How to run",
@@ -32,12 +30,11 @@ fn run(ctx: &ComponentCtx) -> anyhow::Result<Vec<FileOutcome>> {
     super::reject_kind(ctx, "readme")?;
     super::reject_workflows(ctx, "readme")?;
     let language = super::require_language(ctx, "readme")?;
-    // R projects (including mixed R + Python ones) get a Quarto source
-    // that renders to README.md; everything else gets README.md directly.
-    let variant = if project_uses_r(language) {
-        "readme/qmd"
-    } else {
-        "readme/md"
+    // Every variant writes README.md; only the starter content differs.
+    let variant = match language {
+        "r" => "readme/r",
+        "both" => "readme/both",
+        _ => "readme/python",
     };
     let source = TEMPLATES
         .get_dir(variant)
@@ -46,11 +43,6 @@ fn run(ctx: &ComponentCtx) -> anyhow::Result<Vec<FileOutcome>> {
         .ok_or_else(|| anyhow::anyhow!("embedded template directory `{variant}` is missing"))
         .hint("this is a bug in hpds; please report it")?;
     Ok(apply_dir(source, ctx.dest, &ctx.vars, ctx.force)?)
-}
-
-/// `true` when the project's language selection includes R.
-fn project_uses_r(language: &str) -> bool {
-    matches!(language, "r" | "both")
 }
 
 #[cfg(test)]
@@ -67,16 +59,16 @@ mod tests {
     }
 
     #[test]
-    fn r_project_gets_readme_qmd_with_a_render_note() {
+    fn r_project_gets_readme_md_without_a_render_step() {
         let (tmp, outcomes) = run_in("r");
         assert_eq!(outcomes.len(), 1, "{outcomes:?}");
-        assert_eq!(outcomes[0].path.to_str(), Some("README.qmd"));
+        assert_eq!(outcomes[0].path.to_str(), Some("README.md"));
         assert_eq!(outcomes[0].outcome, WriteOutcome::Created);
-        let text = fs::read_to_string(tmp.path().join("README.qmd")).unwrap();
-        assert!(!tmp.path().join("README.md").exists());
+        let text = fs::read_to_string(tmp.path().join("README.md")).unwrap();
+        assert!(!tmp.path().join("README.qmd").exists());
         assert!(
-            text.contains("quarto render README.qmd"),
-            "says how to render: {text}"
+            !text.contains("quarto render") && !text.starts_with("---"),
+            "README is plain Markdown with no render step: {text}"
         );
         assert!(
             text.contains("malaria-icu"),
@@ -97,38 +89,50 @@ mod tests {
     }
 
     #[test]
-    fn mixed_language_project_counts_as_r_and_gets_qmd() {
+    fn mixed_language_project_gets_readme_md() {
         let (tmp, outcomes) = run_in("both");
-        assert_eq!(outcomes[0].path.to_str(), Some("README.qmd"));
-        assert!(tmp.path().join("README.qmd").exists());
+        assert_eq!(outcomes[0].path.to_str(), Some("README.md"));
+        assert!(tmp.path().join("README.md").exists());
+        assert!(!tmp.path().join("README.qmd").exists());
+        let text = fs::read_to_string(tmp.path().join("README.md")).unwrap();
+        for expected in ["renv::restore()", "uv sync", "make", "renv.lock", "uv.lock"] {
+            assert!(
+                text.contains(expected),
+                "mixed README documents `{expected}`: {text}"
+            );
+        }
     }
 
     #[test]
-    fn md_readme_run_commands_agree_with_its_file_structure_table() {
-        // The table says analysis code lives in `scripts/`; the "How to
-        // run" block must not contradict it by running from the root.
+    fn python_readme_runs_the_public_make_pipeline() {
         let (tmp, _) = run_in("python");
         let text = fs::read_to_string(tmp.path().join("README.md")).unwrap();
         assert!(
-            text.contains("uv run python scripts/analysis.py"),
-            "run block uses the scripts/ layout: {text}"
+            text.contains("\nmake\n"),
+            "run block uses the project pipeline entry point: {text}"
         );
     }
 
     #[test]
-    fn both_variants_carry_the_lab_manual_minimum_sections() {
-        for language in ["r", "python"] {
+    fn every_language_readme_carries_the_starter_sections() {
+        for language in ["r", "python", "both"] {
             let (tmp, _) = run_in(language);
-            let file = if language == "r" {
-                "README.qmd"
-            } else {
-                "README.md"
-            };
+            let file = "README.md";
             let text = fs::read_to_string(tmp.path().join(file)).unwrap();
-            for section in LAB_MANUAL_SECTIONS {
+            for section in STARTER_SECTIONS {
                 let heading = format!("## {section}");
                 assert!(text.contains(&heading), "{file} for {language}: {heading}");
             }
+        }
+    }
+
+    #[test]
+    fn directory_tables_are_explicitly_optional_examples() {
+        for language in ["r", "python", "both"] {
+            let (tmp, _) = run_in(language);
+            let text = fs::read_to_string(tmp.path().join("README.md")).unwrap();
+            assert!(text.contains("Example only"), "{language}: {text}");
+            assert!(text.contains("replace or remove"), "{language}: {text}");
         }
     }
 

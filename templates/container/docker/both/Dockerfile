@@ -7,10 +7,15 @@ FROM rocker/r-ver:{{r_version}}
 
 LABEL org.opencontainers.image.title="{{project}}"
 
+# R packages may need project-specific system libraries. Before building, run
+# renv::sysreqs(distro = "ubuntu:24.04", report = TRUE, collapse = TRUE), then
+# add the reported apt packages below so they are present before renv::restore():
+# https://rstudio.github.io/renv/articles/docker.html#system-dependencies
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
         ca-certificates \
         git \
+        make \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=hpds /hpds /usr/local/bin/hpds

@@ -57,7 +57,7 @@ expression: messy.redact(&stdout)
       "check_id": "readme",
       "severity": "error",
       "message": "the repo has no README",
-      "remediation": "add one with `hpds use readme` and fill in the lab-manual sections"
+      "remediation": "add one, for example with `hpds use readme`"
     },
     {
       "check_id": "lifecycle-metadata",

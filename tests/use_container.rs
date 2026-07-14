@@ -197,12 +197,34 @@ fn assert_generic_system_dependencies(text: &str) {
         text.contains("ca-certificates") && text.contains("git"),
         "generic certificate and Git dependencies are installed: {text}"
     );
+    assert!(
+        text.split_whitespace()
+            .any(|token| token.trim_end_matches('\\') == "make"),
+        "GNU Make is installed for the generated pipeline entry point: {text}"
+    );
     for project_specific_library in ["libglpk40", "libwebpmux3"] {
         assert!(
             !text.contains(project_specific_library),
             "project-specific R library {project_specific_library} is not installed unconditionally: {text}"
         );
     }
+}
+
+fn assert_r_system_dependency_guidance(text: &str) {
+    let sysreqs = text
+        .find("renv::sysreqs")
+        .expect("R container explains how to compute project system dependencies");
+    let restore = text
+        .find("renv::restore()")
+        .expect("R container restores the locked R environment");
+    assert!(
+        sysreqs < restore,
+        "system dependencies must be installed before renv restore: {text}"
+    );
+    assert!(
+        text.contains("https://rstudio.github.io/renv/articles/docker.html#system-dependencies"),
+        "R container links to the renv system-dependency guidance: {text}"
+    );
 }
 
 #[test]
@@ -217,6 +239,7 @@ fn docker_r_dockerfile_pins_hpds_and_current_r_and_restores_renv() {
     let text = sandbox.read("Dockerfile");
     assert_pinned_hpds_docker_stage(&text);
     assert_generic_system_dependencies(&text);
+    assert_r_system_dependency_guidance(&text);
     assert!(
         text.contains("FROM rocker/r-ver:4.6.1"),
         "R image uses the resolved current release: {text}"
@@ -283,6 +306,7 @@ fn docker_both_languages_dockerfile_uses_current_r_and_uv_managed_python() {
     assert_pinned_hpds_docker_stage(&text);
     assert_pinned_uv_docker_source(&text);
     assert_generic_system_dependencies(&text);
+    assert_r_system_dependency_guidance(&text);
     assert!(
         text.contains("FROM rocker/r-ver:4.6.1"),
         "mixed image starts from the resolved R runtime: {text}"
@@ -305,6 +329,7 @@ fn apptainer_r_def_uses_registry_hpds_stage_and_current_r() {
     assert_def_well_formed(&text);
     assert_pinned_hpds_apptainer_stage(&text);
     assert_generic_system_dependencies(&text);
+    assert_r_system_dependency_guidance(&text);
     assert!(
         text.contains("From: rocker/r-ver:4.6.1") && text.contains("Stage: final"),
         "resolved R final stage: {text}"
@@ -369,6 +394,7 @@ fn apptainer_both_languages_def_uses_current_r_and_uv_managed_python() {
     assert_pinned_hpds_apptainer_stage(&text);
     assert_pinned_uv_apptainer_stage(&text);
     assert_generic_system_dependencies(&text);
+    assert_r_system_dependency_guidance(&text);
     assert!(
         text.contains("From: rocker/r-ver:4.6.1"),
         "mixed image starts from the resolved R runtime: {text}"

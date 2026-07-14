@@ -156,8 +156,12 @@ impl Walkthrough {
         // Every selected component landed its files.
         assert!(self.read("Makefile").contains("clean:"), "make pipeline");
         assert!(
-            self.read("README.qmd").contains("lab-study"),
+            self.read("README.md").contains("lab-study"),
             "readme component"
+        );
+        assert!(
+            !self.path("README.qmd").exists(),
+            "no generated README source"
         );
         assert!(
             self.path(".github/pull_request_template.md").exists(),

@@ -10,7 +10,7 @@ FROM debian:trixie-slim
 LABEL org.opencontainers.image.title="{{project}}"
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates git \
+    && apt-get install -y --no-install-recommends ca-certificates git make \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=hpds /hpds /usr/local/bin/hpds

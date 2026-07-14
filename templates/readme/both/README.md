@@ -2,31 +2,36 @@
 
 ## Description
 
-<!-- One or two paragraphs: the question this project answers, the data it
-uses, and its current status. -->
+<!-- A brief description of the project. -->
 
 ## File structure
 
-<!-- Keep this table current as the project grows. -->
+<!-- Example only: replace or remove this table to match the project. -->
 
 | Path       | Contents                                              |
 |------------|-------------------------------------------------------|
-| `scripts/` | Analysis code                                         |
+| `R/`       | R analysis code                                       |
+| `scripts/` | Python analysis code                                  |
 | `data/`    | Input data (document provenance; commit only if small and shareable) |
 | `docs/`    | Project documentation                                 |
-| `results/` | Generated tables and figures                          |
+| `results/` | Generated outputs                                     |
 
 ## How to run
 
 <!-- The exact commands that reproduce the results from a fresh clone. -->
 
+```r
+renv::restore()
+```
+
 ```bash
 uv sync
-uv run python scripts/analysis.py
+make
 ```
 
 ## Dependencies
 
 <!-- Languages, package managers, lockfiles, and external tools. -->
 
+- R (packages locked in `renv.lock`; restore with `renv::restore()`)
 - Python (dependencies locked in `uv.lock`; restore with `uv sync`)

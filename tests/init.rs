@@ -19,7 +19,7 @@
 //! #  8. "Add the lab ignore patterns ...?" — answer yes
 //! #  9. "Create a GitHub repository ...?" — answer no
 //! # Verify: hpds.toml ([project] with status/primary-author), Makefile,
-//! # README.qmd, .git/, and .gitignore containing the vaccinate block.
+//! # README.md, .git/, and .gitignore containing the vaccinate block.
 //! cd .. && rm -rf smoke-hpds-init
 //! ```
 
@@ -78,11 +78,12 @@ fn init_yes_full_options_produces_a_complete_project() {
     // Every selected component landed its files.
     let makefile = read(&tmp, "Makefile");
     assert!(makefile.contains("clean:"), "{makefile}");
-    let readme = read(&tmp, "README.qmd");
+    let readme = read(&tmp, "README.md");
     assert!(readme.contains("malaria-icu"), "{readme}");
     assert!(read(&tmp, "Dockerfile").contains("stanfordhpds"));
-    assert!(tmp.path().join("scripts/slurm_job.sh").exists());
-    assert!(tmp.path().join("docs/slurm.md").exists());
+    let slurm = read(&tmp, "scripts/slurm_job.sh");
+    assert!(slurm.contains("https://www.sherlock.stanford.edu/docs/"));
+    assert!(!tmp.path().join("docs/slurm.md").exists());
     assert!(tmp.path().join(".github/pull_request_template.md").exists());
     assert!(tmp.path().join(".github/workflows/togi-lint.yml").exists());
 }
@@ -197,9 +198,10 @@ fn init_yes_default_set_includes_readme_when_a_language_is_given() {
         .assert()
         .success();
     assert!(
-        tmp.path().join("README.qmd").exists(),
+        tmp.path().join("README.md").exists(),
         "readme is in the default set"
     );
+    assert!(!tmp.path().join("README.qmd").exists());
     assert!(tmp.path().join("Makefile").exists());
     assert!(tmp.path().join(".github/workflows/togi-lint.yml").exists());
 }
@@ -384,7 +386,8 @@ fn init_named_dir_creates_and_scaffolds_a_subdirectory() {
         "name is the new dir's basename: {toml}"
     );
     assert!(project.join("Makefile").exists());
-    assert!(project.join("README.qmd").exists());
+    assert!(project.join("README.md").exists());
+    assert!(!project.join("README.qmd").exists());
     // The parent directory is left clean — nothing scaffolded in place.
     assert!(!tmp.path().join("hpds.toml").exists());
     assert!(!tmp.path().join("Makefile").exists());

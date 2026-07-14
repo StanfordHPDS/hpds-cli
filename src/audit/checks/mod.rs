@@ -219,15 +219,11 @@ pub(crate) mod testutil {
         }
     }
 
-    /// A repo that passes every local check: committed README with the
-    /// lab-manual sections and a complete `hpds.toml`.
+    /// A repo that passes every local check: a committed README and a
+    /// complete `hpds.toml`.
     pub(crate) fn compliant_repo() -> (tempfile::TempDir, PathBuf) {
         let (tmp, repo) = init_repo();
-        write(
-            &repo,
-            "README.md",
-            "# demo\n\n## Description\n\n## File structure\n\n## How to run\n\n## Dependencies\n",
-        );
+        write(&repo, "README.md", "# demo\n");
         write(
             &repo,
             "hpds.toml",

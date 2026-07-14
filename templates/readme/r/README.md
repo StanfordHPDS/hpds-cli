@@ -1,40 +1,27 @@
----
-title: "{{project}}"
-format: gfm
----
-
-<!--
-README.qmd is the source for this project's README. Edit this file, then
-regenerate README.md with:
-
-    quarto render README.qmd
-
-Do not edit README.md by hand.
--->
+# {{project}}
 
 ## Description
 
-<!-- One or two paragraphs: the question this project answers, the data it
-uses, and its current status. -->
+<!-- A brief description of the project. -->
 
 ## File structure
 
-<!-- Keep this table current as the project grows. -->
+<!-- Example only: replace or remove this table to match the project. -->
 
 | Path       | Contents                                              |
 |------------|-------------------------------------------------------|
 | `R/`       | Analysis code                                         |
 | `data/`    | Input data (document provenance; commit only if small and shareable) |
 | `docs/`    | Project documentation                                 |
-| `results/` | Generated tables and figures                          |
+| `results/` | Generated outputs                                     |
 
 ## How to run
 
 <!-- The exact commands that reproduce the results from a fresh clone. -->
 
-```bash
-Rscript -e 'renv::restore()'
-Rscript -e 'targets::tar_make()'
+```r
+renv::restore()
+targets::tar_make()
 ```
 
 ## Dependencies

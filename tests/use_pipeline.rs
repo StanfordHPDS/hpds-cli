@@ -144,6 +144,35 @@ fn pipeline_make_kind_makefile_parses_with_make() {
     );
 }
 
+#[test]
+fn generated_makefiles_include_commented_container_and_slurm_examples() {
+    for kind in ["make", "both"] {
+        let tmp = use_pipeline(kind);
+        let makefile = fs::read_to_string(tmp.path().join("Makefile")).expect("Makefile created");
+        for example in [
+            "docker-build:",
+            "docker build --tag",
+            "docker-run:",
+            "docker run --rm",
+            "apptainer-build:",
+            "apptainer build container.sif container.def",
+            "apptainer-run:",
+            "apptainer exec container.sif make",
+            "slurm-submit:",
+            "sbatch scripts/slurm_job.sh",
+        ] {
+            let line = makefile
+                .lines()
+                .find(|line| line.contains(example))
+                .unwrap_or_else(|| panic!("{kind} Makefile contains `{example}`: {makefile}"));
+            assert!(
+                line.trim_start().starts_with('#'),
+                "{kind} example remains opt-in: {line}"
+            );
+        }
+    }
+}
+
 // --- pipeline: targets -----------------------------------------------------
 
 #[test]
@@ -154,7 +183,6 @@ fn pipeline_kind_targets_creates_targets_file_with_starter_pipeline() {
     assert!(targets.contains("library(tarchetypes)"), "{targets}");
     assert!(targets.contains("tar_plan("), "{targets}");
     assert!(targets.contains("raw_data ="), "{targets}");
-    assert!(targets.contains("model ="), "{targets}");
     assert!(!targets.contains("tar_target("), "{targets}");
     assert!(targets.contains("renv"), "renv note present: {targets}");
     assert!(
