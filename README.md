@@ -15,7 +15,7 @@ Formatting and linting are provided by the lab's separate
 [togi](https://github.com/StanfordHPDS/togi) tool.
 
 Everything works with zero configuration; `hpds.toml` only overrides defaults. The
-defaults encode the lab's agreements.
+defaults encode several of the lab's agreements.
 
 ## Install
 
@@ -126,7 +126,7 @@ $ hpds git vaccinate
 ✓ added 21 ignore pattern(s) to ~/.gitignore
 
 $ hpds git setup
-$ hpds repo create --org StanfordHPDS
+$ hpds repo create
 ```
 
 ## Documentation
@@ -146,9 +146,6 @@ cargo test --features online-tests      # network/tool-download tests
 cargo clippy --all-targets -- -D warnings
 cargo fmt --check
 ```
-
-Tests are test-first: write the failing test, watch it fail, then implement.
-Integration tests drive the real binary against fixtures in `tests/fixtures/`.
 
 ## License
 
