@@ -1,70 +1,69 @@
 # The hpds audit bot
 
-The audit bot keeps a repo's `hpds audit` findings visible where the lab
-actually looks: as a comment on every pull request and as issues in the
-tracker. It is a GitHub Actions workflow that runs the same audit you run
-locally and mirrors the results to GitHub — no separate service, no state
-outside the repo itself.
+The audit bot publishes a repository's `hpds audit` findings as a comment
+on every pull request and as issues in the tracker. It is a GitHub Actions
+workflow that runs the same audit you run locally and reports the results
+to GitHub.
 
 ## What it does
 
 The workflow (`.github/workflows/hpds-audit.yml`) runs on two triggers:
 
-- **Every pull request.** The bot posts one sticky comment containing the
-  findings table (severity, check, finding, suggested fix). On later pushes
-  to the same PR it edits that comment in place rather than posting a new
-  one, so the PR never fills up with stale audit noise. The comment is
-  identified by an invisible HTML marker, `<!-- hpds-audit -->`; if you
-  delete the comment, the next run simply recreates it.
+- **Every pull request.** The bot posts a single sticky comment containing
+  the findings table (severity, check, finding, and suggested fix). On
+  subsequent pushes to the same pull request it edits that comment in place
+  rather than posting a new one, so the pull request does not accumulate
+  outdated audit comments. The comment is identified by an invisible HTML
+  marker, `<!-- hpds-audit -->`; if the comment is deleted, the next run
+  recreates it.
 
 - **A weekly schedule** (Monday morning UTC). The bot files one GitHub
   issue per *new* error-severity finding, labeled `hpds-audit`. Each issue
-  body embeds a stable fingerprint (a hash of the check id and the repo)
-  in a marker comment, which makes the issue lifecycle idempotent:
+  body embeds a stable fingerprint (a hash of the check id and the
+  repository) in a marker comment, which makes the issue lifecycle
+  idempotent:
 
-  - a finding that already has an open issue never gets a duplicate;
-  - several findings from the same check share one issue;
-  - when a scheduled audit no longer reports a finding, the bot comments
-    on its issue and closes it;
-  - issues without a fingerprint marker (i.e. filed by humans, even under
-    the `hpds-audit` label) are never touched.
+  - A finding that already has an open issue never receives a duplicate.
+  - Several findings from the same check share one issue.
+  - When a scheduled audit no longer reports a finding, the bot comments
+    on the corresponding issue and closes it.
+  - Issues without a fingerprint marker (that is, issues filed by people,
+    even under the `hpds-audit` label) are never touched.
 
-Warnings and info findings appear in the PR comment but do not get issues;
-only errors do.
+Warnings and informational findings appear in the pull request comment but
+do not receive issues; only errors do.
 
-## Anatomy of a run
+## How a run works
 
-Each run is three steps:
+Each run consists of three steps:
 
-1. Install hpds by piping the release installer script to `sh`, which
-   pulls the latest published release. Until the first `v0.1.0` tag is
-   published no release exists, so this step fails — expected, and the
-   template comment says so.
-2. `hpds audit --format json > audit.json`. The audit exits 1 when it
-   finds errors — expected here, so the workflow captures the exit code
-   and continues; only exit codes above 1 (usage error, crash) fail the
-   job before reporting.
-3. `hpds audit report-github --input audit.json`, with `GITHUB_TOKEN`
-   provided to the step. This subcommand contains all the bot logic, so
-   the workflow file stays a thin shim and bot improvements ship with
-   hpds releases — you do not need to regenerate the workflow to get them.
+1. Install hpds.
+2. Run `hpds audit --format json > audit.json`. The audit exits 1 when it
+   finds errors, which is expected here, so the workflow captures the exit
+   code and continues. Only exit codes above 1 (a usage error or a crash)
+   fail the job before reporting.
+3. Run `hpds audit report-github --input audit.json`, with `GITHUB_TOKEN`
+   provided to the step. This subcommand contains all of the bot logic, so
+   the workflow file remains a thin shim and bot improvements ship with
+   hpds releases; the workflow does not need to be regenerated to receive
+   them.
 
-## Installing it
+## Installation
 
-From the repo you want audited:
+From the repository you want audited:
 
 ```console
 $ hpds use gha
 ```
 
-and pick **audit-bot** from the menu, or non-interactively:
+and select **audit-bot** from the menu, or non-interactively:
 
 ```console
 $ hpds use gha --workflows audit-bot
 ```
 
-Either writes `.github/workflows/hpds-audit.yml`. Commit and push it; the
-schedule and PR triggers take effect immediately.
+Either command writes `.github/workflows/hpds-audit.yml`. Commit and push
+the file; the schedule and pull request triggers take effect immediately.
 
 ## Required permissions
 
@@ -77,26 +76,26 @@ permissions:
   pull-requests: write
 ```
 
-`contents: read` covers checkout; the two `write` grants let the default
-`GITHUB_TOKEN` post the PR comment and manage issues. No personal access
-token is needed. If your organization restricts the default workflow token
-to read-only, these per-workflow grants still apply — no admin settings
-change is required.
+`contents: read` covers checkout, and the two `write` grants allow the
+default `GITHUB_TOKEN` to post the pull request comment and manage issues.
+No personal access token is required. If your organization restricts the
+default workflow token to read-only access, these per-workflow grants still
+apply, so no change to organization settings is needed.
 
-## Running the reporter by hand
+## Running the reporter manually
 
-`hpds audit report-github` defaults everything from the GitHub Actions
-environment, but every input has a flag, so you can run (or debug) the bot
-anywhere `gh` is authenticated:
+`hpds audit report-github` takes its defaults from the GitHub Actions
+environment, but every input has a flag, so the bot can be run (or
+debugged) anywhere `gh` is authenticated:
 
 | Flag | Meaning | Actions default |
 | --- | --- | --- |
-| `--input <FILE>` | Audit JSON from `hpds audit --format json` (stdin when omitted) | — |
+| `--input <FILE>` | Audit JSON from `hpds audit --format json` (stdin when omitted) | none |
 | `--repo <OWNER/REPO>` | Repository to report to | `GITHUB_REPOSITORY` |
 | `--mode <MODE>` | `pr` (sticky comment) or `schedule` (issue lifecycle) | from `GITHUB_EVENT_NAME` |
-| `--pr <NUMBER>` | Pull request to comment on (`pr` mode) | from `GITHUB_REF` / event payload |
+| `--pr <NUMBER>` | Pull request to comment on (`pr` mode) | from `GITHUB_REF` or the event payload |
 
-For example, to preview the issue lifecycle pass against a repo:
+For example, to preview the issue lifecycle against a repository:
 
 ```console
 $ hpds audit --format json > audit.json
@@ -105,9 +104,9 @@ $ hpds audit report-github --input audit.json --repo StanfordHPDS/demo --mode sc
 
 ## Tuning the audit with `[audit]` config
 
-The bot reports whatever `hpds audit` finds, so you tune it the same way
-you tune the audit — via the `[audit]` table in `hpds.toml` (or your user
-config):
+The bot reports whatever `hpds audit` finds, so it is tuned the same way
+as the audit itself: through the `[audit]` table in `hpds.toml` or in your
+user configuration.
 
 ```toml
 [audit]
@@ -115,9 +114,10 @@ config):
 stale-days = 120
 ```
 
-`required-watchers` (the GitHub logins that must watch every lab repo) is
-also an `[audit]` key, but it is honored from *user* config only — a repo
-cannot rewrite the lab-lead watcher list for everyone who audits it:
+`required-watchers` (the GitHub logins that must watch every lab
+repository) is also an `[audit]` key, but it is honored from *user*
+configuration only; a repository cannot rewrite the lab-lead watcher list
+for everyone who audits it.
 
 ```toml
 # ~/.config/hpds/config.toml
@@ -125,6 +125,6 @@ cannot rewrite the lab-lead watcher list for everyone who audits it:
 required-watchers = ["malcolmbarrett", "sherrirose"]
 ```
 
-Findings you consider expected for a given repo are best fixed at the
-source (e.g. set `[project]` `status` and `primary-author` in `hpds.toml`
-so the lifecycle checks pass) rather than ignored.
+Findings that are expected for a given repository are best resolved at the
+source (for example, set `status` and `primary-author` in the `[project]`
+table of `hpds.toml` so the lifecycle checks pass) rather than ignored.
