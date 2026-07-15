@@ -26,8 +26,10 @@ jobs:
         run: cargo fmt --check
       - name: Clippy
         run: cargo clippy --all-targets -- -D warnings
+      # --no-fail-fast so one failing test binary does not hide failures
+      # in the binaries after it; a red run reports everything at once.
       - name: Test
-        run: cargo test
+        run: cargo test --no-fail-fast
   dist-plan:
     name: dist plan (allowed to fail)
     runs-on: ubuntu-latest

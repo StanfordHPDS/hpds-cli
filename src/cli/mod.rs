@@ -23,8 +23,16 @@ use clap::{Args, Parser, Subcommand};
 
 /// Unified tooling for the Stanford HPDS lab: project templates, machine
 /// setup, and repo audits.
+// `bin_name` is pinned because clap otherwise displays argv[0]'s file
+// name, which is `hpds.exe` on Windows; usage and completions must say
+// `hpds` on every platform.
 #[derive(Debug, Parser)]
-#[command(name = "hpds", version, arg_required_else_help = true)]
+#[command(
+    name = "hpds",
+    bin_name = "hpds",
+    version,
+    arg_required_else_help = true
+)]
 pub struct Cli {
     #[command(flatten)]
     pub global: GlobalArgs,
