@@ -259,12 +259,12 @@ fn a_repo_that_fails_to_clone_is_reported_and_does_not_abort_the_sweep() {
 fn sweep_respects_the_output_flag() {
     let sb = OrgSandbox::new();
     let file = sb.repos_file(&[&sb.clean_line()]);
+    // The confirmation echoes the path exactly as the user spelled it,
+    // forward slashes included, on every platform.
     sb.sweep_cmd(&file, &["--output", "reports/org.md"])
         .assert()
         .success()
-        .stdout(predicate::str::contains(
-            Path::new("reports").join("org.md").display().to_string(),
-        ));
+        .stdout(predicate::str::contains("reports/org.md"));
     assert!(sb.run_dir.join("reports/org.md").is_file());
     assert!(!sb.run_dir.join("hpds-audit-report.md").exists());
 }
