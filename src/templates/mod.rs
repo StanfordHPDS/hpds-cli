@@ -105,6 +105,29 @@ mod tests {
     }
 
     #[test]
+    fn embedded_templates_use_unix_line_endings() {
+        // Templates are embedded from the working tree at build time and
+        // rendered output is compared against `\n` literals, so a CRLF
+        // checkout (e.g. autocrlf on Windows) would corrupt every render.
+        fn assert_lf_only(dir: &Dir<'_>) {
+            for file in dir.files() {
+                if let Some(text) = file.contents_utf8() {
+                    assert!(
+                        !text.contains('\r'),
+                        "{} contains CR line endings",
+                        file.path().display()
+                    );
+                }
+            }
+            for sub in dir.dirs() {
+                assert_lf_only(sub);
+            }
+        }
+        assert_lf_only(&TEMPLATES);
+        assert_lf_only(&TEST_TEMPLATES);
+    }
+
+    #[test]
     fn production_templates_embed_the_shipped_components() {
         assert!(TEMPLATES.get_dir("readme").is_some());
         assert!(TEMPLATES.get_dir("hpds-toml").is_some());

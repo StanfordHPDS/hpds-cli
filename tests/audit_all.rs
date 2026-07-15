@@ -15,13 +15,16 @@ use predicates::prelude::*;
 
 /// A run directory (cwd for the sweep), an isolated user-config dir, and
 /// two fixture repos: `clean-repo` passes every local check and `messy-repo`
-/// has a committed `.env` plus other audit findings.
+/// has a committed `.env` plus other audit findings. Every sweep runs with
+/// `HPDS_GH` pointed at a shim that reports an authenticated session, so
+/// no test outcome can depend on the developer's real gh login.
 struct OrgSandbox {
     _root: tempfile::TempDir,
     run_dir: PathBuf,
     user_dir: PathBuf,
     clean: PathBuf,
     messy: PathBuf,
+    gh: PathBuf,
 }
 
 impl OrgSandbox {
@@ -35,12 +38,14 @@ impl OrgSandbox {
             fs::create_dir_all(dir).expect("create sandbox dir");
         }
 
+        let gh = write_gh_shim(root.path());
         let sandbox = OrgSandbox {
             _root: root,
             run_dir,
             user_dir,
             clean,
             messy,
+            gh,
         };
 
         sandbox.git(&sandbox.clean, &["init", "--quiet"]);
@@ -97,6 +102,7 @@ impl OrgSandbox {
         let mut cmd = Command::cargo_bin("hpds").expect("hpds binary should build");
         cmd.current_dir(&self.run_dir)
             .env("HPDS_CONFIG_DIR", &self.user_dir)
+            .env("HPDS_GH", &self.gh)
             .args(["audit", "all", "--repos-from"])
             .arg(repos_file)
             .args(args);
@@ -114,6 +120,26 @@ impl OrgSandbox {
 
 fn write(repo: &Path, rel: &str, content: &str) {
     fs::write(repo.join(rel), content).expect("write fixture file");
+}
+
+/// A fake `gh` that answers every invocation (including `auth status`)
+/// with success, i.e. an authenticated session.
+#[cfg(unix)]
+fn write_gh_shim(dir: &Path) -> PathBuf {
+    use std::os::unix::fs::PermissionsExt;
+    let gh = dir.join("gh");
+    fs::write(&gh, "#!/bin/sh\nexit 0\n").expect("write gh shim");
+    fs::set_permissions(&gh, fs::Permissions::from_mode(0o755)).expect("make gh shim executable");
+    gh
+}
+
+/// A fake `gh` that answers every invocation (including `auth status`)
+/// with success, i.e. an authenticated session.
+#[cfg(windows)]
+fn write_gh_shim(dir: &Path) -> PathBuf {
+    let gh = dir.join("gh.bat");
+    fs::write(&gh, "@echo off\r\nexit /b 0\r\n").expect("write gh shim");
+    gh
 }
 
 #[test]

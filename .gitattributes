@@ -1,0 +1,4 @@
+# Templates and test fixtures are embedded into the binary at build time
+# and compared byte-for-byte in tests, so every checkout must use LF,
+# including on Windows, where autocrlf would otherwise rewrite them.
+* text=auto eol=lf
