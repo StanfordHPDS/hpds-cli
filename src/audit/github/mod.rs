@@ -15,7 +15,7 @@ use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::io;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Output, Stdio};
 
 use super::{Check, Finding, Severity};
 use crate::gitx::{self, GhAuth};
@@ -79,6 +79,17 @@ pub trait GithubApi {
     /// multiplies round trips (and, for `compare`, response documents).
     fn api(&self, endpoint: &str, paginate: bool) -> Result<String, GhApiError>;
 
+    /// Fetch several endpoints, answering one result per request in
+    /// request order. Implementations may overlap the requests in time;
+    /// this default simply calls [`Self::api`] once per request, so fakes
+    /// and simple implementations need nothing extra.
+    fn api_many(&self, requests: &[(String, bool)]) -> Vec<Result<String, GhApiError>> {
+        requests
+            .iter()
+            .map(|(endpoint, paginate)| self.api(endpoint, *paginate))
+            .collect()
+    }
+
     /// Commit sha of the local branch with this name, falling back to
     /// `HEAD` (flagged via [`LocalTip::from_head`]); `None` when neither
     /// resolves.
@@ -93,12 +104,11 @@ struct GhCli {
     repo: Option<PathBuf>,
 }
 
-impl GithubApi for GhCli {
-    fn api(&self, endpoint: &str, paginate: bool) -> Result<String, GhApiError> {
-        let failed = |detail: String| GhApiError::Failed {
-            endpoint: endpoint.to_string(),
-            detail,
-        };
+impl GhCli {
+    /// The `gh api` invocation for one endpoint. Both fetch paths
+    /// ([`GithubApi::api`] and [`GithubApi::api_many`]) build their
+    /// commands here so their behavior cannot drift apart.
+    fn command(&self, endpoint: &str, paginate: bool) -> Command {
         let mut cmd = Command::new(crate::gitx::gh_program());
         cmd.args(["api", endpoint]);
         if paginate {
@@ -107,21 +117,59 @@ impl GithubApi for GhCli {
         if let Some(repo) = &self.repo {
             cmd.current_dir(repo);
         }
-        let out = cmd.output().map_err(|err| match err.kind() {
-            io::ErrorKind::NotFound => failed("gh is not installed or not on PATH".into()),
-            _ => failed(err.to_string()),
-        })?;
-        if out.status.success() {
-            return Ok(String::from_utf8_lossy(&out.stdout).into_owned());
-        }
-        let stderr = String::from_utf8_lossy(&out.stderr);
-        // gh reports HTTP errors as e.g. `gh: Not Found (HTTP 404)`; match
-        // either half of that wording so a rephrasing on gh's side degrades
-        // 404 detection only if both change at once.
-        if stderr.contains("HTTP 404") || stderr.contains("Not Found") {
-            return Err(GhApiError::NotFound);
-        }
-        Err(failed(stderr.into_owned()))
+        cmd
+    }
+}
+
+/// Map a finished (or failed-to-run) `gh api` invocation onto the result
+/// the checks consume; shared by both fetch paths.
+fn interpret_gh_output(endpoint: &str, result: io::Result<Output>) -> Result<String, GhApiError> {
+    let failed = |detail: String| GhApiError::Failed {
+        endpoint: endpoint.to_string(),
+        detail,
+    };
+    let out = result.map_err(|err| match err.kind() {
+        io::ErrorKind::NotFound => failed("gh is not installed or not on PATH".into()),
+        _ => failed(err.to_string()),
+    })?;
+    if out.status.success() {
+        return Ok(String::from_utf8_lossy(&out.stdout).into_owned());
+    }
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    // gh reports HTTP errors as e.g. `gh: Not Found (HTTP 404)`; match
+    // either half of that wording so a rephrasing on gh's side degrades
+    // 404 detection only if both change at once.
+    if stderr.contains("HTTP 404") || stderr.contains("Not Found") {
+        return Err(GhApiError::NotFound);
+    }
+    Err(failed(stderr.into_owned()))
+}
+
+impl GithubApi for GhCli {
+    fn api(&self, endpoint: &str, paginate: bool) -> Result<String, GhApiError> {
+        interpret_gh_output(endpoint, self.command(endpoint, paginate).output())
+    }
+
+    /// Concurrent batch fetch: every `gh api` process is spawned before
+    /// any is waited on, so the round trips overlap instead of queueing.
+    fn api_many(&self, requests: &[(String, bool)]) -> Vec<Result<String, GhApiError>> {
+        let children: Vec<io::Result<std::process::Child>> = requests
+            .iter()
+            .map(|(endpoint, paginate)| {
+                self.command(endpoint, *paginate)
+                    .stdin(Stdio::null())
+                    .stdout(Stdio::piped())
+                    .stderr(Stdio::piped())
+                    .spawn()
+            })
+            .collect();
+        children
+            .into_iter()
+            .zip(requests)
+            .map(|(child, (endpoint, _))| {
+                interpret_gh_output(endpoint, child.and_then(|child| child.wait_with_output()))
+            })
+            .collect()
     }
 
     fn local_branch_commit(&self, branch: &str) -> Option<LocalTip> {
@@ -191,6 +239,44 @@ impl GithubCtx {
 
     fn local_branch_commit(&self, branch: &str) -> Option<LocalTip> {
         self.gh.local_branch_commit(branch)
+    }
+
+    /// Warm the memoization cache by fetching, concurrently where the
+    /// backend supports it, every endpoint the checks are about to
+    /// request. Purely an optimization: it prints nothing, and an
+    /// endpoint that fails here is simply left uncached, so the check
+    /// that needs it refetches and reports its own finding exactly as it
+    /// would without prefetch.
+    pub fn prefetch(&self, config: &crate::config::Config) {
+        checks::prefetch(self, config);
+    }
+
+    /// Batch-fetch the not-yet-cached endpoints among `requests` and
+    /// memoize the successes, mirroring [`Self::api`]'s semantics;
+    /// failures are dropped for the owning check to rediscover.
+    fn cache_many(&self, requests: Vec<(String, bool)>) {
+        let uncached: Vec<(String, bool)> = {
+            let cache = self.cache.borrow();
+            requests
+                .into_iter()
+                .filter(|(endpoint, _)| !cache.contains_key(endpoint))
+                .collect()
+        };
+        if uncached.is_empty() {
+            return;
+        }
+        let results = self.gh.api_many(&uncached);
+        let mut cache = self.cache.borrow_mut();
+        for ((endpoint, _), result) in uncached.into_iter().zip(results) {
+            if let Ok(body) = result {
+                cache.insert(endpoint, body);
+            }
+        }
+    }
+
+    /// A cached response body, if the endpoint has one.
+    fn cached(&self, endpoint: &str) -> Option<String> {
+        self.cache.borrow().get(endpoint).cloned()
     }
 }
 
@@ -430,5 +516,27 @@ mod tests {
         let info: model::RepoInfo = model::parse_one(&body).expect("parse real repo info");
         assert_eq!(info.default_branch, "trunk");
         assert!(!info.archived);
+    }
+
+    /// Online smoke test for the concurrent batch path: two real
+    /// endpoints spawned together must come back in request order with
+    /// the same bodies the sequential path would produce.
+    #[cfg(feature = "online-tests")]
+    #[test]
+    #[ignore = "network + authenticated gh required; run with --features online-tests -- --ignored"]
+    fn online_gh_api_many_fetches_endpoints_concurrently_in_order() {
+        let gh = GhCli {
+            repo: Some(std::env::temp_dir()),
+        };
+        let results = gh.api_many(&[
+            ("repos/cli/cli".to_string(), false),
+            ("repos/cli/cli/no-such-endpoint".to_string(), false),
+        ]);
+        assert_eq!(results.len(), 2);
+        let info: model::RepoInfo =
+            model::parse_one(results[0].as_ref().expect("first endpoint succeeds"))
+                .expect("parse real repo info");
+        assert_eq!(info.default_branch, "trunk");
+        assert!(matches!(results[1], Err(GhApiError::NotFound)));
     }
 }

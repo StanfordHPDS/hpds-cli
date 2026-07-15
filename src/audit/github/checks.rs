@@ -25,6 +25,99 @@ pub(super) fn registry() -> Vec<Box<dyn Check>> {
     ]
 }
 
+/// Warm the [`GithubCtx`] cache with every endpoint the registered checks
+/// will request, in dependency waves so each wave can be fetched as one
+/// concurrent batch. The endpoint strings are built exactly the way the
+/// checks build theirs; anything that fails to fetch or parse here is
+/// skipped silently, leaving that check to refetch sequentially and
+/// report as usual.
+pub(super) fn prefetch(github: &GithubCtx, config: &crate::config::Config) {
+    let slug = &github.slug;
+
+    // Wave 1: the endpoints no check needs prior data to name. The
+    // releases list is only requested at the milestones where the
+    // releases check actually runs.
+    let mut wave = vec![
+        (format!("repos/{slug}"), false),
+        (format!("repos/{slug}/subscribers"), true),
+        (format!("repos/{slug}/contributors"), true),
+        (format!("repos/{slug}/branches"), true),
+    ];
+    let status = config.project.status.as_str();
+    if status == "submitted" || status == "published" {
+        wave.push((format!("repos/{slug}/releases"), true));
+    }
+    github.cache_many(wave);
+
+    // Wave 2 needs the repo info (default branch, owner) and the branch
+    // list from wave 1.
+    let Some(info) = github
+        .cached(&format!("repos/{slug}"))
+        .and_then(|body| model::parse_one::<RepoInfo>(&body).ok())
+    else {
+        return;
+    };
+    let mut wave = Vec::new();
+    if info.owner.kind == "Organization" {
+        wave.push((format!("orgs/{}/members", info.owner.login), true));
+    }
+    if let Some(tip) = github.local_branch_commit(&info.default_branch) {
+        wave.push((
+            format!(
+                "repos/{slug}/compare/{}...{}",
+                tip.sha,
+                encode_ref(&info.default_branch)
+            ),
+            false,
+        ));
+    }
+    let branches: Vec<BranchSummary> = github
+        .cached(&format!("repos/{slug}/branches"))
+        .and_then(|body| model::parse_pages(&body).ok())
+        .unwrap_or_default();
+    let non_default: Vec<&BranchSummary> = branches
+        .iter()
+        .filter(|branch| branch.name != info.default_branch)
+        .collect();
+    for branch in &non_default {
+        wave.push((
+            format!("repos/{slug}/branches/{}", encode_ref(&branch.name)),
+            false,
+        ));
+    }
+    github.cache_many(wave);
+
+    // Wave 3: the staleness comparisons, needed only for unmerged-branch
+    // candidates old enough to matter (mirroring the stale-remote-branches
+    // check's age gate, so nothing is fetched that the check would skip).
+    let stale_days = i64::from(config.audit.stale_days);
+    let now = SystemTime::now();
+    let mut wave = Vec::new();
+    for branch in &non_default {
+        let Some(age) = github
+            .cached(&format!(
+                "repos/{slug}/branches/{}",
+                encode_ref(&branch.name)
+            ))
+            .and_then(|body| model::parse_one::<BranchDetail>(&body).ok())
+            .and_then(|detail| model::days_since(&detail.commit.commit.committer.date, now).ok())
+        else {
+            continue;
+        };
+        if age > stale_days {
+            wave.push((
+                format!(
+                    "repos/{slug}/compare/{}...{}",
+                    encode_ref(&info.default_branch),
+                    encode_ref(&branch.name)
+                ),
+                false,
+            ));
+        }
+    }
+    github.cache_many(wave);
+}
+
 /// Anything that can go wrong while a check talks to GitHub.
 #[derive(Debug, thiserror::Error)]
 enum CheckError {
@@ -1052,6 +1145,139 @@ mod tests {
         config.audit.stale_days = 100_000;
         let ctx = ctx(branches_fake(), config);
         assert_eq!(run_one(&StaleRemoteBranches, &ctx), Vec::new());
+    }
+
+    // ---- prefetch ----
+
+    /// Every endpoint the full registry needs, so a prefetch-then-check
+    /// run can be compared endpoint-for-endpoint with a plain check run.
+    fn full_fake() -> FakeGh {
+        FakeGh::new()
+            .serve_fixture("repos/acme/demo", "repo.json")
+            .serve_fixture("repos/acme/demo/subscribers", "subscribers.json")
+            .serve_fixture("repos/acme/demo/contributors", "contributors.json")
+            .serve_fixture("orgs/acme/members", "org-members.json")
+            .serve_fixture("repos/acme/demo/branches", "branches.json")
+            .serve_fixture("repos/acme/demo/branches/old-analysis", "branch-old.json")
+            .serve_fixture("repos/acme/demo/branches/fresh-idea", "branch-fresh.json")
+            .serve_fixture(
+                &format!("repos/acme/demo/compare/{LOCAL_SHA}...main"),
+                "compare-identical.json",
+            )
+            .serve_fixture(
+                "repos/acme/demo/compare/main...old-analysis",
+                "compare-ahead.json",
+            )
+    }
+
+    fn run_registry(ctx: &AuditCtx) -> Vec<Finding> {
+        registry().iter().flat_map(|check| check.run(ctx)).collect()
+    }
+
+    #[test]
+    fn prefetch_then_checks_fetch_each_endpoint_exactly_once() {
+        let fake = full_fake();
+        let calls = fake.call_log();
+        let ctx = ctx(fake, config_with_author("researcher1"));
+        let github = ctx.github.as_ref().expect("github context");
+        github.prefetch(&ctx.config);
+        run_registry(&ctx);
+
+        let calls = calls.borrow();
+        let mut endpoints: Vec<&str> = calls.iter().map(|(e, _)| e.as_str()).collect();
+        endpoints.sort_unstable();
+        let fetched = endpoints.len();
+        endpoints.dedup();
+        assert_eq!(
+            endpoints.len(),
+            fetched,
+            "an endpoint was fetched more than once (prefetch cache miss): {calls:?}"
+        );
+    }
+
+    #[test]
+    fn prefetch_requests_exactly_what_the_checks_would() {
+        // Checks alone, memoized by the context: one call per endpoint.
+        let fake = full_fake();
+        let check_calls = fake.call_log();
+        let ctx_checks = ctx(fake, config_with_author("researcher1"));
+        run_registry(&ctx_checks);
+        let mut expected = check_calls.borrow().clone();
+        expected.sort();
+
+        // Prefetch alone must issue the same requests: same endpoint
+        // strings, same pagination flags, nothing extra.
+        let fake = full_fake();
+        let prefetch_calls = fake.call_log();
+        let ctx_prefetch = ctx(fake, config_with_author("researcher1"));
+        ctx_prefetch
+            .github
+            .as_ref()
+            .expect("github context")
+            .prefetch(&ctx_prefetch.config);
+        let mut actual = prefetch_calls.borrow().clone();
+        actual.sort();
+
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn prefetch_does_not_change_the_findings() {
+        let ctx_plain = ctx(full_fake(), config_with_author("ghost"));
+        let plain = run_registry(&ctx_plain);
+
+        let ctx_prefetched = ctx(full_fake(), config_with_author("ghost"));
+        ctx_prefetched
+            .github
+            .as_ref()
+            .expect("github context")
+            .prefetch(&ctx_prefetched.config);
+        let prefetched = run_registry(&ctx_prefetched);
+
+        assert_eq!(prefetched, plain);
+    }
+
+    #[test]
+    fn prefetch_failures_are_not_cached_so_checks_refetch_and_report() {
+        let fake = full_fake().serve_failure("repos/acme/demo/subscribers");
+        let calls = fake.call_log();
+        let ctx = ctx(fake, config_with_author("researcher1"));
+        let github = ctx.github.as_ref().expect("github context");
+        github.prefetch(&ctx.config);
+
+        // The failed endpoint was not cached; the check retries it and
+        // owns the resulting finding, exactly as without prefetch.
+        let findings = run_one(&Watchers, &ctx);
+        assert_eq!(findings.len(), 1, "{findings:?}");
+        assert_eq!(findings[0].severity, Severity::Warn);
+        assert!(findings[0].message.contains("could not complete"));
+
+        let subscriber_fetches = calls
+            .borrow()
+            .iter()
+            .filter(|(e, _)| e == "repos/acme/demo/subscribers")
+            .count();
+        assert_eq!(subscriber_fetches, 2, "prefetch attempt plus check retry");
+    }
+
+    #[test]
+    fn api_many_default_implementation_calls_api_sequentially_in_order() {
+        let fake = FakeGh::new()
+            .serve_body("repos/acme/demo", "{}")
+            .serve_not_found("repos/acme/demo/releases");
+        let calls = fake.call_log();
+        let requests = vec![
+            ("repos/acme/demo".to_string(), false),
+            ("repos/acme/demo/releases".to_string(), true),
+            ("repos/acme/demo/unserved".to_string(), false),
+        ];
+        let results = fake.api_many(&requests);
+
+        assert_eq!(results.len(), 3);
+        assert_eq!(results[0].as_deref().expect("first request succeeds"), "{}");
+        assert!(matches!(results[1], Err(GhApiError::NotFound)));
+        assert!(matches!(results[2], Err(GhApiError::Failed { .. })));
+        assert_eq!(*calls.borrow(), requests);
     }
 
     // ---- releases ----

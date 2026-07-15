@@ -8,6 +8,7 @@ use std::process::Command;
 
 use anyhow::Context;
 use clap::{Args, ValueEnum};
+use rayon::prelude::*;
 
 use crate::audit::all::{self, RepoSpec};
 use crate::config::{self, Layer};
@@ -51,6 +52,12 @@ enum SweepFormat {
     Json,
 }
 
+/// How many repos are audited at once. Each audit is dominated by network
+/// waits (clone plus `gh api` round trips), so overlapping them buys most
+/// of the speedup; the cap keeps the sweep polite to GitHub and the
+/// network.
+const MAX_CONCURRENT_AUDITS: usize = 6;
+
 pub fn run(args: AllArgs) -> anyhow::Result<()> {
     let (specs, source) = resolve_specs(&args)?;
     if specs.is_empty() {
@@ -77,20 +84,36 @@ pub fn run(args: AllArgs) -> anyhow::Result<()> {
         None
     };
 
+    // A dedicated pool so the sweep's concurrency cap cannot be widened
+    // (or starved) by other users of rayon's global pool.
+    let pool = rayon::ThreadPoolBuilder::new()
+        .num_threads(MAX_CONCURRENT_AUDITS.min(specs.len()))
+        .build()
+        .context("could not start the audit worker threads")
+        .hint("re-run `hpds audit all`; if this keeps happening, report it")?;
+
     let bar = ui::progress_bar(specs.len() as u64, "auditing repos");
-    let mut reports = Vec::with_capacity(specs.len());
-    for (index, spec) in specs.iter().enumerate() {
-        bar.set_message(format!("auditing {}", spec.display_name()));
-        let report = match (&no_clone_config, spec) {
-            (Some(config), RepoSpec::Slug(slug)) => {
-                all::audit_metadata(slug, config, scratch.path())
-            }
-            (Some(_), RepoSpec::Local(path)) => all::local_path_needs_clone(path),
-            (None, _) => all::audit_spec(spec, &scratch.path().join(format!("repo-{index}"))),
-        };
-        bar.inc(1);
-        reports.push(report);
-    }
+    // The parallel map preserves input order, so the reports (and every
+    // rendering of them) stay in the order the repo list gave.
+    let reports: Vec<all::RepoReport> = pool.install(|| {
+        specs
+            .par_iter()
+            .enumerate()
+            .map(|(index, spec)| {
+                let report = match (&no_clone_config, spec) {
+                    (Some(config), RepoSpec::Slug(slug)) => {
+                        all::audit_metadata(slug, config, scratch.path())
+                    }
+                    (Some(_), RepoSpec::Local(path)) => all::local_path_needs_clone(path),
+                    (None, _) => {
+                        all::audit_spec(spec, &scratch.path().join(format!("repo-{index}")))
+                    }
+                };
+                bar.inc(1);
+                report
+            })
+            .collect()
+    });
     bar.finish_and_clear();
 
     write_markdown(&args, &source, &reports)?;

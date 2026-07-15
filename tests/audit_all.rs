@@ -227,6 +227,42 @@ fn sweep_json_emits_the_stable_schema() {
 }
 
 #[test]
+fn sweep_reports_render_in_input_order() {
+    let sb = OrgSandbox::new();
+    let bogus = sb._root.path().join("no-such-repo").display().to_string();
+    let file = sb.repos_file(&[&sb.messy_line(), &sb.clean_line(), &bogus]);
+    let assert = sb.sweep_cmd(&file, &[]).assert().code(1);
+    let stdout =
+        String::from_utf8(assert.get_output().stdout.clone()).expect("stdout should be UTF-8");
+
+    // The table lists one row per repo, in the order the repos file gave
+    // them, regardless of how the audits were scheduled.
+    let position = |haystack: &str, needle: &str| {
+        haystack
+            .find(needle)
+            .unwrap_or_else(|| panic!("`{needle}` missing from:\n{haystack}"))
+    };
+    let messy = position(&stdout, "messy-repo");
+    let clean = position(&stdout, "clean-repo");
+    let failed = position(&stdout, "no-such-repo");
+    assert!(
+        messy < clean && clean < failed,
+        "table rows out of input order:\n{stdout}"
+    );
+
+    // The markdown sections keep the same order.
+    let report = fs::read_to_string(sb.run_dir.join("hpds-audit-report.md"))
+        .expect("markdown report is written");
+    let messy = position(&report, "## messy-repo");
+    let clean = position(&report, "## clean-repo");
+    let failed = position(&report, "## no-such-repo");
+    assert!(
+        messy < clean && clean < failed,
+        "markdown sections out of input order:\n{report}"
+    );
+}
+
+#[test]
 fn sweep_of_only_clean_repos_exits_0() {
     let sb = OrgSandbox::new();
     let file = sb.repos_file(&[&sb.clean_line()]);

@@ -226,8 +226,11 @@ fn audit_current_repo(args: &AuditArgs, global: &super::GlobalArgs) -> anyhow::R
         // checks; running them would only repeat it per check.
         checks.retain(|check| !check.needs_repo());
     }
-    if ctx.github.is_some() {
+    if let Some(github) = ctx.github.as_ref() {
         checks.extend(audit::github::registry());
+        // Warm the GitHub cache in concurrent batches before the checks
+        // run sequentially; findings and their order are unaffected.
+        github.prefetch(&ctx.config);
     }
     // The summary line counts checks actually run; the appended not-a-repo
     // and gh-skip notices are findings about the run, not checks.
