@@ -1,26 +1,22 @@
 # hpds-cli
 
-[![CI](https://github.com/StanfordHPDS/hpds-cli/actions/workflows/ci.yml/badge.svg)](https://github.com/StanfordHPDS/hpds-cli/actions/workflows/ci.yml)
-[![Release](https://img.shields.io/github/v/release/StanfordHPDS/hpds-cli?label=release)](https://github.com/StanfordHPDS/hpds-cli/releases/latest)
+[![CI](https://github.com/StanfordHPDS/hpds-cli/actions/workflows/ci.yml/badge.svg)](https://github.com/StanfordHPDS/hpds-cli/actions/workflows/ci.yml) [![Release](https://img.shields.io/github/v/release/StanfordHPDS/hpds-cli?label=release)](https://github.com/StanfordHPDS/hpds-cli/releases/latest)
 
 `hpds` is the command-line tool for the Stanford Health Policy Data Science lab.
 It is a single binary for macOS, Linux, and Windows that does three jobs:
 
 1. **Scaffold** projects from lab templates (`hpds init`, `hpds use ...`).
 2. **Set up machines** with the lab toolchain (`hpds install ...`, `hpds setup`).
-3. **Audit repos** against lab standards, locally and across the GitHub org
-   (`hpds audit`, `hpds audit all`).
+3. **Audit repos** against lab standards, locally and across the GitHub org (`hpds audit`, `hpds audit all`).
 
-Formatting and linting are provided by the lab's separate
-[togi](https://github.com/StanfordHPDS/togi) tool.
+Formatting and linting are provided by the lab's separate [togi](https://github.com/StanfordHPDS/togi) tool.
 
-Everything works with zero configuration; `hpds.toml` only overrides defaults. The
-defaults encode several of the lab's agreements.
+Everything works with zero configuration; `hpds.toml` only overrides defaults.
+The defaults encode several of the lab's agreements.
 
 ## Install
 
-The install script downloads a prebuilt binary for your platform and places it on
-your `PATH`:
+The install script downloads a prebuilt binary for your platform and places it on your `PATH`:
 
 ```sh
 curl --proto '=https' --tlsv1.2 -LsSf https://github.com/StanfordHPDS/hpds-cli/releases/latest/download/hpds-installer.sh | sh
@@ -55,16 +51,16 @@ hpds 0.1.0   # no-verify
 
 ### Scaffold a project
 
-`hpds init` walks you through a new or existing project interactively. For scripts
-and CI, drive it non-interactively with flags:
+`hpds init` walks you through a new or existing project interactively.
+For scripts and CI, drive it non-interactively with flags:
 
 ```console
 $ hpds init
 $ hpds init --yes --language both --use pipeline,readme
 ```
 
-Add individual components to a project that already exists. `hpds use` with no
-argument lists what's available:
+Add individual components to a project that already exists.
+`hpds use` with no argument lists what's available:
 
 ```console
 $ hpds use
@@ -73,9 +69,7 @@ $ hpds use readme
 $ hpds use pipeline --kind targets
 ```
 
-Formatting and linting the code you write there is
-[togi](https://github.com/StanfordHPDS/togi)'s job (`togi format`, `togi lint`);
-install it with `hpds install togi`.
+Formatting and linting the code you write there is [togi](https://github.com/StanfordHPDS/togi)'s job (`togi format`, `togi lint`); install it with `hpds install togi`.
 
 ### Set up a machine
 
@@ -86,15 +80,15 @@ $ hpds install quarto
 ✓ quarto 1.8.27 already installed
 ```
 
-`hpds setup` runs the whole toolchain bundle. Preview the plan before it runs:
+`hpds setup` runs the whole toolchain bundle.
+Preview the plan before it runs:
 
 ```console
 $ hpds setup --plan
 $ hpds setup --profile dev
 ```
 
-The `server` profile provisions a full lab server (Linux only); `dev` (the default)
-installs the toolchain on your own machine.
+The `server` profile provisions a full lab server (Linux only); `dev` (the default) installs the toolchain on your own machine.
 
 ### Audit a repo
 
@@ -119,8 +113,7 @@ $ hpds audit all --limit 50
 
 ### Git & GitHub helpers
 
-Apply the lab's global git ignore patterns, configure sensible git defaults, and
-create a repo the lab-manual way:
+Apply the lab's global git ignore patterns, configure sensible git defaults, and create a repo the lab-manual way:
 
 ```console
 $ hpds git vaccinate
@@ -132,13 +125,12 @@ $ hpds repo create
 
 ## Documentation
 
-- [docs/audit-bot.md](docs/audit-bot.md): how the audit bot files issues and
-  comments on pull requests.
+- [docs/audit-bot.md](docs/audit-bot.md): how the audit bot files issues and comments on pull requests.
 
 ## Development
 
-Requires a stable Rust toolchain (Rust 2024 edition; `rust-toolchain.toml` pins the
-channel and components). The four quality gates must pass before every commit:
+Requires a stable Rust toolchain (Rust 2024 edition; `rust-toolchain.toml` pins the channel and components).
+The four quality gates must pass before every commit:
 
 ```sh
 cargo build
@@ -150,4 +142,5 @@ cargo fmt --check
 
 ## License
 
-MIT. See [LICENSE](LICENSE).
+MIT.
+See [LICENSE](LICENSE).

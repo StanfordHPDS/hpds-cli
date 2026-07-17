@@ -8,13 +8,13 @@
 
 <!-- Example only: replace or remove this table to match the project. -->
 
-| Path       | Contents                                              |
-|------------|-------------------------------------------------------|
-| `R/`       | R analysis code                                       |
-| `scripts/` | Python analysis code                                  |
-| `data/`    | Input data (document provenance; commit only if small and shareable) |
-| `docs/`    | Project documentation                                 |
-| `results/` | Generated outputs                                     |
+  | Path       | Contents                                                             |
+  | ---------- | -------------------------------------------------------------------- |
+  | `R/`       | R analysis code                                                      |
+  | `scripts/` | Python analysis code                                                 |
+  | `data/`    | Input data (document provenance; commit only if small and shareable) |
+  | `docs/`    | Project documentation                                                |
+  | `results/` | Generated outputs                                                    |
 
 ## How to run
 
