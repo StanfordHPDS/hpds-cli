@@ -1,6 +1,6 @@
 [package]
 name = "hpds"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
 description = "Unified tooling for the Stanford HPDS lab: project templates, machine setup, and repo audits"
 license = "MIT"
