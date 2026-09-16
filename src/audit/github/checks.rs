@@ -1,5 +1,5 @@
 //! The six GitHub-side checks. Each one is a pure inspector over
-//! [`GithubCtx`]: it fetches what it needs through the [`GithubApi`] seam,
+//! [`GithubCtx`]: it fetches what it needs through the [`GithubApi`](super::GithubApi) seam,
 //! parses via [`model`], and returns findings. Failures to reach or
 //! understand GitHub become Warn findings on the same check: never a
 //! panic, never an aborted audit.

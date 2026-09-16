@@ -303,7 +303,7 @@ fn missing_repo_context_is_a_usage_error_naming_the_flag() {
 }
 
 #[test]
-fn unparseable_input_says_where_audit_json_comes_from() {
+fn unparsable_input_says_where_audit_json_comes_from() {
     let sb = setup();
     report_github(&sb)
         .args(["--repo", "acme/demo", "--mode", "pr", "--pr", "7"])

@@ -167,7 +167,7 @@ mod tests {
     }
 
     #[test]
-    fn unparseable_hpds_toml_is_an_error_not_a_panic() {
+    fn unparsable_hpds_toml_is_an_error_not_a_panic() {
         let (_tmp, repo) = init_repo();
         write(&repo, "hpds.toml", "not valid toml [\n");
         let findings = LifecycleMetadata.run(&ctx(&repo));
