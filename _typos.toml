@@ -1,0 +1,4 @@
+[files]
+# Recorded GitHub API responses used as test fixtures; their `node_id`
+# values are opaque base64-ish tokens GitHub assigns, not prose to spell-check.
+extend-exclude = ["tests/fixtures/tool-output/gh/**"]

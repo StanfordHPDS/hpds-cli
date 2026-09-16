@@ -185,14 +185,14 @@ mod tests {
 
     #[test]
     fn unknown_variable_is_a_hard_error_naming_the_variable() {
-        let err = render("Hello {{projct}}!", "hello.txt", &all_vars()).unwrap_err();
+        let err = render("Hello {{nonexistent_var}}!", "hello.txt", &all_vars()).unwrap_err();
         match err {
             TemplateError::UnknownVariable {
                 name,
                 template,
                 available,
             } => {
-                assert_eq!(name, "projct");
+                assert_eq!(name, "nonexistent_var");
                 assert_eq!(template, "hello.txt");
                 assert_eq!(available, "author, language, project, year");
             }

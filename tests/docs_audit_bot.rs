@@ -122,7 +122,7 @@ fn doc_matches_the_workflow_template() {
         doc.contains(".github/workflows/hpds-audit.yml"),
         "doc names the generated file"
     );
-    for permission in ["contents: read", "issues: write", "pull-requests: write"] {
+    for permission in ["contents: write", "issues: write", "pull-requests: write"] {
         assert!(
             doc.contains(permission),
             "doc lists the `{permission}` permission"
@@ -132,6 +132,72 @@ fn doc_matches_the_workflow_template() {
             "template grants the `{permission}` permission"
         );
     }
+    assert!(
+        !doc.contains("contents: read") && !template.contains("contents: read"),
+        "neither the doc nor the template still grants `contents: read`"
+    );
+    assert!(
+        doc.contains("subscribers"),
+        "doc explains that the subscribers endpoint needs `contents: write`"
+    );
+
+    // CI writes the report outside the checkout; the doc says so.
+    let ci_report = r#""$RUNNER_TEMP/audit.json""#;
+    assert!(
+        template.contains(&format!("hpds audit --format json > {ci_report}")),
+        "template writes the report to RUNNER_TEMP"
+    );
+    assert!(
+        template.contains(&format!("hpds audit report-github --input {ci_report}")),
+        "template reads the report from RUNNER_TEMP"
+    );
+    assert!(
+        doc.contains(&format!("hpds audit --format json > {ci_report}"))
+            && doc.contains(&format!("hpds audit report-github --input {ci_report}")),
+        "doc describes the CI steps with the RUNNER_TEMP path"
+    );
+    assert!(
+        doc.contains("untracked"),
+        "doc explains why the report stays out of the checkout"
+    );
+
+    // Workflow-file changes need existing workflows regenerated.
+    assert!(
+        doc.contains("hpds use gha --workflows audit-bot --force"),
+        "doc says how to regenerate an existing workflow"
+    );
+    assert!(
+        doc.contains("forks") && doc.contains("read-only"),
+        "doc explains that fork pull request tokens are read-only"
+    );
+}
+
+#[test]
+fn doc_describes_when_watcher_mentions_notify() {
+    // GitHub notifies mentioned users only when a comment is created, and
+    // the bot edits its sticky comment in place on later runs.
+    let doc = doc();
+    assert!(
+        doc.contains("`@login` mention"),
+        "doc says missing watchers are mentioned"
+    );
+    assert!(
+        doc.contains("only when the bot creates the comment")
+            && doc.contains("not when later runs edit it in place"),
+        "doc says only comment creation notifies the mentioned people"
+    );
+    assert!(
+        doc.contains("not valid logins stay plain text"),
+        "doc says invalid entries are not mentioned"
+    );
+    assert!(
+        doc.contains("mentions appear only in the pull request comment"),
+        "doc says issues never carry the watcher mentions in practice"
+    );
+    assert!(
+        !doc.contains("so GitHub notifies them"),
+        "doc must not promise a notification on every run"
+    );
 }
 
 #[test]
@@ -145,5 +211,17 @@ fn doc_covers_the_audit_config_knobs() {
     assert!(
         doc.contains("required-watchers"),
         "doc names the required-watchers config key"
+    );
+    assert!(
+        doc.contains("add names") && doc.contains("never remove"),
+        "doc says project config may add required watchers but never remove them"
+    );
+    assert!(
+        doc.contains("hpds.toml.md#audit"),
+        "doc links to the [audit] section of the config reference"
+    );
+    assert!(
+        !doc.contains("user* configuration only"),
+        "doc must not describe required-watchers as user-only"
     );
 }

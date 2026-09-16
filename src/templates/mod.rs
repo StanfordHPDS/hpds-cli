@@ -1,6 +1,6 @@
 //! Embedded project templates and the engine that renders them.
 //!
-//! The engine is pure logic: `{{variable}}` substitution ([`render`]), file
+//! The engine is pure logic: `{{variable}}` substitution ([`fn@render`]), file
 //! writes with conflict handling ([`write_rendered`], [`apply_dir`]: files
 //! are NEVER overwritten without `force`; conflicts carry a diff-style
 //! preview and are skipped), and idempotent marker-comment blocks for
@@ -148,12 +148,15 @@ mod tests {
     #[test]
     fn unknown_variable_error_says_what_to_do_next() {
         let err = TemplateError::UnknownVariable {
-            name: "projct".into(),
+            name: "nonexistent_var".into(),
             template: "test-fixture/hello.txt".into(),
             available: "author, language, project, year".into(),
         };
         let msg = err.to_string();
-        assert!(msg.contains("{{projct}}"), "names the bad variable: {msg}");
+        assert!(
+            msg.contains("{{nonexistent_var}}"),
+            "names the bad variable: {msg}"
+        );
         assert!(msg.contains("test-fixture/hello.txt"));
         assert!(msg.contains("author, language, project, year"));
         assert!(msg.contains("fix the typo"), "tells the user what to do");

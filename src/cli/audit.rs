@@ -175,6 +175,12 @@ fn env_var(name: &str) -> Option<String> {
     std::env::var(name).ok().filter(|value| !value.is_empty())
 }
 
+/// Whether the environment describes a GitHub Actions pull request run,
+/// given the values of `GITHUB_ACTIONS` and `GITHUB_EVENT_NAME`.
+fn is_pull_request_run(actions: Option<&str>, event: Option<&str>) -> bool {
+    actions == Some("true") && matches!(event, Some("pull_request" | "pull_request_target"))
+}
+
 /// Map a bot [`report_github::ContextError`] onto the CLI's usage-error
 /// type so it renders with its hint and exits 2.
 fn usage(err: report_github::ContextError) -> anyhow::Error {
@@ -219,6 +225,10 @@ fn audit_current_repo(args: &AuditArgs, global: &super::GlobalArgs) -> anyhow::R
         repo: root,
         config: loaded.config,
         github,
+        pull_request_run: is_pull_request_run(
+            env_var("GITHUB_ACTIONS").as_deref(),
+            env_var("GITHUB_EVENT_NAME").as_deref(),
+        ),
     };
     let mut checks = audit::registry();
     if !is_repo {
@@ -230,7 +240,7 @@ fn audit_current_repo(args: &AuditArgs, global: &super::GlobalArgs) -> anyhow::R
         checks.extend(audit::github::registry());
         // Warm the GitHub cache in concurrent batches before the checks
         // run sequentially; findings and their order are unaffected.
-        github.prefetch(&ctx.config);
+        github.prefetch(&ctx.config, ctx.pull_request_run);
     }
     // The summary line counts checks actually run; the appended not-a-repo
     // and gh-skip notices are findings about the run, not checks.
@@ -300,6 +310,33 @@ fn count(n: usize, noun: &str) -> String {
 mod tests {
     use super::*;
     use std::path::PathBuf;
+
+    #[test]
+    fn pull_request_events_in_actions_are_pull_request_runs() {
+        assert!(is_pull_request_run(Some("true"), Some("pull_request")));
+        assert!(is_pull_request_run(
+            Some("true"),
+            Some("pull_request_target")
+        ));
+    }
+
+    #[test]
+    fn other_contexts_are_not_pull_request_runs() {
+        for (actions, event) in [
+            (Some("true"), Some("push")),
+            (Some("true"), Some("schedule")),
+            (Some("true"), Some("workflow_dispatch")),
+            (Some("true"), None),
+            (None, Some("pull_request")),
+            (Some("false"), Some("pull_request")),
+            (None, None),
+        ] {
+            assert!(
+                !is_pull_request_run(actions, event),
+                "{actions:?} {event:?}"
+            );
+        }
+    }
 
     #[test]
     fn repo_display_name_is_the_directory_basename() {

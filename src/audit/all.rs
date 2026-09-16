@@ -126,8 +126,9 @@ pub fn audit_spec(spec: &RepoSpec, dest: &Path) -> RepoReport {
 /// The standard audit against a fresh clone: layered config from the
 /// clone, the local checks, and, when the clone's `origin` points at
 /// github.com and `gh` is authenticated, the GitHub checks too.
-/// Config *warnings* (unknown keys) are dropped here: in a sweep across
-/// many repos they are noise for someone who cannot fix them in place.
+/// Config *warnings* (unknown keys, invalid GitHub logins) are dropped
+/// here: in a sweep across many repos they are noise for someone who
+/// cannot fix them in place.
 fn clone_and_audit(spec: &RepoSpec, dest: &Path) -> anyhow::Result<Vec<Finding>> {
     clone(spec, dest)?;
     let loaded = config::load(dest, None, Layer::default())?;
@@ -144,11 +145,12 @@ fn clone_and_audit(spec: &RepoSpec, dest: &Path) -> anyhow::Result<Vec<Finding>>
         repo: dest.to_path_buf(),
         config: loaded.config,
         github: github_ctx,
+        pull_request_run: false,
     };
     if let Some(github) = ctx.github.as_ref() {
         // Warm the GitHub cache in concurrent batches before the checks
         // run sequentially; findings and their order are unaffected.
-        github.prefetch(&ctx.config);
+        github.prefetch(&ctx.config, ctx.pull_request_run);
     }
     let mut findings = super::run_checks(&checks, &ctx);
     findings.extend(notice);
@@ -235,9 +237,10 @@ pub fn audit_metadata(slug: &str, config: &Config, scratch: &Path) -> RepoReport
             owner: owner.to_string(),
             repo: name.to_string(),
         })),
+        pull_request_run: false,
     };
     if let Some(github) = ctx.github.as_ref() {
-        github.prefetch(&ctx.config);
+        github.prefetch(&ctx.config, ctx.pull_request_run);
     }
     let findings = super::run_checks(&metadata_registry(), &ctx);
     RepoReport {

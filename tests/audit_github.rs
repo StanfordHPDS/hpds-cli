@@ -15,6 +15,9 @@
 //! platform-independent and unit-tested in `src/audit/github/`.
 #![cfg(unix)]
 
+mod common;
+
+use common::write_executable_shim;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -67,11 +70,7 @@ fn setup() -> Sandbox {
     let shim_dir = tmp.path().join("bin");
     fs::create_dir(&shim_dir).expect("create shim dir");
     let gh = shim_dir.join("gh");
-    fs::write(&gh, GH_SHIM).expect("write gh shim");
-    {
-        use std::os::unix::fs::PermissionsExt;
-        fs::set_permissions(&gh, fs::Permissions::from_mode(0o755)).expect("chmod gh shim");
-    }
+    write_executable_shim(&gh, GH_SHIM);
 
     let gitconfig = tmp.path().join("gitconfig");
     fs::write(
@@ -209,13 +208,9 @@ fn repo_without_a_github_remote_skips_github_checks_with_a_notice() {
 }
 
 #[test]
-fn project_config_cannot_change_the_required_watcher_list() {
-    // The audited repo must not be able to rewrite the watcher requirement
-    // for whoever audits it, so the key is honored only from user config.
-    // If the project-layer key were honored, `ghost-watcher` would show up
-    // in a watchers finding; instead the key is ignored with a warning and
-    // the default lab leads (who ARE in subscribers.json) keep the check
-    // green.
+fn project_config_required_watchers_reach_the_watchers_check() {
+    // A project-added watcher joins the default lab leads, who are in
+    // subscribers.json, so only the added watcher is reported.
     let sb = setup();
     fs::write(
         sb.repo.join("hpds.toml"),
@@ -227,11 +222,44 @@ fn project_config_cannot_change_the_required_watcher_list() {
     audit(&sb)
         .assert()
         .success()
-        .stdout(predicate::str::contains("ghost-watcher").not())
-        .stderr(
-            predicate::str::contains("warning:")
-                .and(predicate::str::contains("audit.required-watchers")),
-        );
+        .stdout(
+            predicate::str::contains("ghost-watcher")
+                .and(predicate::str::contains("not watching the repo"))
+                .and(predicate::str::contains("sherrirose").not()),
+        )
+        .stderr(predicate::str::contains("audit.required-watchers").not());
+}
+
+#[test]
+fn terminal_and_json_reports_keep_plain_watcher_logins() {
+    let sb = setup();
+    fs::write(
+        sb.repo.join("hpds.toml"),
+        "[project]\nstatus = \"active\"\nprimary-author = \"malcolmbarrett\"\n\n\
+         [audit]\nrequired-watchers = [\"ghost-watcher\"]\n",
+    )
+    .expect("write hpds.toml");
+
+    audit(&sb).assert().success().stdout(
+        predicate::str::contains("not watching the repo on GitHub: ghost-watcher")
+            .and(predicate::str::contains("@ghost-watcher").not()),
+    );
+
+    let assert = audit(&sb).args(["--format", "json"]).assert().success();
+    let stdout =
+        String::from_utf8(assert.get_output().stdout.clone()).expect("stdout should be UTF-8");
+    let report: serde_json::Value = serde_json::from_str(&stdout).expect("valid JSON report");
+    let watchers: Vec<&serde_json::Value> = report["findings"]
+        .as_array()
+        .expect("findings array")
+        .iter()
+        .filter(|f| f["check_id"] == "watchers")
+        .collect();
+    assert_eq!(watchers.len(), 1, "{report}");
+    assert_eq!(
+        watchers[0]["message"],
+        "not watching the repo on GitHub: ghost-watcher"
+    );
 }
 
 #[test]

@@ -5,8 +5,9 @@
 //! sets); layers are applied to [`Config::default`] in order, so later
 //! layers win key-by-key.
 //!
-//! This module returns data only; it never prints. Unknown-key warnings are
-//! returned on [`Loaded::warnings`] for the caller to report through `ui/`.
+//! This module returns data only; it never prints. Warnings about unknown
+//! keys and malformed GitHub logins are returned on [`Loaded::warnings`]
+//! for the caller to report through `ui/`.
 
 mod discover;
 pub(crate) mod raw;
@@ -42,8 +43,10 @@ pub struct AuditConfig {
     /// Branches with no commits in more than this many days count as stale.
     pub stale_days: u32,
     /// GitHub logins that must watch every lab repo (the project's
-    /// primary author is required in addition to these). Overridable via
-    /// *user* config only; see [`strip_user_only_keys`].
+    /// primary author is required in addition to these). User config
+    /// replaces the built-in list; project config only adds to it, so an
+    /// audited repo can require extra watchers but never drop one. Entries
+    /// are deduplicated case-insensitively, keeping the first spelling.
     pub required_watchers: Vec<String>,
 }
 
@@ -95,6 +98,89 @@ impl Config {
             self.audit.required_watchers = v;
         }
     }
+
+    /// Apply a project-config layer on top of `self`.
+    ///
+    /// Every key behaves as in [`Config::apply`] except
+    /// `required_watchers`, which is merged into the current list instead of
+    /// replacing it: the result is the current entries followed by the
+    /// project's, deduplicated case-insensitively with the first spelling
+    /// and first position kept. The audited repo may require more watchers,
+    /// never fewer.
+    pub fn apply_project(&mut self, mut layer: Layer) {
+        if let Some(extra) = layer.audit_required_watchers.take() {
+            self.audit.required_watchers.extend(extra);
+        }
+        dedupe_logins(&mut self.audit.required_watchers);
+        self.apply(layer);
+    }
+}
+
+/// Drop later entries that match an earlier one case-insensitively, keeping
+/// the first spelling and the original order.
+fn dedupe_logins(logins: &mut Vec<String>) {
+    let mut seen = std::collections::HashSet::new();
+    logins.retain(|login| seen.insert(fold_login(login)));
+}
+
+/// GitHub logins are case-insensitive; compare them that way.
+pub fn same_login(a: &str, b: &str) -> bool {
+    fold_login(a) == fold_login(b)
+}
+
+/// The case-folded form of a GitHub login, for comparisons and lookups.
+pub fn fold_login(login: &str) -> String {
+    login.to_lowercase()
+}
+
+/// Whether `text` is a well-formed GitHub login: 1 to 39 ASCII letters,
+/// digits, or hyphens, not starting with a hyphen.
+pub fn is_github_login(text: &str) -> bool {
+    (1..=39).contains(&text.len())
+        && !text.starts_with('-')
+        && text.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
+}
+
+/// `value` as a GitHub login, with one leading `@` removed, or `None` when
+/// what remains is not a well-formed login.
+fn normalize_login(value: &str) -> Option<&str> {
+    let login = value.strip_prefix('@').unwrap_or(value);
+    is_github_login(login).then_some(login)
+}
+
+/// Remove malformed GitHub logins from a file's layer, warning about each
+/// one with the file's path. A blank `primary-author` means unset and is
+/// kept as an empty string without a warning; an invalid one becomes empty
+/// too, so it overrides lower layers the same way the file intended to.
+fn validate_logins(layer: &mut Layer, path: &Path, warnings: &mut Vec<String>) {
+    if let Some(author) = layer.project_primary_author.as_mut() {
+        if author.trim().is_empty() {
+            author.clear();
+        } else if let Some(login) = normalize_login(author) {
+            *author = login.to_string();
+        } else {
+            warnings.push(format!(
+                "ignoring invalid GitHub login `{author}` in `project.primary-author` of {}: \
+                 set it to a single login (letters, digits, and hyphens only), or leave it empty",
+                path.display()
+            ));
+            author.clear();
+        }
+    }
+    if let Some(watchers) = layer.audit_required_watchers.as_mut() {
+        let mut kept = Vec::with_capacity(watchers.len());
+        for value in watchers.drain(..) {
+            match normalize_login(&value) {
+                Some(login) => kept.push(login.to_string()),
+                None => warnings.push(format!(
+                    "ignoring invalid GitHub login `{value}` in `audit.required-watchers` of {}: \
+                     list each login as its own string (letters, digits, and hyphens only)",
+                    path.display()
+                )),
+            }
+        }
+        *watchers = kept;
+    }
 }
 
 /// Typed error for `--config` pointing at a file that does not exist: a
@@ -123,26 +209,19 @@ pub struct Loaded {
     pub user_path: Option<PathBuf>,
     /// Project config file (`--config` or discovered `hpds.toml`).
     pub project_path: Option<PathBuf>,
-    /// Human-readable warnings (unknown keys); print through `ui::warn`.
+    /// Human-readable warnings (unknown keys, malformed GitHub logins);
+    /// print through `ui::warn`.
     pub warnings: Vec<String>,
 }
 
 /// Discover, parse, and layer configuration.
 ///
 /// `explicit` is the global `--config <path>` flag: it replaces project-file
-/// discovery and it is an error for it not to exist. `flags` carries any
-/// CLI-flag overrides (the final layer).
+/// discovery, so the file is layered as project config, and it is an error
+/// for it not to exist. `flags` carries any CLI-flag overrides (the final
+/// layer).
 pub fn load(cwd: &Path, explicit: Option<&Path>, flags: Layer) -> anyhow::Result<Loaded> {
-    let mut config = Config::default();
-    let mut warnings = Vec::new();
-
-    let mut user_path = None;
-    if let Some(path) = discover::user_config_path()
-        && path.is_file()
-    {
-        config.apply(load_file(&path, &mut warnings)?);
-        user_path = Some(path);
-    }
+    let user_path = discover::user_config_path().filter(|path| path.is_file());
 
     let project_path = match explicit {
         Some(path) => {
@@ -157,13 +236,7 @@ pub fn load(cwd: &Path, explicit: Option<&Path>, flags: Layer) -> anyhow::Result
         }
         None => discover::find_project_config(cwd),
     };
-    if let Some(path) = &project_path {
-        let mut layer = load_file(path, &mut warnings)?;
-        strip_user_only_keys(&mut layer, path, &mut warnings);
-        config.apply(layer);
-    }
-
-    config.apply(flags);
+    let (config, warnings) = layer_files(user_path.as_deref(), project_path.as_deref(), flags)?;
 
     Ok(Loaded {
         config,
@@ -173,25 +246,43 @@ pub fn load(cwd: &Path, explicit: Option<&Path>, flags: Layer) -> anyhow::Result
     })
 }
 
-/// Drop keys only the *user* config layer may set, warning about each.
-///
-/// `[audit].required-watchers` is the auditor's requirement, not the
-/// project's: the audited repo must not be able to rewrite the lab-lead
-/// watcher list for everyone who audits it by committing an override in
-/// its own `hpds.toml`, so the key is honored only from user config.
-fn strip_user_only_keys(layer: &mut Layer, path: &Path, warnings: &mut Vec<String>) {
-    if layer.audit_required_watchers.take().is_some() {
-        warnings.push(format!(
-            "ignoring `audit.required-watchers` in {}: project config cannot change \
-             the required watcher list; set it in your user config instead \
-             (`hpds config` shows its path)",
-            path.display()
-        ));
+/// Layer the defaults, the user file, the project file, and the flags, in
+/// that order, returning the resolved config and any warnings.
+fn layer_files(
+    user_path: Option<&Path>,
+    project_path: Option<&Path>,
+    flags: Layer,
+) -> anyhow::Result<(Config, Vec<String>)> {
+    let mut config = Config::default();
+    let mut warnings = Vec::new();
+    if let Some(path) = user_path {
+        config.apply(load_file(path, &mut warnings)?);
+    }
+    // `--config` may name the user file itself; layering it a second time
+    // would change nothing but repeat its warnings.
+    let project_path =
+        project_path.filter(|project| !user_path.is_some_and(|user| same_file(user, project)));
+    if let Some(path) = project_path {
+        config.apply_project(load_file(path, &mut warnings)?);
+    }
+    // `apply` replaces `required_watchers`; a future CLI flag for that key
+    // would need additive handling like `apply_project`.
+    config.apply(flags);
+    dedupe_logins(&mut config.audit.required_watchers);
+    Ok((config, warnings))
+}
+
+/// Whether two paths name the same file: compared canonicalized when both
+/// resolve, and as given otherwise.
+fn same_file(a: &Path, b: &Path) -> bool {
+    match (a.canonicalize(), b.canonicalize()) {
+        (Ok(a), Ok(b)) => a == b,
+        _ => a == b,
     }
 }
 
 /// Read and parse one config file into a layer, converting its unknown keys
-/// into warnings that name the file.
+/// and malformed GitHub logins into warnings that name the file.
 fn load_file(path: &Path, warnings: &mut Vec<String>) -> anyhow::Result<Layer> {
     let text = std::fs::read_to_string(path)
         .with_context(|| format!("could not read config file `{}`", path.display()))
@@ -205,7 +296,9 @@ fn load_file(path: &Path, warnings: &mut Vec<String>) -> anyhow::Result<Layer> {
             path.display()
         ));
     }
-    Ok(parsed.layer)
+    let mut layer = parsed.layer;
+    validate_logins(&mut layer, path, warnings);
+    Ok(layer)
 }
 
 #[cfg(test)]
@@ -302,37 +395,268 @@ mod tests {
         assert_eq!(config.audit.required_watchers, strings(&["lead1", "lead2"]));
     }
 
-    #[test]
-    fn strip_user_only_keys_drops_required_watchers_with_a_warning() {
-        let mut layer = Layer {
-            audit_required_watchers: Some(vec![]),
-            audit_stale_days: Some(30),
+    fn watchers_layer(names: &[&str]) -> Layer {
+        Layer {
+            audit_required_watchers: Some(strings(names)),
             ..Layer::default()
-        };
-        let mut warnings = Vec::new();
-        strip_user_only_keys(&mut layer, Path::new("/repo/hpds.toml"), &mut warnings);
-
-        assert_eq!(layer.audit_required_watchers, None);
-        // stale-days is an ordinary per-project knob and survives.
-        assert_eq!(layer.audit_stale_days, Some(30));
-        assert_eq!(warnings.len(), 1);
-        assert!(
-            warnings[0].contains("audit.required-watchers"),
-            "{warnings:?}"
-        );
-        assert!(warnings[0].contains("/repo/hpds.toml"), "{warnings:?}");
-        assert!(warnings[0].contains("user config"), "{warnings:?}");
+        }
     }
 
     #[test]
-    fn strip_user_only_keys_is_silent_when_the_key_is_absent() {
-        let mut layer = Layer {
-            audit_stale_days: Some(30),
-            ..Layer::default()
-        };
-        let mut warnings = Vec::new();
-        strip_user_only_keys(&mut layer, Path::new("/repo/hpds.toml"), &mut warnings);
+    fn project_required_watchers_add_to_the_user_list() {
+        let mut config = Config::default();
+        config.apply(watchers_layer(&["lead1", "lead2"]));
+        config.apply_project(watchers_layer(&["collab1", "collab2"]));
+        assert_eq!(
+            config.audit.required_watchers,
+            strings(&["lead1", "lead2", "collab1", "collab2"])
+        );
+    }
+
+    #[test]
+    fn project_required_watchers_add_to_the_defaults_without_user_config() {
+        let mut config = Config::default();
+        config.apply_project(watchers_layer(&["collab1"]));
+        assert_eq!(
+            config.audit.required_watchers,
+            strings(&["malcolmbarrett", "sherrirose", "collab1"])
+        );
+    }
+
+    #[test]
+    fn required_watchers_dedupe_case_insensitively_keeping_the_first_spelling() {
+        let mut config = Config::default();
+        config.apply(watchers_layer(&["Lead1", "lead2"]));
+        config.apply_project(watchers_layer(&["LEAD2", "Collab1", "collab1", "lead1"]));
+        assert_eq!(
+            config.audit.required_watchers,
+            strings(&["Lead1", "lead2", "Collab1"])
+        );
+    }
+
+    #[test]
+    fn duplicates_inside_the_base_list_collapse_on_project_merge() {
+        let mut config = Config::default();
+        config.apply(watchers_layer(&["lead1", "LEAD1", "lead2"]));
+        config.apply_project(watchers_layer(&["Lead1", "collab1", "COLLAB1"]));
+        assert_eq!(
+            config.audit.required_watchers,
+            strings(&["lead1", "lead2", "collab1"])
+        );
+    }
+
+    #[test]
+    fn duplicates_inside_the_user_file_collapse_without_project_config() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let user = dir.path().join("config.toml");
+        std::fs::write(
+            &user,
+            "[audit]\nrequired-watchers = [\"lead1\", \"LEAD1\", \"lead2\"]\n",
+        )
+        .expect("write user");
+        let (config, warnings) = layer_files(Some(&user), None, Layer::default()).expect("loads");
         assert!(warnings.is_empty(), "{warnings:?}");
+        assert_eq!(config.audit.required_watchers, strings(&["lead1", "lead2"]));
+    }
+
+    #[test]
+    fn project_required_watchers_cannot_drop_base_names() {
+        let mut config = Config::default();
+        config.apply(watchers_layer(&["lead1", "lead2"]));
+        config.apply_project(watchers_layer(&[]));
+        assert_eq!(config.audit.required_watchers, strings(&["lead1", "lead2"]));
+        config.apply_project(watchers_layer(&["lead2"]));
+        assert_eq!(config.audit.required_watchers, strings(&["lead1", "lead2"]));
+    }
+
+    #[test]
+    fn project_required_watchers_load_from_files_without_a_warning() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let user = dir.path().join("config.toml");
+        std::fs::write(&user, "[audit]\nrequired-watchers = [\"lead1\"]\n").expect("write user");
+        let project = dir.path().join("hpds.toml");
+        std::fs::write(
+            &project,
+            "[audit]\nstale-days = 30\nrequired-watchers = [\"collab1\"]\n",
+        )
+        .expect("write project");
+
+        let (config, warnings) =
+            layer_files(Some(&user), Some(&project), Layer::default()).expect("loads");
+        assert!(warnings.is_empty(), "{warnings:?}");
+        assert_eq!(config.audit.stale_days, 30);
+        assert_eq!(
+            config.audit.required_watchers,
+            strings(&["lead1", "collab1"])
+        );
+    }
+
+    /// Load `contents` as the user file through the normal file path.
+    fn load_user(contents: &str) -> (tempfile::TempDir, PathBuf, Config, Vec<String>) {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let user = dir.path().join("config.toml");
+        std::fs::write(&user, contents).expect("write user");
+        let (config, warnings) = layer_files(Some(&user), None, Layer::default()).expect("loads");
+        (dir, user, config, warnings)
+    }
+
+    #[test]
+    fn invalid_required_watcher_is_dropped_with_a_warning_naming_the_file() {
+        let (_dir, user, config, warnings) =
+            load_user("[audit]\nrequired-watchers = [\"alice, bob\"]\n");
+        assert!(config.audit.required_watchers.is_empty());
+        assert_eq!(warnings.len(), 1, "{warnings:?}");
+        let warning = &warnings[0];
+        assert!(warning.contains("`alice, bob`"), "{warning}");
+        assert!(warning.contains("audit.required-watchers"), "{warning}");
+        assert!(
+            warning.contains(&user.display().to_string()),
+            "names the file: {warning}"
+        );
+        assert!(
+            warning.contains("list each login as its own string"),
+            "says what to do: {warning}"
+        );
+    }
+
+    #[test]
+    fn valid_required_watchers_are_kept_in_order_around_invalid_ones() {
+        let (_dir, _user, config, warnings) = load_user(
+            "[audit]\nrequired-watchers = [\"lead1\", \"x @bob\", \"Lead-2\", \"-dash\", \"\", \"collab3\"]\n",
+        );
+        assert_eq!(
+            config.audit.required_watchers,
+            strings(&["lead1", "Lead-2", "collab3"])
+        );
+        assert_eq!(warnings.len(), 3, "{warnings:?}");
+        assert!(warnings[0].contains("`x @bob`"), "{warnings:?}");
+        assert!(warnings[1].contains("`-dash`"), "{warnings:?}");
+        assert!(warnings[2].contains("``"), "{warnings:?}");
+    }
+
+    #[test]
+    fn invalid_project_required_watchers_are_dropped_with_a_warning() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let project = dir.path().join("hpds.toml");
+        std::fs::write(
+            &project,
+            "[audit]\nrequired-watchers = [\"collab1\", \"a b\"]\n",
+        )
+        .expect("write project");
+        let (config, warnings) =
+            layer_files(None, Some(&project), Layer::default()).expect("loads");
+        assert_eq!(
+            config.audit.required_watchers,
+            strings(&["malcolmbarrett", "sherrirose", "collab1"])
+        );
+        assert_eq!(warnings.len(), 1, "{warnings:?}");
+        assert!(warnings[0].contains("`a b`"), "{warnings:?}");
+        assert!(
+            warnings[0].contains(&project.display().to_string()),
+            "{warnings:?}"
+        );
+    }
+
+    #[test]
+    fn invalid_primary_author_is_dropped_with_a_warning() {
+        let (_dir, user, config, warnings) =
+            load_user("[project]\nprimary-author = \"alice smith\"\n");
+        assert_eq!(config.project.primary_author, "");
+        assert_eq!(warnings.len(), 1, "{warnings:?}");
+        let warning = &warnings[0];
+        assert!(warning.contains("`alice smith`"), "{warning}");
+        assert!(warning.contains("project.primary-author"), "{warning}");
+        assert!(
+            warning.contains(&user.display().to_string()),
+            "names the file: {warning}"
+        );
+    }
+
+    #[test]
+    fn invalid_primary_author_overrides_a_lower_layer_with_empty() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let user = dir.path().join("config.toml");
+        std::fs::write(&user, "[project]\nprimary-author = \"malcolm\"\n").expect("write user");
+        let project = dir.path().join("hpds.toml");
+        std::fs::write(&project, "[project]\nprimary-author = \"a/b\"\n").expect("write project");
+        let (config, warnings) =
+            layer_files(Some(&user), Some(&project), Layer::default()).expect("loads");
+        assert_eq!(warnings.len(), 1, "{warnings:?}");
+        assert_eq!(config.project.primary_author, "");
+    }
+
+    #[test]
+    fn empty_primary_author_is_unset_without_a_warning() {
+        let (_dir, _user, config, warnings) = load_user("[project]\nprimary-author = \"\"\n");
+        assert!(warnings.is_empty(), "{warnings:?}");
+        assert_eq!(config.project.primary_author, "");
+    }
+
+    #[test]
+    fn blank_primary_author_is_unset_without_a_warning() {
+        let (_dir, _user, config, warnings) = load_user("[project]\nprimary-author = \"  \"\n");
+        assert!(warnings.is_empty(), "{warnings:?}");
+        assert_eq!(config.project.primary_author, "");
+    }
+
+    #[test]
+    fn one_leading_at_sign_is_stripped_without_a_warning() {
+        let (_dir, _user, config, warnings) = load_user(
+            "[project]\nprimary-author = \"@malcolm\"\n[audit]\nrequired-watchers = [\"@lead1\", \"lead2\", \"@LEAD2\"]\n",
+        );
+        assert!(warnings.is_empty(), "{warnings:?}");
+        assert_eq!(config.project.primary_author, "malcolm");
+        assert_eq!(config.audit.required_watchers, strings(&["lead1", "lead2"]));
+    }
+
+    #[test]
+    fn a_doubled_or_bare_at_sign_is_invalid() {
+        let (_dir, _user, config, warnings) =
+            load_user("[audit]\nrequired-watchers = [\"@@lead1\", \"@\", \"lead2\"]\n");
+        assert_eq!(config.audit.required_watchers, strings(&["lead2"]));
+        assert_eq!(warnings.len(), 2, "{warnings:?}");
+        assert!(warnings[0].contains("`@@lead1`"), "{warnings:?}");
+        assert!(warnings[1].contains("`@`"), "{warnings:?}");
+    }
+
+    #[test]
+    fn github_login_rule() {
+        assert!(is_github_login("a"));
+        assert!(is_github_login("Mixed-Case-9"));
+        assert!(is_github_login(&"a".repeat(39)));
+        assert!(!is_github_login(&"a".repeat(40)));
+        assert!(!is_github_login(""));
+        assert!(!is_github_login("-dash"));
+        assert!(!is_github_login("alice, bob"));
+        assert!(!is_github_login("@alice"));
+        assert!(!is_github_login("dependabot[bot]"));
+        assert!(!is_github_login("j\u{f6}rg"));
+    }
+
+    #[test]
+    fn a_project_path_naming_the_user_file_is_layered_once() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let user = dir.path().join("config.toml");
+        std::fs::write(
+            &user,
+            "bogus = 1\n[audit]\nrequired-watchers = [\"lead1\", \"a b\"]\n",
+        )
+        .expect("write user");
+        std::fs::create_dir(dir.path().join("sub")).expect("mkdir");
+        let indirect = dir.path().join("sub").join("..").join("config.toml");
+        assert_ne!(user, indirect, "the paths differ until canonicalized");
+        let (config, warnings) =
+            layer_files(Some(&user), Some(&indirect), Layer::default()).expect("loads");
+        assert_eq!(warnings.len(), 2, "{warnings:?}");
+        assert_eq!(config.audit.required_watchers, strings(&["lead1"]));
+    }
+
+    #[test]
+    fn same_file_falls_back_to_a_plain_comparison_for_missing_paths() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let missing = dir.path().join("missing.toml");
+        assert!(same_file(&missing, &missing));
+        assert!(!same_file(&missing, &dir.path().join("other.toml")));
     }
 
     #[test]

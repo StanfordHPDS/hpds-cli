@@ -212,10 +212,10 @@ fn generated_audit_workflow_is_valid_yaml_with_the_bot_steps() {
         "pull_request trigger: {body}"
     );
 
-    // The bot's least-privilege permissions block.
+    // The bot's permissions block; the watchers check needs contents: write.
     let perms = doc.get("permissions").expect("permissions block");
     let perm = |key: &str| perms.get(key).and_then(|v| v.as_str());
-    assert_eq!(perm("contents"), Some("read"), "{body}");
+    assert_eq!(perm("contents"), Some("write"), "{body}");
     assert_eq!(perm("issues"), Some("write"), "{body}");
     assert_eq!(perm("pull-requests"), Some("write"), "{body}");
 
@@ -225,12 +225,16 @@ fn generated_audit_workflow_is_valid_yaml_with_the_bot_steps() {
         "installs hpds via the release installer script: {body}"
     );
     assert!(
-        body.contains("hpds audit --format json > audit.json"),
-        "writes the audit JSON: {body}"
+        body.contains(r#"hpds audit --format json > "$RUNNER_TEMP/audit.json""#),
+        "writes the audit JSON outside the checkout: {body}"
     );
     assert!(
-        body.contains("hpds audit report-github --input audit.json"),
-        "feeds the JSON to the reporter: {body}"
+        body.contains(r#"hpds audit report-github --input "$RUNNER_TEMP/audit.json""#),
+        "feeds the JSON from RUNNER_TEMP to the reporter: {body}"
+    );
+    assert!(
+        !body.contains("> audit.json") && !body.contains("--input audit.json"),
+        "nothing writes audit.json into the working directory: {body}"
     );
     assert!(
         body.contains("GITHUB_TOKEN"),

@@ -85,6 +85,48 @@ fn ci_workflow_isolates_online_tests_in_allowed_to_fail_job() {
 }
 
 #[test]
+fn ci_workflow_declares_least_privilege_permissions() {
+    let yml = workflow_contents();
+    let doc: serde_yaml::Value = serde_yaml::from_str(&yml).expect("ci.yml must parse as YAML");
+
+    let permissions = doc
+        .get("permissions")
+        .expect("top-level permissions block must exist")
+        .as_mapping()
+        .expect("permissions must be a mapping");
+    assert_eq!(
+        permissions.len(),
+        1,
+        "permissions must grant exactly one scope, got {permissions:?}"
+    );
+    assert_eq!(
+        permissions.get("contents").and_then(|v| v.as_str()),
+        Some("read"),
+        "permissions must be exactly contents: read, got {permissions:?}"
+    );
+
+    let jobs = doc
+        .get("jobs")
+        .and_then(|j| j.as_mapping())
+        .expect("jobs section must exist");
+    for (name, job) in jobs {
+        let Some(job_permissions) = job.get("permissions") else {
+            continue;
+        };
+        let job_permissions = job_permissions
+            .as_mapping()
+            .unwrap_or_else(|| panic!("job {name:?} permissions must be a mapping"));
+        for (scope, level) in job_permissions {
+            assert_ne!(
+                level.as_str(),
+                Some("write"),
+                "job {name:?} must not grant write on scope {scope:?}"
+            );
+        }
+    }
+}
+
+#[test]
 fn pull_request_template_exists_and_prompts_for_decisions() {
     let path = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join(".github")

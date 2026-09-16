@@ -7,10 +7,12 @@ on:
     - cron: "17 6 * * 1"
   pull_request:
 
-# The bot upserts a PR comment and files/closes issues; repository
-# contents stay read-only (checkout only).
+# The bot upserts a PR comment and files/closes issues. `contents: write`
+# is needed because GitHub's subscribers endpoint, which the watchers
+# check reads, rejects the workflow token without it; nothing in this
+# workflow pushes to the repository.
 permissions:
-  contents: read
+  contents: write
   issues: write
   pull-requests: write
 
@@ -35,10 +37,12 @@ jobs:
       # reporting those findings is the whole point of this workflow. The
       # exit code is captured so the JSON always reaches the report step;
       # anything other than 0 or 1 (usage error, crash) still fails the job.
+      # The report goes to RUNNER_TEMP, outside the checkout, so the audit
+      # does not flag its own output as an untracked file.
       - name: Audit
         run: |
           status=0
-          hpds audit --format json > audit.json || status=$?
+          hpds audit --format json > "$RUNNER_TEMP/audit.json" || status=$?
           if [ "$status" -gt 1 ]; then
             echo "hpds audit failed with exit code $status" >&2
             exit "$status"
@@ -48,6 +52,6 @@ jobs:
       # on the weekly schedule it files one issue per new error finding
       # and closes issues for findings that no longer occur.
       - name: Report findings
-        run: hpds audit report-github --input audit.json
+        run: hpds audit report-github --input "$RUNNER_TEMP/audit.json"
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

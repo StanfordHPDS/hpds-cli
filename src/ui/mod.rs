@@ -25,7 +25,7 @@ use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 static QUIET: AtomicBool = AtomicBool::new(false);
 
 /// Set the process-wide quiet mode (wired to the global `--quiet` flag).
-/// When quiet, informational stdout output ([`println`], [`success`]) is
+/// When quiet, informational stdout output ([`fn@println`], [`success`]) is
 /// suppressed; errors (and warnings) still print to stderr.
 pub fn set_quiet(quiet: bool) {
     QUIET.store(quiet, Ordering::Relaxed);

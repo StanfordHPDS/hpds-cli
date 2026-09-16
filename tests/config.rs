@@ -183,18 +183,73 @@ fn removed_formatting_sections_warn_as_unknown_keys() {
 }
 
 #[test]
-fn project_config_cannot_set_audit_required_watchers() {
-    // `[audit].required-watchers` is honored only from *user* config: a
-    // repo must not be able to exempt itself from the lab-lead watcher
-    // requirement for everyone who audits it.
+fn project_required_watchers_add_to_the_user_list() {
     let sb = Sandbox::new();
+    sb.write_user_config("[audit]\nrequired-watchers = [\"lead1\", \"Lead2\"]\n");
+    sb.write_project_config("[audit]\nrequired-watchers = [\"lead2\", \"collab1\"]\n");
+
+    sb.config_cmd()
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            r#"required-watchers = ["lead1", "Lead2", "collab1"]"#,
+        ))
+        .stderr(predicate::str::is_empty());
+}
+
+#[test]
+fn duplicates_inside_the_user_list_collapse_in_the_effective_list() {
+    let sb = Sandbox::new();
+    sb.write_user_config("[audit]\nrequired-watchers = [\"lead1\", \"LEAD1\"]\n");
+    sb.write_project_config("[audit]\nrequired-watchers = [\"Lead1\", \"collab1\"]\n");
+
+    sb.config_cmd()
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            r#"required-watchers = ["lead1", "collab1"]"#,
+        ))
+        .stderr(predicate::str::is_empty());
+}
+
+#[test]
+fn empty_project_required_watchers_keep_the_user_list() {
+    let sb = Sandbox::new();
+    sb.write_user_config("[audit]\nrequired-watchers = [\"lead1\"]\n");
     sb.write_project_config("[audit]\nrequired-watchers = []\n");
 
-    sb.config_cmd().assert().success().stderr(
-        predicate::str::contains("warning:")
-            .and(predicate::str::contains("audit.required-watchers"))
-            .and(predicate::str::contains("hpds.toml"))
-            .and(predicate::str::contains("user config")),
+    sb.config_cmd()
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(r#"required-watchers = ["lead1"]"#))
+        .stderr(predicate::str::is_empty());
+}
+
+#[test]
+fn explicit_config_file_adds_required_watchers_like_a_project_file() {
+    let sb = Sandbox::new();
+    sb.write_user_config("[audit]\nrequired-watchers = [\"lead1\"]\n");
+    let explicit = sb.project.join("other.toml");
+    fs::write(&explicit, "[audit]\nrequired-watchers = [\"collab1\"]\n").expect("write other.toml");
+
+    let output = Command::cargo_bin("hpds")
+        .expect("hpds binary should build")
+        .current_dir(&sb.project)
+        .env("HPDS_CONFIG_DIR", &sb.user_dir)
+        .arg("--config")
+        .arg(&explicit)
+        .args(["config", "--format", "json"])
+        .output()
+        .expect("hpds config runs");
+    assert!(output.status.success(), "{output:?}");
+    assert!(output.stderr.is_empty(), "{output:?}");
+
+    let json: serde_json::Value = serde_json::from_slice(&output.stdout).expect("stdout is JSON");
+    // The base (user) entry comes first, then the added entry.
+    assert_eq!(
+        json["config"]["audit"]["required-watchers"],
+        serde_json::json!(["lead1", "collab1"]),
+        "{json}"
     );
 }
 
@@ -211,8 +266,8 @@ fn user_config_may_set_audit_required_watchers_without_warning() {
 
 #[test]
 fn project_config_may_still_set_audit_stale_days() {
-    // Only required-watchers is user-only; the staleness threshold is an
-    // ordinary per-project knob that any repo may tune for itself.
+    // The staleness threshold is an ordinary per-project knob that any
+    // repo may tune for itself.
     let sb = Sandbox::new();
     sb.write_project_config("[audit]\nstale-days = 30\n");
 
@@ -276,4 +331,65 @@ fn json_sources_are_null_when_no_files_contribute() {
     assert!(value["sources"]["user"].is_null());
     assert!(value["sources"]["project"].is_null());
     assert_eq!(value["config"]["audit"]["stale-days"], 90);
+}
+
+#[test]
+fn invalid_user_required_watcher_warns_and_is_left_out() {
+    let sb = Sandbox::new();
+    sb.write_user_config("[audit]\nrequired-watchers = [\"lead1\", \"alice, bob\"]\n");
+
+    sb.config_cmd()
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(r#"required-watchers = ["lead1"]"#))
+        .stderr(
+            predicate::str::contains("warning:")
+                .and(predicate::str::contains("`alice, bob`"))
+                .and(predicate::str::contains("audit.required-watchers"))
+                .and(predicate::str::contains("config.toml"))
+                .and(predicate::str::contains(
+                    "list each login as its own string",
+                )),
+        );
+}
+
+#[test]
+fn invalid_project_primary_author_warns_and_is_left_unset() {
+    let sb = Sandbox::new();
+    sb.write_project_config(
+        "[project]\nprimary-author = \"x @bob\"\n[audit]\nrequired-watchers = [\"alice, bob\"]\n",
+    );
+
+    let output = sb.config_cmd().output().expect("hpds config runs");
+    assert!(output.status.success(), "{output:?}");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stdout.contains(r#"primary-author = """#), "{stdout}");
+    assert!(
+        stdout.contains(r#"required-watchers = ["malcolmbarrett", "sherrirose"]"#),
+        "{stdout}"
+    );
+    assert!(!stdout.contains("bob"), "{stdout}");
+    assert!(stderr.contains("`x @bob`"), "{stderr}");
+    assert!(stderr.contains("project.primary-author"), "{stderr}");
+    assert!(stderr.contains("`alice, bob`"), "{stderr}");
+    assert!(stderr.contains("hpds.toml"), "{stderr}");
+}
+
+#[test]
+fn explicit_config_naming_the_user_file_warns_only_once() {
+    let sb = Sandbox::new();
+    sb.write_user_config("[audit]\nrequired-watchers = [\"lead1\", \"alice, bob\"]\n");
+
+    let mut cmd = sb.config_cmd();
+    cmd.arg("--config").arg(sb.user_dir.join("config.toml"));
+    let output = cmd.output().expect("hpds config runs");
+    assert!(output.status.success(), "{output:?}");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stdout.contains(r#"required-watchers = ["lead1"]"#),
+        "{stdout}"
+    );
+    assert_eq!(stderr.matches("`alice, bob`").count(), 1, "{stderr}");
 }

@@ -40,7 +40,7 @@ pub struct Owner {
 
 /// One user in `subscribers`, `contributors`, or `orgs/{org}/members`.
 #[derive(Debug, Clone, Deserialize)]
-pub struct Account {
+pub struct GithubUser {
     pub login: String,
 }
 
@@ -247,14 +247,14 @@ pub(crate) mod tests {
 
     #[test]
     fn parses_the_recorded_subscribers_list() {
-        let subs: Vec<Account> = parse_pages(&fixture("subscribers.json")).expect("parses");
+        let subs: Vec<GithubUser> = parse_pages(&fixture("subscribers.json")).expect("parses");
         let logins: Vec<&str> = subs.iter().map(|a| a.login.as_str()).collect();
         assert_eq!(logins, ["malcolmbarrett", "SherriRose"]);
     }
 
     #[test]
     fn parses_the_recorded_contributors_list() {
-        let contributors: Vec<Account> =
+        let contributors: Vec<GithubUser> =
             parse_pages(&fixture("contributors.json")).expect("parses");
         let logins: Vec<&str> = contributors.iter().map(|a| a.login.as_str()).collect();
         assert_eq!(logins, ["researcher1", "malcolmbarrett", "dependabot[bot]"]);
@@ -316,15 +316,15 @@ pub(crate) mod tests {
     #[test]
     fn malformed_json_is_an_error_not_a_panic() {
         assert!(parse_one::<RepoInfo>(&fixture("malformed.json")).is_err());
-        assert!(parse_pages::<Account>(&fixture("malformed.json")).is_err());
+        assert!(parse_pages::<GithubUser>(&fixture("malformed.json")).is_err());
         assert!(parse_one::<RepoInfo>("").is_err());
-        assert!(parse_pages::<Account>("<!doctype html>").is_err());
+        assert!(parse_pages::<GithubUser>("<!doctype html>").is_err());
     }
 
     #[test]
     fn wrong_but_valid_json_shape_is_an_error() {
         // A JSON object where a list was expected, and vice versa.
-        assert!(parse_pages::<Account>(&fixture("repo.json")).is_err());
+        assert!(parse_pages::<GithubUser>(&fixture("repo.json")).is_err());
         assert!(parse_one::<RepoInfo>(&fixture("subscribers.json")).is_err());
     }
 

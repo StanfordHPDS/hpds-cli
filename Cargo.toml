@@ -42,7 +42,7 @@ tiny_http = "0.12"
 
 [features]
 # Tests that hit the network or download real tools; excluded from the default
-# offline test run (see spec §10/§11).
+# offline test run.
 online-tests = []
 
 # The profile that 'dist' will build with

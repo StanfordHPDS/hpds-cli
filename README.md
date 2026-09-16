@@ -130,15 +130,15 @@ $ hpds repo create
 ## Development
 
 Requires a stable Rust toolchain (Rust 2024 edition; `rust-toolchain.toml` pins the channel and components).
-The four quality gates must pass before every commit:
+See [CONTRIBUTING.md](CONTRIBUTING.md) for the developer workflow. CI requires these gates on Linux, macOS, and Windows:
 
 ```sh
-cargo build
-cargo test                              # offline tests
-cargo test --features online-tests      # network/tool-download tests
-cargo clippy --all-targets -- -D warnings
 cargo fmt --check
+cargo clippy --all-targets -- -D warnings
+cargo test
 ```
+
+CI also runs `cargo test --features online-tests` in a separate job that is allowed to fail; those tests exercise the network and real tool downloads and are not required.
 
 ## License
 

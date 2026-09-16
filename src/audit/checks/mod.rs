@@ -216,6 +216,7 @@ pub(crate) mod testutil {
             repo: repo.to_path_buf(),
             config: Config::default(),
             github: None,
+            pull_request_run: false,
         }
     }
 

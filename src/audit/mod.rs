@@ -29,6 +29,11 @@ pub struct AuditCtx {
     /// repo has a github.com `origin` and `gh` is authenticated. The
     /// GitHub checks no-op without it.
     pub github: Option<github::GithubCtx>,
+    /// Whether this audit runs in a GitHub Actions pull request workflow,
+    /// where the checkout is a detached commit that is not the default
+    /// branch (the PR merge commit, or the base tip on
+    /// `pull_request_target`).
+    pub pull_request_run: bool,
 }
 
 /// How serious a finding is.
@@ -165,6 +170,7 @@ mod tests {
             repo: PathBuf::from("/tmp/demo"),
             config: Config::default(),
             github: None,
+            pull_request_run: false,
         }
     }
 
@@ -201,6 +207,7 @@ mod tests {
                 repo,
                 config: Config::default(),
                 github: None,
+                pull_request_run: false,
             },
         );
         assert_eq!(findings, Vec::new());

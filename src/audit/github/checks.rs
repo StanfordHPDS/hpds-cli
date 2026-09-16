@@ -1,5 +1,5 @@
 //! The six GitHub-side checks. Each one is a pure inspector over
-//! [`GithubCtx`]: it fetches what it needs through the [`GithubApi`] seam,
+//! [`GithubCtx`]: it fetches what it needs through the [`GithubApi`](super::GithubApi) seam,
 //! parses via [`model`], and returns findings. Failures to reach or
 //! understand GitHub become Warn findings on the same check: never a
 //! panic, never an aborted audit.
@@ -8,10 +8,11 @@ use std::collections::BTreeSet;
 use std::time::SystemTime;
 
 use super::model::{
-    self, Account, BranchDetail, BranchSummary, Comparison, ModelError, Release, RepoInfo,
+    self, BranchDetail, BranchSummary, Comparison, GithubUser, ModelError, Release, RepoInfo,
 };
-use super::{GhApiError, GithubCtx};
+use super::{GhApiError, GithubCtx, LocalTip, WATCHERS_MESSAGE_PREFIX};
 use crate::audit::{AuditCtx, Check, Finding, Severity};
+use crate::config::{fold_login, same_login};
 
 /// The GitHub checks, in report order.
 pub(super) fn registry() -> Vec<Box<dyn Check>> {
@@ -31,7 +32,7 @@ pub(super) fn registry() -> Vec<Box<dyn Check>> {
 /// checks build theirs; anything that fails to fetch or parse here is
 /// skipped silently, leaving that check to refetch sequentially and
 /// report as usual.
-pub(super) fn prefetch(github: &GithubCtx, config: &crate::config::Config) {
+pub(super) fn prefetch(github: &GithubCtx, config: &crate::config::Config, pull_request_run: bool) {
     let slug = &github.slug;
 
     // Wave 1: the endpoints no check needs prior data to name. The
@@ -61,7 +62,10 @@ pub(super) fn prefetch(github: &GithubCtx, config: &crate::config::Config) {
     if info.owner.kind == "Organization" {
         wave.push((format!("orgs/{}/members", info.owner.login), true));
     }
-    if let Some(tip) = github.local_branch_commit(&info.default_branch) {
+    if let Some(tip) = github
+        .local_branch_commit(&info.default_branch)
+        .filter(|tip| !skips_head_comparison(tip, pull_request_run))
+    {
         wave.push((
             format!(
                 "repos/{slug}/compare/{}...{}",
@@ -167,14 +171,19 @@ fn repo_info(github: &GithubCtx) -> Result<RepoInfo, CheckError> {
     )?)
 }
 
-/// A paginated list of accounts (subscribers, contributors, org members).
-fn accounts(github: &GithubCtx, endpoint: &str) -> Result<Vec<Account>, CheckError> {
+/// A paginated list of users (subscribers, contributors, org members).
+fn fetch_users(github: &GithubCtx, endpoint: &str) -> Result<Vec<GithubUser>, CheckError> {
     Ok(model::parse_pages(&github.api_pages(endpoint)?)?)
 }
 
-/// GitHub logins are case-insensitive; compare them folded.
-fn fold(login: &str) -> String {
-    login.to_lowercase()
+/// True for GitHub's `403 Resource not accessible by integration`, which a
+/// GitHub Actions token receives when the workflow lacks a permission.
+fn is_integration_forbidden(err: &CheckError) -> bool {
+    matches!(
+        err,
+        CheckError::Api(GhApiError::Failed { detail, .. })
+            if detail.contains("Resource not accessible by integration")
+    )
 }
 
 /// `watchers`: the primary author plus the configured lab leads must be
@@ -188,8 +197,25 @@ impl Check for Watchers {
 
     fn run(&self, ctx: &AuditCtx) -> Vec<Finding> {
         with_github(ctx, self.id(), |github| {
-            let subscribers = accounts(github, &format!("repos/{}/subscribers", github.slug))?;
-            let watching: BTreeSet<String> = subscribers.iter().map(|a| fold(&a.login)).collect();
+            let subscribers =
+                match fetch_users(github, &format!("repos/{}/subscribers", github.slug)) {
+                    Ok(subscribers) => subscribers,
+                    Err(err) if is_integration_forbidden(&err) => {
+                        return Ok(vec![finding(
+                            self.id(),
+                            Severity::Warn,
+                            format!("could not complete this GitHub check: {err}"),
+                            "the workflow token cannot read the repo's watchers; grant \
+                             `contents: write` in the workflow's `permissions` block \
+                             (tokens for pull requests from forks are always read-only, \
+                             so this warning is expected there)"
+                                .to_string(),
+                        )]);
+                    }
+                    Err(err) => return Err(err),
+                };
+            let watching: BTreeSet<String> =
+                subscribers.iter().map(|a| fold_login(&a.login)).collect();
 
             let mut required: Vec<&str> = ctx
                 .config
@@ -199,13 +225,13 @@ impl Check for Watchers {
                 .map(String::as_str)
                 .collect();
             let author = ctx.config.project.primary_author.as_str();
-            if !author.is_empty() && !required.iter().any(|r| fold(r) == fold(author)) {
+            if !author.is_empty() && !required.iter().any(|r| same_login(r, author)) {
                 required.push(author);
             }
 
             let missing: Vec<&str> = required
                 .into_iter()
-                .filter(|login| !watching.contains(&fold(login)))
+                .filter(|login| !watching.contains(&fold_login(login)))
                 .collect();
             if missing.is_empty() {
                 return Ok(Vec::new());
@@ -213,7 +239,7 @@ impl Check for Watchers {
             Ok(vec![finding(
                 self.id(),
                 Severity::Warn,
-                format!("not watching the repo on GitHub: {}", missing.join(", ")),
+                format!("{WATCHERS_MESSAGE_PREFIX}{}", missing.join(", ")),
                 format!(
                     "have them open https://github.com/{} and set Watch → All activity",
                     github.slug
@@ -234,11 +260,11 @@ impl Check for Contributors {
 
     fn run(&self, ctx: &AuditCtx) -> Vec<Finding> {
         with_github(ctx, self.id(), |github| {
-            let contributors = accounts(github, &format!("repos/{}/contributors", github.slug))?;
+            let contributors = fetch_users(github, &format!("repos/{}/contributors", github.slug))?;
             let mut findings = Vec::new();
 
             let author = ctx.config.project.primary_author.as_str();
-            if !author.is_empty() && !contributors.iter().any(|c| fold(&c.login) == fold(author)) {
+            if !author.is_empty() && !contributors.iter().any(|c| same_login(&c.login, author)) {
                 findings.push(finding(
                     self.id(),
                     Severity::Warn,
@@ -263,13 +289,13 @@ impl Contributors {
     /// with adequate token scopes, so a 403/404 there silently skips the
     /// flag instead of failing the check; membership can also be private,
     /// making members invisible and this flag a false positive, hence
-    /// Info severity. Bot accounts are excluded from "contributors".
+    /// Info severity. Bot users are excluded from "contributors".
     /// A members payload that arrives but does not parse is NOT skipped:
     /// malformed gh JSON always becomes an error finding.
     fn all_left_org(
         &self,
         github: &GithubCtx,
-        contributors: &[Account],
+        contributors: &[GithubUser],
     ) -> Result<Option<Finding>, CheckError> {
         let info = repo_info(github)?;
         if info.owner.kind != "Organization" {
@@ -278,16 +304,17 @@ impl Contributors {
         let Ok(body) = github.api_pages(&format!("orgs/{}/members", info.owner.login)) else {
             return Ok(None);
         };
-        let members: Vec<Account> = model::parse_pages(&body)?;
-        let member_logins: BTreeSet<String> = members.iter().map(|m| fold(&m.login)).collect();
-        let humans: Vec<&Account> = contributors
+        let members: Vec<GithubUser> = model::parse_pages(&body)?;
+        let member_logins: BTreeSet<String> =
+            members.iter().map(|m| fold_login(&m.login)).collect();
+        let humans: Vec<&GithubUser> = contributors
             .iter()
             .filter(|c| !c.login.ends_with("[bot]"))
             .collect();
         if humans.is_empty()
             || humans
                 .iter()
-                .any(|c| member_logins.contains(&fold(&c.login)))
+                .any(|c| member_logins.contains(&fold_login(&c.login)))
         {
             return Ok(None);
         }
@@ -310,7 +337,19 @@ impl Contributors {
 /// behind the local checkout? Compared via `gh api compare` between the
 /// local branch tip and the remote branch, so no fetch is needed; a local
 /// tip GitHub has never seen (404) means unpushed or rewritten history.
+///
+/// In a pull request run with no local default branch, HEAD is a detached
+/// commit that is not the default branch (the PR merge commit, or the base
+/// tip on `pull_request_target`), so any difference describes the pull
+/// request context rather than a stale default branch; the check reports
+/// nothing and skips the compare.
 struct DefaultBranchStaleness;
+
+/// Whether the staleness comparison is skipped for `tip`: a HEAD stand-in
+/// during a pull request run.
+fn skips_head_comparison(tip: &LocalTip, pull_request_run: bool) -> bool {
+    pull_request_run && tip.from_head
+}
 
 impl Check for DefaultBranchStaleness {
     fn id(&self) -> &str {
@@ -329,6 +368,9 @@ impl Check for DefaultBranchStaleness {
                     format!("check out or fetch `{branch}`, then re-run `hpds audit`"),
                 )]);
             };
+            if skips_head_comparison(&tip, ctx.pull_request_run) {
+                return Ok(Vec::new());
+            }
             // When no local branch matched the remote default (e.g. a
             // single-branch clone of a feature branch), HEAD stood in for
             // it: say so, and never advise pushing/pulling `branch` from a
@@ -592,6 +634,7 @@ mod tests {
         Body(String),
         NotFound,
         Fail,
+        FailWith(String),
     }
 
     /// A [`GithubApi`] that serves recorded fixtures per endpoint and fails
@@ -643,6 +686,13 @@ mod tests {
             self
         }
 
+        /// A failure whose detail carries this `gh` stderr text.
+        fn serve_failure_with(mut self, endpoint: &str, stderr: &str) -> Self {
+            self.responses
+                .insert(endpoint.to_string(), Canned::FailWith(stderr.to_string()));
+            self
+        }
+
         fn without_local_sha(mut self) -> Self {
             self.local_sha = None;
             self
@@ -666,6 +716,10 @@ mod tests {
                 Some(Canned::Fail) => Err(GhApiError::Failed {
                     endpoint: endpoint.to_string(),
                     detail: "canned failure".to_string(),
+                }),
+                Some(Canned::FailWith(stderr)) => Err(GhApiError::Failed {
+                    endpoint: endpoint.to_string(),
+                    detail: stderr.clone(),
                 }),
                 None => Err(GhApiError::Failed {
                     endpoint: endpoint.to_string(),
@@ -693,6 +747,7 @@ mod tests {
                 },
                 Box::new(fake),
             )),
+            pull_request_run: false,
         }
     }
 
@@ -728,6 +783,7 @@ mod tests {
             repo: PathBuf::from("/tmp/demo"),
             config: Config::default(),
             github: None,
+            pull_request_run: false,
         };
         for check in registry() {
             assert_eq!(check.run(&ctx), Vec::new(), "{}", check.id());
@@ -772,6 +828,26 @@ mod tests {
     }
 
     #[test]
+    fn watchers_flags_a_missing_project_added_watcher() {
+        let fake = FakeGh::new().serve_fixture("repos/acme/demo/subscribers", "subscribers.json");
+        let mut config = config_with_author("malcolmbarrett");
+        config.audit.required_watchers = vec!["lead1".to_string()];
+        config.apply_project(crate::config::Layer {
+            audit_required_watchers: Some(vec!["collab1".to_string()]),
+            ..crate::config::Layer::default()
+        });
+        let ctx = ctx(fake, config);
+        let findings = run_one(&Watchers, &ctx);
+        assert_eq!(findings.len(), 1);
+        assert_eq!(findings[0].check_id, "watchers");
+        // Both the base watcher and the project-added watcher are required.
+        assert!(
+            findings[0].message.contains("lead1, collab1"),
+            "{findings:?}"
+        );
+    }
+
+    #[test]
     fn watchers_api_failure_is_a_warn_finding_not_a_crash() {
         let fake = FakeGh::new().serve_failure("repos/acme/demo/subscribers");
         let ctx = ctx(fake, Config::default());
@@ -780,6 +856,29 @@ mod tests {
         assert_eq!(findings[0].severity, Severity::Warn);
         assert!(findings[0].message.contains("could not complete"));
         assert!(findings[0].remediation.contains("gh auth status"));
+    }
+
+    #[test]
+    fn watchers_integration_403_says_to_grant_contents_write() {
+        let fake = FakeGh::new().serve_failure_with(
+            "repos/acme/demo/subscribers",
+            "gh: Resource not accessible by integration (HTTP 403)\n",
+        );
+        let ctx = ctx(fake, Config::default());
+        let findings = run_one(&Watchers, &ctx);
+        assert_eq!(findings.len(), 1);
+        assert_eq!(findings[0].severity, Severity::Warn);
+        assert!(findings[0].message.contains("could not complete"));
+        assert!(
+            findings[0].remediation.contains("contents: write"),
+            "remediation names the missing workflow permission: {}",
+            findings[0].remediation
+        );
+        assert!(
+            findings[0].remediation.contains("forks"),
+            "remediation explains the fork pull request limitation: {}",
+            findings[0].remediation
+        );
     }
 
     // ---- contributors ----
@@ -1022,6 +1121,92 @@ mod tests {
         );
     }
 
+    /// A pull request run in GitHub Actions: HEAD is the PR merge commit.
+    fn pr_ctx(fake: FakeGh) -> AuditCtx {
+        AuditCtx {
+            pull_request_run: true,
+            ..ctx(fake, Config::default())
+        }
+    }
+
+    #[test]
+    fn staleness_pr_run_head_fallback_is_silent_for_every_comparison() {
+        for fixture in [
+            "compare-behind.json",
+            "compare-ahead.json",
+            "compare-diverged.json",
+            "compare-identical.json",
+        ] {
+            let ctx = pr_ctx(staleness_fake(fixture).with_head_fallback());
+            assert_eq!(
+                run_one(&DefaultBranchStaleness, &ctx),
+                Vec::new(),
+                "{fixture}"
+            );
+        }
+    }
+
+    #[test]
+    fn staleness_pr_run_head_fallback_unknown_commit_is_silent() {
+        let fake = FakeGh::new()
+            .serve_fixture("repos/acme/demo", "repo.json")
+            .serve_not_found(&format!("repos/acme/demo/compare/{LOCAL_SHA}...main"))
+            .with_head_fallback();
+        let ctx = pr_ctx(fake);
+        assert_eq!(run_one(&DefaultBranchStaleness, &ctx), Vec::new());
+    }
+
+    #[test]
+    fn staleness_pr_run_head_fallback_skips_the_compare_request() {
+        let fake = staleness_fake("compare-behind.json").with_head_fallback();
+        let calls = fake.call_log();
+        let ctx = pr_ctx(fake);
+        let github = ctx.github.as_ref().expect("github context");
+        github.prefetch(&ctx.config, ctx.pull_request_run);
+        run_one(&DefaultBranchStaleness, &ctx);
+        assert!(
+            calls.borrow().iter().all(|(e, _)| !e.contains("/compare/")),
+            "{:?}",
+            calls.borrow()
+        );
+    }
+
+    #[test]
+    fn staleness_pr_run_with_a_real_local_branch_still_warns() {
+        let ctx = pr_ctx(staleness_fake("compare-behind.json"));
+        let findings = run_one(&DefaultBranchStaleness, &ctx);
+        assert_eq!(findings.len(), 1, "{findings:?}");
+        assert_eq!(findings[0].severity, Severity::Warn);
+        assert!(
+            findings[0].remediation.contains("git push origin main"),
+            "{findings:?}"
+        );
+    }
+
+    #[test]
+    fn staleness_pr_run_with_a_real_local_branch_still_reports_unknown_commit() {
+        let fake = FakeGh::new()
+            .serve_fixture("repos/acme/demo", "repo.json")
+            .serve_not_found(&format!("repos/acme/demo/compare/{LOCAL_SHA}...main"));
+        let ctx = pr_ctx(fake);
+        let findings = run_one(&DefaultBranchStaleness, &ctx);
+        assert_eq!(findings.len(), 1, "{findings:?}");
+        assert!(
+            findings[0].message.contains("not on GitHub"),
+            "{findings:?}"
+        );
+    }
+
+    #[test]
+    fn staleness_non_pr_run_head_fallback_diverged_warns_twice() {
+        let ctx = ctx(
+            staleness_fake("compare-diverged.json").with_head_fallback(),
+            Config::default(),
+        );
+        let findings = run_one(&DefaultBranchStaleness, &ctx);
+        assert_eq!(findings.len(), 2, "{findings:?}");
+    }
+
     #[test]
     fn staleness_never_panics_on_malformed_repo_json() {
         let fake = FakeGh::new().serve_fixture("repos/acme/demo", "malformed.json");
@@ -1180,7 +1365,7 @@ mod tests {
         let calls = fake.call_log();
         let ctx = ctx(fake, config_with_author("researcher1"));
         let github = ctx.github.as_ref().expect("github context");
-        github.prefetch(&ctx.config);
+        github.prefetch(&ctx.config, ctx.pull_request_run);
         run_registry(&ctx);
 
         let calls = calls.borrow();
@@ -1214,7 +1399,7 @@ mod tests {
             .github
             .as_ref()
             .expect("github context")
-            .prefetch(&ctx_prefetch.config);
+            .prefetch(&ctx_prefetch.config, false);
         let mut actual = prefetch_calls.borrow().clone();
         actual.sort();
 
@@ -1231,7 +1416,7 @@ mod tests {
             .github
             .as_ref()
             .expect("github context")
-            .prefetch(&ctx_prefetched.config);
+            .prefetch(&ctx_prefetched.config, false);
         let prefetched = run_registry(&ctx_prefetched);
 
         assert_eq!(prefetched, plain);
@@ -1243,7 +1428,7 @@ mod tests {
         let calls = fake.call_log();
         let ctx = ctx(fake, config_with_author("researcher1"));
         let github = ctx.github.as_ref().expect("github context");
-        github.prefetch(&ctx.config);
+        github.prefetch(&ctx.config, ctx.pull_request_run);
 
         // The failed endpoint was not cached; the check retries it and
         // owns the resulting finding, exactly as without prefetch.
