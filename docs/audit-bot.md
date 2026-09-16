@@ -27,11 +27,16 @@ Warnings and informational findings appear in the pull request comment but do no
 Each run consists of three steps:
 
 1. Install hpds.
-2. Run `hpds audit --format json > audit.json`.
+2. Run `hpds audit --format json > "$RUNNER_TEMP/audit.json"`.
+   The report is written to the runner's temporary directory rather than the checkout; a file inside the checkout would show up in the audit as an untracked file.
    The audit exits 1 when it finds errors, which is expected here, so the workflow captures the exit code and continues.
    Only exit codes above 1 (a usage error or a crash) fail the job before reporting.
-3. Run `hpds audit report-github --input audit.json`, with `GITHUB_TOKEN` provided to the step.
-   This subcommand contains all of the bot logic, so the workflow file remains a thin shim and bot improvements ship with hpds releases; the workflow does not need to be regenerated to receive them.
+3. Run `hpds audit report-github --input "$RUNNER_TEMP/audit.json"`, with `GITHUB_TOKEN` provided to the step.
+   This subcommand contains all of the bot logic, so the workflow file remains a thin shim: changes to the bot logic arrive with each hpds release, and the workflow does not need to be regenerated to receive them.
+   Changes to the workflow file itself are different, because they only take effect once the file is updated.
+
+Workflows generated before the report moved to `$RUNNER_TEMP` and the permissions changed to `contents: write` must be updated.
+Regenerate the file with `hpds use gha --workflows audit-bot --force`, or edit the existing file by hand to match the steps above and the permissions below.
 
 ## Installation
 
@@ -52,16 +57,19 @@ Commit and push the file; the schedule and pull request triggers take effect imm
 
 ## Required permissions
 
-The workflow declares the least privilege it needs:
+The workflow declares the permissions it needs:
 
 ```yaml
 permissions:
-  contents: read
+  contents: write
   issues: write
   pull-requests: write
 ```
 
-`contents: read` covers checkout, and the two `write` grants allow the default `GITHUB_TOKEN` to post the pull request comment and manage issues.
+`contents: write` is required by the `watchers` check: GitHub's subscribers endpoint answers the workflow token with `403 Resource not accessible by integration` unless the workflow grants it.
+The workflow never pushes to the repository.
+Tokens for pull requests opened from forks are always read-only, whatever the workflow requests, so on those pull requests the `watchers` check reports that it could not complete; that warning is expected.
+The `issues` and `pull-requests` grants allow the default `GITHUB_TOKEN` to manage issues and post the pull request comment.
 No personal access token is required.
 If your organization restricts the default workflow token to read-only access, these per-workflow grants still apply, so no change to organization settings is needed.
 

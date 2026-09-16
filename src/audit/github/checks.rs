@@ -173,6 +173,16 @@ fn fetch_users(github: &GithubCtx, endpoint: &str) -> Result<Vec<GithubUser>, Ch
     Ok(model::parse_pages(&github.api_pages(endpoint)?)?)
 }
 
+/// True for GitHub's `403 Resource not accessible by integration`, which a
+/// GitHub Actions token receives when the workflow lacks a permission.
+fn is_integration_forbidden(err: &CheckError) -> bool {
+    matches!(
+        err,
+        CheckError::Api(GhApiError::Failed { detail, .. })
+            if detail.contains("Resource not accessible by integration")
+    )
+}
+
 /// `watchers`: the primary author plus the configured lab leads must be
 /// watching (subscribed to) the repo.
 struct Watchers;
@@ -184,7 +194,23 @@ impl Check for Watchers {
 
     fn run(&self, ctx: &AuditCtx) -> Vec<Finding> {
         with_github(ctx, self.id(), |github| {
-            let subscribers = fetch_users(github, &format!("repos/{}/subscribers", github.slug))?;
+            let subscribers =
+                match fetch_users(github, &format!("repos/{}/subscribers", github.slug)) {
+                    Ok(subscribers) => subscribers,
+                    Err(err) if is_integration_forbidden(&err) => {
+                        return Ok(vec![finding(
+                            self.id(),
+                            Severity::Warn,
+                            format!("could not complete this GitHub check: {err}"),
+                            "the workflow token cannot read the repo's watchers; grant \
+                             `contents: write` in the workflow's `permissions` block \
+                             (tokens for pull requests from forks are always read-only, \
+                             so this warning is expected there)"
+                                .to_string(),
+                        )]);
+                    }
+                    Err(err) => return Err(err),
+                };
             let watching: BTreeSet<String> =
                 subscribers.iter().map(|a| fold_login(&a.login)).collect();
 
@@ -590,6 +616,7 @@ mod tests {
         Body(String),
         NotFound,
         Fail,
+        FailWith(String),
     }
 
     /// A [`GithubApi`] that serves recorded fixtures per endpoint and fails
@@ -641,6 +668,13 @@ mod tests {
             self
         }
 
+        /// A failure whose detail carries this `gh` stderr text.
+        fn serve_failure_with(mut self, endpoint: &str, stderr: &str) -> Self {
+            self.responses
+                .insert(endpoint.to_string(), Canned::FailWith(stderr.to_string()));
+            self
+        }
+
         fn without_local_sha(mut self) -> Self {
             self.local_sha = None;
             self
@@ -664,6 +698,10 @@ mod tests {
                 Some(Canned::Fail) => Err(GhApiError::Failed {
                     endpoint: endpoint.to_string(),
                     detail: "canned failure".to_string(),
+                }),
+                Some(Canned::FailWith(stderr)) => Err(GhApiError::Failed {
+                    endpoint: endpoint.to_string(),
+                    detail: stderr.clone(),
                 }),
                 None => Err(GhApiError::Failed {
                     endpoint: endpoint.to_string(),
@@ -798,6 +836,29 @@ mod tests {
         assert_eq!(findings[0].severity, Severity::Warn);
         assert!(findings[0].message.contains("could not complete"));
         assert!(findings[0].remediation.contains("gh auth status"));
+    }
+
+    #[test]
+    fn watchers_integration_403_says_to_grant_contents_write() {
+        let fake = FakeGh::new().serve_failure_with(
+            "repos/acme/demo/subscribers",
+            "gh: Resource not accessible by integration (HTTP 403)\n",
+        );
+        let ctx = ctx(fake, Config::default());
+        let findings = run_one(&Watchers, &ctx);
+        assert_eq!(findings.len(), 1);
+        assert_eq!(findings[0].severity, Severity::Warn);
+        assert!(findings[0].message.contains("could not complete"));
+        assert!(
+            findings[0].remediation.contains("contents: write"),
+            "remediation names the missing workflow permission: {}",
+            findings[0].remediation
+        );
+        assert!(
+            findings[0].remediation.contains("forks"),
+            "remediation explains the fork pull request limitation: {}",
+            findings[0].remediation
+        );
     }
 
     // ---- contributors ----

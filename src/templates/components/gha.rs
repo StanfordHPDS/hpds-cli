@@ -198,23 +198,30 @@ mod tests {
             "pull_request trigger present: {rendered}"
         );
 
-        // The bot needs to comment on PRs and manage issues; nothing more.
+        // The bot comments on PRs and manages issues; the watchers check
+        // needs `contents: write` to read the subscribers endpoint.
         let perms = doc.get("permissions").expect("permissions block present");
         let perm = |key: &str| perms.get(key).and_then(|v| v.as_str());
-        assert_eq!(perm("contents"), Some("read"));
+        assert_eq!(perm("contents"), Some("write"));
         assert_eq!(perm("issues"), Some("write"));
         assert_eq!(perm("pull-requests"), Some("write"));
 
         // Steps: audit to JSON (continuing on findings), then the reporter
         // with the Actions token.
         assert!(doc.get("jobs").is_some(), "workflow has jobs: {rendered}");
+        // The report lives outside the checkout, so the audit never sees
+        // its own output as an untracked file.
         assert!(
-            rendered.contains("hpds audit --format json > audit.json"),
-            "writes the audit JSON: {rendered}"
+            rendered.contains(r#"hpds audit --format json > "$RUNNER_TEMP/audit.json""#),
+            "writes the audit JSON to RUNNER_TEMP: {rendered}"
         );
         assert!(
-            rendered.contains("hpds audit report-github --input audit.json"),
-            "feeds the JSON to the reporter: {rendered}"
+            rendered.contains(r#"hpds audit report-github --input "$RUNNER_TEMP/audit.json""#),
+            "feeds the JSON from RUNNER_TEMP to the reporter: {rendered}"
+        );
+        assert!(
+            !rendered.contains("> audit.json") && !rendered.contains("--input audit.json"),
+            "nothing reads or writes audit.json in the working directory: {rendered}"
         );
         assert!(
             rendered.contains("GITHUB_TOKEN"),
