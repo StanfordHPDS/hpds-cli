@@ -175,10 +175,25 @@ fn env_var(name: &str) -> Option<String> {
     std::env::var(name).ok().filter(|value| !value.is_empty())
 }
 
+/// Whether hpds runs inside GitHub Actions, given the value of
+/// `GITHUB_ACTIONS`.
+fn is_github_actions(actions: Option<&str>) -> bool {
+    actions == Some("true")
+}
+
+/// Whether gh has a token from the environment, given the values of
+/// `GH_TOKEN` and `GITHUB_TOKEN`.
+fn has_env_token(gh_token: Option<&str>, github_token: Option<&str>) -> bool {
+    [gh_token, github_token]
+        .into_iter()
+        .flatten()
+        .any(|token| !token.trim().is_empty())
+}
+
 /// Whether the environment describes a GitHub Actions pull request run,
 /// given the values of `GITHUB_ACTIONS` and `GITHUB_EVENT_NAME`.
 fn is_pull_request_run(actions: Option<&str>, event: Option<&str>) -> bool {
-    actions == Some("true") && matches!(event, Some("pull_request" | "pull_request_target"))
+    is_github_actions(actions) && matches!(event, Some("pull_request" | "pull_request_target"))
 }
 
 /// Map a bot [`report_github::ContextError`] onto the CLI's usage-error
@@ -207,11 +222,20 @@ fn audit_current_repo(args: &AuditArgs, global: &super::GlobalArgs) -> anyhow::R
     let repo = repo_display_name(&root);
 
     // GitHub checks run only against a github.com origin with an
-    // authenticated gh; whenever they do not run, the report carries an
-    // Info notice saying why (no origin remote, or gh unavailable).
+    // authenticated gh; whenever they do not run, the report carries a
+    // notice saying why (no origin remote, or gh unavailable). The notice
+    // is Info, except that gh being unavailable inside GitHub Actions is a
+    // warning, since there it means the workflow withholds its token.
     // Without a repo there is no origin to probe.
+    let run_env = audit::github::RunEnv {
+        github_actions: is_github_actions(env_var("GITHUB_ACTIONS").as_deref()),
+        env_token: has_env_token(
+            env_var("GH_TOKEN").as_deref(),
+            env_var("GITHUB_TOKEN").as_deref(),
+        ),
+    };
     let (github, notice) = if is_repo {
-        match audit::github::probe(&root) {
+        match audit::github::probe(&root, run_env) {
             audit::github::GithubStatus::Ready(ctx) => (Some(ctx), None),
             audit::github::GithubStatus::NoRemote => {
                 (None, Some(audit::github::no_remote_notice()))
@@ -318,6 +342,29 @@ mod tests {
             Some("true"),
             Some("pull_request_target")
         ));
+    }
+
+    #[test]
+    fn github_actions_is_detected_only_from_the_literal_true() {
+        assert!(is_github_actions(Some("true")));
+        for value in [None, Some("false"), Some(""), Some("TRUE"), Some("1")] {
+            assert!(!is_github_actions(value), "{value:?}");
+        }
+    }
+
+    #[test]
+    fn either_non_empty_token_variable_counts_as_an_env_token() {
+        assert!(has_env_token(Some("abc"), None));
+        assert!(has_env_token(None, Some("abc")));
+        assert!(has_env_token(Some(""), Some("abc")));
+        for (gh, github) in [
+            (None, None),
+            (Some(""), None),
+            (None, Some("  ")),
+            (Some(""), Some("")),
+        ] {
+            assert!(!has_env_token(gh, github), "{gh:?} {github:?}");
+        }
     }
 
     #[test]

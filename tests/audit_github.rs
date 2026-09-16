@@ -146,6 +146,11 @@ fn audit(sb: &Sandbox) -> Command {
         .env("GH_FIXTURES", fixtures_dir())
         .env("GIT_CONFIG_GLOBAL", &sb.gitconfig)
         .env("GIT_CONFIG_NOSYSTEM", "1")
+        // How gh auth is judged depends on whether the audit runs in GitHub
+        // Actions with a token; tests must not inherit that from the runner.
+        .env_remove("GITHUB_ACTIONS")
+        .env_remove("GH_TOKEN")
+        .env_remove("GITHUB_TOKEN")
         .arg("audit");
     cmd
 }
@@ -185,6 +190,80 @@ fn unauthenticated_skip_notice_is_info_severity_in_json() {
         notice["message"],
         "GitHub checks skipped: gh not authenticated"
     );
+}
+
+#[test]
+fn unauthenticated_skip_notice_in_github_actions_is_a_warning_with_a_workflow_hint() {
+    let sb = setup();
+    let assert = audit(&sb)
+        .env("GH_AUTH_EXIT", "1")
+        .env("GITHUB_ACTIONS", "true")
+        .args(["--format", "json"])
+        .assert()
+        .success();
+    let stdout =
+        String::from_utf8(assert.get_output().stdout.clone()).expect("stdout should be UTF-8");
+    let report: serde_json::Value = serde_json::from_str(&stdout).expect("valid JSON report");
+    let notice = report["findings"]
+        .as_array()
+        .expect("findings array")
+        .iter()
+        .find(|f| f["check_id"] == "github")
+        .expect("skip notice finding")
+        .clone();
+    assert_eq!(notice["severity"], "warn");
+    assert_eq!(
+        notice["message"],
+        "GitHub checks skipped: gh not authenticated"
+    );
+    let remediation = notice["remediation"].as_str().expect("remediation text");
+    assert!(
+        remediation.contains("secrets.GITHUB_TOKEN"),
+        "remediation names the workflow token: {remediation}"
+    );
+}
+
+#[test]
+fn github_actions_token_runs_the_checks_even_when_gh_auth_status_fails() {
+    let sb = setup();
+    // researcher1 is not in subscribers.json, so a watchers finding
+    // appears only if the GitHub checks actually ran.
+    fs::write(
+        sb.repo.join("hpds.toml"),
+        "[project]\nprimary-author = \"researcher1\"\n",
+    )
+    .expect("write hpds.toml");
+    let assert = audit(&sb)
+        .env("GH_AUTH_EXIT", "1")
+        .env("GITHUB_ACTIONS", "true")
+        .env("GITHUB_TOKEN", "dummy")
+        .args(["--format", "json"])
+        .assert();
+    let stdout =
+        String::from_utf8(assert.get_output().stdout.clone()).expect("stdout should be UTF-8");
+    let report: serde_json::Value = serde_json::from_str(&stdout).expect("valid JSON report");
+    let findings = report["findings"].as_array().expect("findings array");
+    assert!(
+        !findings.iter().any(|f| f["check_id"] == "github"),
+        "no skipped notice when Actions provides a token: {stdout}"
+    );
+    assert!(
+        findings.iter().any(|f| f["check_id"] == "watchers"),
+        "the GitHub checks ran: {stdout}"
+    );
+}
+
+#[test]
+fn local_env_token_does_not_override_a_failed_gh_auth_status() {
+    let sb = setup();
+    audit(&sb)
+        .env("GH_AUTH_EXIT", "1")
+        .env("GITHUB_TOKEN", "stale")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "GitHub checks skipped: gh not authenticated",
+        ));
 }
 
 #[test]

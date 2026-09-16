@@ -132,7 +132,9 @@ pub fn audit_spec(spec: &RepoSpec, dest: &Path) -> RepoReport {
 fn clone_and_audit(spec: &RepoSpec, dest: &Path) -> anyhow::Result<Vec<Finding>> {
     clone(spec, dest)?;
     let loaded = config::load(dest, None, Layer::default())?;
-    let (github_ctx, notice) = match github::probe(dest) {
+    // The sweep audits many repos from one place, so a missing gh login is
+    // never a per-repo workflow problem: probe as a local run.
+    let (github_ctx, notice) = match github::probe(dest, github::RunEnv::default()) {
         github::GithubStatus::Ready(ctx) => (Some(ctx), None),
         github::GithubStatus::NoRemote => (None, None),
         github::GithubStatus::Skipped(finding) => (None, Some(finding)),

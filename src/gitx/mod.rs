@@ -164,7 +164,9 @@ fn gh_program_from(override_path: Option<std::ffi::OsString>) -> std::ffi::OsStr
         .unwrap_or_else(|| std::ffi::OsString::from("gh"))
 }
 
-/// Auth state of the GitHub CLI, as probed by [`gh_auth`].
+/// Auth state of the GitHub CLI, as probed by [`gh_auth`]. The state
+/// reflects only the exit code of `gh auth status`; the audit's GitHub
+/// probe additionally trusts an environment token inside GitHub Actions.
 pub enum GhAuth {
     /// `gh auth status` succeeded: a user is logged in.
     Authenticated,

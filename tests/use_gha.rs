@@ -236,9 +236,49 @@ fn generated_audit_workflow_is_valid_yaml_with_the_bot_steps() {
         !body.contains("> audit.json") && !body.contains("--input audit.json"),
         "nothing writes audit.json into the working directory: {body}"
     );
-    assert!(
-        body.contains("GITHUB_TOKEN"),
-        "reporter step gets the Actions token: {body}"
+
+    // `hpds audit` runs the GitHub checks through gh, so the audit step
+    // needs the token as much as the reporter does.
+    let job = doc
+        .get("jobs")
+        .and_then(|jobs| jobs.get("audit"))
+        .expect("audit job");
+    let steps = job
+        .get("steps")
+        .and_then(|steps| steps.as_sequence())
+        .expect("audit job steps");
+    let step_running = |needle: &str| {
+        steps
+            .iter()
+            .find(|step| {
+                step.get("run")
+                    .and_then(|run| run.as_str())
+                    .is_some_and(|run| run.contains(needle))
+            })
+            .unwrap_or_else(|| panic!("a step runs `{needle}`: {body}"))
+    };
+    let passes_token = |env: Option<&serde_yaml::Value>| {
+        env.and_then(|env| env.get("GITHUB_TOKEN"))
+            .and_then(|value| value.as_str())
+            == Some("${{ secrets.GITHUB_TOKEN }}")
+    };
+    for needle in ["hpds audit --format json", "hpds audit report-github"] {
+        assert!(
+            passes_token(job.get("env")) || passes_token(step_running(needle).get("env")),
+            "the step running `{needle}` gets GITHUB_TOKEN: {body}"
+        );
+    }
+
+    // A fork pull request's token cannot post comments or manage issues.
+    assert_eq!(
+        step_running("hpds audit report-github")
+            .get("if")
+            .and_then(|cond| cond.as_str()),
+        Some(
+            "github.event_name != 'pull_request' || \
+             github.event.pull_request.head.repo.full_name == github.repository"
+        ),
+        "the report step skips fork pull requests: {body}"
     );
 }
 
