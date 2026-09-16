@@ -146,4 +146,16 @@ fn doc_covers_the_audit_config_knobs() {
         doc.contains("required-watchers"),
         "doc names the required-watchers config key"
     );
+    assert!(
+        doc.contains("add names") && doc.contains("never remove"),
+        "doc says project config may add required watchers but never remove them"
+    );
+    assert!(
+        doc.contains("hpds.toml.md#audit"),
+        "doc links to the [audit] section of the config reference"
+    );
+    assert!(
+        !doc.contains("user* configuration only"),
+        "doc must not describe required-watchers as user-only"
+    );
 }

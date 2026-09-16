@@ -93,12 +93,22 @@ The bot reports whatever `hpds audit` finds, so it is tuned the same way as the 
 stale-days = 120
 ```
 
-`required-watchers` (the GitHub logins that must watch every lab repository) is also an `[audit]` key, but it is honored from *user* configuration only; a repository cannot rewrite the lab-lead watcher list for everyone who audits it.
+`required-watchers` (the GitHub logins that must watch every lab repository) is also an `[audit]` key.
+User configuration sets the base list:
 
 ```toml
 # ~/.config/hpds/config.toml
 [audit]
 required-watchers = ["malcolmbarrett", "sherrirose"]
+```
+
+A repository's `hpds.toml` may add names to that list but can never remove them, so a project can require extra collaborators to watch it without exempting itself from the lab-lead requirement.
+See the [`[audit]` reference](hpds.toml.md#audit) for how the lists combine.
+
+```toml
+# hpds.toml
+[audit]
+required-watchers = ["collaborator-login"]
 ```
 
 Findings that are expected for a given repository are best resolved at the source (for example, set `status` and `primary-author` in the `[project]` table of `hpds.toml` so the lifecycle checks pass) rather than ignored.

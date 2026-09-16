@@ -23,6 +23,9 @@ built-in defaults  ←  user config  ←  project config  ←  CLI flags
 Each layer overrides only the keys it sets; everything else falls through from the layer beneath.
 Layering is applied **key by key**, not table by table: setting `[audit] stale-days` in project configuration does not discard `required-watchers` from a lower layer.
 
+One key is additive rather than overriding: `[audit] required-watchers` in project configuration adds names to the list from the lower layers and never replaces or removes them (see [`[audit]`](#audit)).
+A file passed with the global `--config <path>` flag takes the place of the discovered `hpds.toml`, so it is layered as project configuration.
+
 **Unknown keys produce a warning, not an error.** A key `hpds` does not recognize is ignored with a warning, for forward compatibility, so a newer `hpds.toml` still loads on an older binary.
 A *wrong type* for a known key (for example `status = 3`) is an error.
 
@@ -39,7 +42,7 @@ primary-author = "malcolmbarrett"  # GitHub login; the audit verifies watching
 
 [audit]
 stale-days = 90                  # branches idle longer than this are stale
-required-watchers = ["malcolmbarrett", "sherrirose"]  # user config only (see below)
+required-watchers = ["malcolmbarrett", "sherrirose"]  # project config adds to this list
 ```
 
 A minimal file typically sets only the lifecycle metadata:
@@ -65,7 +68,7 @@ Lifecycle metadata consumed by `hpds audit`.
 
 Settings for `hpds audit`.
 
-  | Key                 | Type             | Default                            | Description                                                                                                                                                                                                                                                                                                                                 |
-  | ------------------- | ---------------- | ---------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-  | `stale-days`        | integer ≥ 0      | `90`                               | A branch (or remote branch) with no commits in more than this many days is reported as stale.                                                                                                                                                                                                                                               |
-  | `required-watchers` | array of strings | `["malcolmbarrett", "sherrirose"]` | GitHub logins that must watch every lab repository, in addition to the project's `primary-author`. **User configuration only:** an audited repository cannot rewrite the required-watcher list for everyone who audits it, so this key is honored only from user configuration; a value in a project `hpds.toml` is ignored with a warning. |
+  | Key                 | Type             | Default                            | Description                                                                                                                                                                                                                                                                                                                                            |
+  | ------------------- | ---------------- | ---------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+  | `stale-days`        | integer ≥ 0      | `90`                               | A branch (or remote branch) with no commits in more than this many days is reported as stale.                                                                                                                                                                                                                                                          |
+  | `required-watchers` | array of strings | `["malcolmbarrett", "sherrirose"]` | GitHub logins that must watch every lab repository, in addition to the project's `primary-author`. User configuration replaces the default list. **Project configuration adds to the list and cannot remove names:** the effective list is the user (or default) entries followed by project entries not already present, compared case-insensitively. |

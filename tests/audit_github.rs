@@ -209,13 +209,9 @@ fn repo_without_a_github_remote_skips_github_checks_with_a_notice() {
 }
 
 #[test]
-fn project_config_cannot_change_the_required_watcher_list() {
-    // The audited repo must not be able to rewrite the watcher requirement
-    // for whoever audits it, so the key is honored only from user config.
-    // If the project-layer key were honored, `ghost-watcher` would show up
-    // in a watchers finding; instead the key is ignored with a warning and
-    // the default lab leads (who ARE in subscribers.json) keep the check
-    // green.
+fn project_config_required_watchers_reach_the_watchers_check() {
+    // A project-added watcher joins the default lab leads, who are in
+    // subscribers.json, so only the added watcher is reported.
     let sb = setup();
     fs::write(
         sb.repo.join("hpds.toml"),
@@ -227,11 +223,12 @@ fn project_config_cannot_change_the_required_watcher_list() {
     audit(&sb)
         .assert()
         .success()
-        .stdout(predicate::str::contains("ghost-watcher").not())
-        .stderr(
-            predicate::str::contains("warning:")
-                .and(predicate::str::contains("audit.required-watchers")),
-        );
+        .stdout(
+            predicate::str::contains("ghost-watcher")
+                .and(predicate::str::contains("not watching the repo"))
+                .and(predicate::str::contains("sherrirose").not()),
+        )
+        .stderr(predicate::str::contains("audit.required-watchers").not());
 }
 
 #[test]

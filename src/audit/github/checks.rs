@@ -12,6 +12,7 @@ use super::model::{
 };
 use super::{GhApiError, GithubCtx};
 use crate::audit::{AuditCtx, Check, Finding, Severity};
+use crate::config::{fold_login, same_login};
 
 /// The GitHub checks, in report order.
 pub(super) fn registry() -> Vec<Box<dyn Check>> {
@@ -172,11 +173,6 @@ fn fetch_users(github: &GithubCtx, endpoint: &str) -> Result<Vec<GithubUser>, Ch
     Ok(model::parse_pages(&github.api_pages(endpoint)?)?)
 }
 
-/// GitHub logins are case-insensitive; compare them folded.
-fn fold(login: &str) -> String {
-    login.to_lowercase()
-}
-
 /// `watchers`: the primary author plus the configured lab leads must be
 /// watching (subscribed to) the repo.
 struct Watchers;
@@ -189,7 +185,8 @@ impl Check for Watchers {
     fn run(&self, ctx: &AuditCtx) -> Vec<Finding> {
         with_github(ctx, self.id(), |github| {
             let subscribers = fetch_users(github, &format!("repos/{}/subscribers", github.slug))?;
-            let watching: BTreeSet<String> = subscribers.iter().map(|a| fold(&a.login)).collect();
+            let watching: BTreeSet<String> =
+                subscribers.iter().map(|a| fold_login(&a.login)).collect();
 
             let mut required: Vec<&str> = ctx
                 .config
@@ -199,13 +196,13 @@ impl Check for Watchers {
                 .map(String::as_str)
                 .collect();
             let author = ctx.config.project.primary_author.as_str();
-            if !author.is_empty() && !required.iter().any(|r| fold(r) == fold(author)) {
+            if !author.is_empty() && !required.iter().any(|r| same_login(r, author)) {
                 required.push(author);
             }
 
             let missing: Vec<&str> = required
                 .into_iter()
-                .filter(|login| !watching.contains(&fold(login)))
+                .filter(|login| !watching.contains(&fold_login(login)))
                 .collect();
             if missing.is_empty() {
                 return Ok(Vec::new());
@@ -238,7 +235,7 @@ impl Check for Contributors {
             let mut findings = Vec::new();
 
             let author = ctx.config.project.primary_author.as_str();
-            if !author.is_empty() && !contributors.iter().any(|c| fold(&c.login) == fold(author)) {
+            if !author.is_empty() && !contributors.iter().any(|c| same_login(&c.login, author)) {
                 findings.push(finding(
                     self.id(),
                     Severity::Warn,
@@ -279,7 +276,8 @@ impl Contributors {
             return Ok(None);
         };
         let members: Vec<GithubUser> = model::parse_pages(&body)?;
-        let member_logins: BTreeSet<String> = members.iter().map(|m| fold(&m.login)).collect();
+        let member_logins: BTreeSet<String> =
+            members.iter().map(|m| fold_login(&m.login)).collect();
         let humans: Vec<&GithubUser> = contributors
             .iter()
             .filter(|c| !c.login.ends_with("[bot]"))
@@ -287,7 +285,7 @@ impl Contributors {
         if humans.is_empty()
             || humans
                 .iter()
-                .any(|c| member_logins.contains(&fold(&c.login)))
+                .any(|c| member_logins.contains(&fold_login(&c.login)))
         {
             return Ok(None);
         }
@@ -769,6 +767,26 @@ mod tests {
         assert!(findings[0].message.contains("lead1"));
         // The built-in leads were overridden, so they are not required.
         assert!(!findings[0].message.contains("sherrirose"));
+    }
+
+    #[test]
+    fn watchers_flags_a_missing_project_added_watcher() {
+        let fake = FakeGh::new().serve_fixture("repos/acme/demo/subscribers", "subscribers.json");
+        let mut config = config_with_author("malcolmbarrett");
+        config.audit.required_watchers = vec!["lead1".to_string()];
+        config.apply_project(crate::config::Layer {
+            audit_required_watchers: Some(vec!["collab1".to_string()]),
+            ..crate::config::Layer::default()
+        });
+        let ctx = ctx(fake, config);
+        let findings = run_one(&Watchers, &ctx);
+        assert_eq!(findings.len(), 1);
+        assert_eq!(findings[0].check_id, "watchers");
+        // Both the base watcher and the project-added watcher are required.
+        assert!(
+            findings[0].message.contains("lead1, collab1"),
+            "{findings:?}"
+        );
     }
 
     #[test]
