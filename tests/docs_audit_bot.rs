@@ -170,6 +170,39 @@ fn doc_matches_the_workflow_template() {
         doc.contains("forks") && doc.contains("read-only"),
         "doc explains that fork pull request tokens are read-only"
     );
+
+    // The token is set once for the whole job, because the audit's GitHub
+    // checks need it as much as the reporter does.
+    assert!(
+        doc.contains("GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}")
+            && template.contains("GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}"),
+        "doc and template both show the job-level token"
+    );
+    assert!(
+        doc.contains("job-level `env`"),
+        "doc says the token is set at the job level"
+    );
+
+    // Fork pull requests skip the report step entirely.
+    let guard = "github.event.pull_request.head.repo.full_name == github.repository";
+    assert!(
+        template.contains(guard) && doc.contains(guard),
+        "doc and template both carry the fork pull request guard"
+    );
+    assert!(
+        !doc.contains("that warning is expected"),
+        "doc no longer describes a posted watchers warning on fork pull requests"
+    );
+    assert!(
+        doc.contains("nothing is posted"),
+        "doc says fork pull requests get no report"
+    );
+
+    // Inside Actions, missing gh authentication is a warning, not a note.
+    assert!(
+        doc.contains("GitHub checks skipped: gh not authenticated") && doc.contains("warning"),
+        "doc describes the CI skipped notice"
+    );
 }
 
 #[test]

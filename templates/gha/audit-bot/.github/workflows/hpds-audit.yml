@@ -19,6 +19,10 @@ permissions:
 jobs:
   audit:
     runs-on: ubuntu-latest
+    # Both steps need the token: `hpds audit` runs its GitHub checks
+    # through gh, and the report step posts the findings.
+    env:
+      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
@@ -50,8 +54,9 @@ jobs:
 
       # On pull_request events this upserts the sticky findings comment;
       # on the weekly schedule it files one issue per new error finding
-      # and closes issues for findings that no longer occur.
+      # and closes issues for findings that no longer occur. Pull requests
+      # from forks skip this step: their token is read-only, so it cannot
+      # post comments or manage issues.
       - name: Report findings
+        if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
         run: hpds audit report-github --input "$RUNNER_TEMP/audit.json"
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

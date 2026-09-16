@@ -301,8 +301,9 @@ pub enum GithubStatus {
     /// single-repo audit reports this as the [`no_remote_notice`] Info
     /// finding so the report says why those checks are absent.
     NoRemote,
-    /// The checks apply but cannot run; the finding is an Info notice for
-    /// the report (e.g. `gh` missing or unauthenticated).
+    /// The checks apply but cannot run (e.g. `gh` missing or
+    /// unauthenticated); the finding is the [`skipped_notice`] for the
+    /// report, an Info notice locally and a warning in GitHub Actions.
     Skipped(Finding),
 }
 
@@ -313,36 +314,95 @@ pub fn ctx_without_checkout(slug: RepoSlug) -> GithubCtx {
     GithubCtx::new(slug, Box::new(GhCli { repo: None }))
 }
 
+/// Where the audit runs, as read from the environment by the command
+/// layer: decides how [`probe`] treats gh auth and which
+/// [`skipped_notice`] it reports.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct RunEnv {
+    /// The audit runs inside GitHub Actions.
+    pub github_actions: bool,
+    /// `GH_TOKEN` or `GITHUB_TOKEN` is set to a non-empty value.
+    pub env_token: bool,
+}
+
 /// Probe the repo's `origin` remote and `gh` auth state.
-pub fn probe(repo: &Path) -> GithubStatus {
+///
+/// Locally, `gh auth status` decides whether the GitHub checks run, so a
+/// stale token left in the shell environment changes nothing. Inside
+/// GitHub Actions, an environment token is trusted as long as gh is
+/// installed, because `gh auth status` can exit non-zero for the
+/// workflow's installation token even when `gh api` calls with it work.
+pub fn probe(repo: &Path, env: RunEnv) -> GithubStatus {
     let Some(slug) = origin_slug(repo) else {
         return GithubStatus::NoRemote;
     };
-    match gitx::gh_auth() {
-        Ok(GhAuth::Authenticated) => GithubStatus::Ready(GithubCtx::new(
+    if gh_ready(gh_state(&gitx::gh_auth()), env) {
+        GithubStatus::Ready(GithubCtx::new(
             slug,
             Box::new(GhCli {
                 repo: Some(repo.to_path_buf()),
             }),
-        )),
-        // Not installed, not logged in, or unprobeable all mean the same
-        // thing for the report: we could not talk to GitHub as anyone.
-        Ok(GhAuth::Unauthenticated(_)) | Ok(GhAuth::NotInstalled) | Err(_) => {
-            GithubStatus::Skipped(skipped_notice())
-        }
+        ))
+    } else {
+        GithubStatus::Skipped(skipped_notice(env.github_actions))
     }
 }
 
-/// The Info notice reported when the GitHub checks are skipped for lack of
-/// gh authentication.
-pub fn skipped_notice() -> Finding {
+/// What a `gh auth status` probe says, reduced to what [`gh_ready`] needs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum GhState {
+    /// `gh auth status` exited 0.
+    LoggedIn,
+    /// gh ran but `gh auth status` exited non-zero.
+    LoggedOut,
+    /// gh is not installed, or could not be run at all.
+    Unavailable,
+}
+
+fn gh_state(auth: &anyhow::Result<GhAuth>) -> GhState {
+    match auth {
+        Ok(GhAuth::Authenticated) => GhState::LoggedIn,
+        Ok(GhAuth::Unauthenticated(_)) => GhState::LoggedOut,
+        Ok(GhAuth::NotInstalled) | Err(_) => GhState::Unavailable,
+    }
+}
+
+/// Whether the GitHub checks can run, given gh's state and where the
+/// audit runs. In GitHub Actions with an environment token, a failed
+/// `gh auth status` is not trusted; if the token really is invalid, each
+/// GitHub check reports its own "could not complete" warning instead.
+fn gh_ready(state: GhState, env: RunEnv) -> bool {
+    match state {
+        GhState::LoggedIn => true,
+        GhState::LoggedOut => env.github_actions && env.env_token,
+        GhState::Unavailable => false,
+    }
+}
+
+/// The notice reported when the GitHub checks are skipped for lack of gh
+/// authentication. Locally it is Info and points at `gh auth login`.
+/// Inside GitHub Actions (`github_actions`) it is a warning, because there
+/// it means the workflow does not pass its token to the audit.
+pub fn skipped_notice(github_actions: bool) -> Finding {
+    let (severity, remediation) = if github_actions {
+        (
+            Severity::Warn,
+            "set `GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}` in the workflow's \
+             `env` so the audit step can reach GitHub, or regenerate the \
+             workflow with `hpds use gha --workflows audit-bot --force`",
+        )
+    } else {
+        (
+            Severity::Info,
+            "install the GitHub CLI (https://cli.github.com/) if needed, \
+             run `gh auth login`, then re-run `hpds audit`",
+        )
+    };
     Finding {
         check_id: "github".to_string(),
-        severity: Severity::Info,
+        severity,
         message: "GitHub checks skipped: gh not authenticated".to_string(),
-        remediation: "install the GitHub CLI (https://cli.github.com/) if needed, \
-                      run `gh auth login`, then re-run `hpds audit`"
-            .to_string(),
+        remediation: remediation.to_string(),
     }
 }
 
@@ -437,8 +497,65 @@ mod tests {
     }
 
     #[test]
+    fn gh_readiness_covers_every_state_and_environment() {
+        let env = |github_actions, env_token| RunEnv {
+            github_actions,
+            env_token,
+        };
+        // A successful `gh auth status` is enough anywhere.
+        for run in [
+            env(false, false),
+            env(false, true),
+            env(true, false),
+            env(true, true),
+        ] {
+            assert!(gh_ready(GhState::LoggedIn, run), "{run:?}");
+        }
+        // In Actions an environment token stands in for a failed status.
+        assert!(gh_ready(GhState::LoggedOut, env(true, true)));
+        // Without Actions, or without a token, gh auth status decides.
+        assert!(!gh_ready(GhState::LoggedOut, env(true, false)));
+        assert!(!gh_ready(GhState::LoggedOut, env(false, true)));
+        assert!(!gh_ready(GhState::LoggedOut, env(false, false)));
+        // Without gh, nothing can run.
+        for run in [
+            env(false, false),
+            env(false, true),
+            env(true, false),
+            env(true, true),
+        ] {
+            assert!(!gh_ready(GhState::Unavailable, run), "{run:?}");
+        }
+    }
+
+    #[test]
+    fn gh_auth_results_map_onto_gh_states() {
+        assert_eq!(gh_state(&Ok(GhAuth::Authenticated)), GhState::LoggedIn);
+        assert_eq!(gh_state(&Ok(GhAuth::NotInstalled)), GhState::Unavailable);
+        assert_eq!(
+            gh_state(&Err(anyhow::anyhow!("spawn failed"))),
+            GhState::Unavailable
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_failed_gh_auth_status_maps_onto_logged_out() {
+        use std::os::unix::process::ExitStatusExt;
+        let output = Output {
+            status: std::process::ExitStatus::from_raw(1 << 8),
+            stdout: Vec::new(),
+            stderr: b"You are not logged into any GitHub hosts.\n".to_vec(),
+        };
+        assert_eq!(
+            gh_state(&Ok(GhAuth::Unauthenticated(output))),
+            GhState::LoggedOut
+        );
+    }
+
+    #[test]
     fn skipped_notice_is_the_documented_info_finding() {
-        let notice = skipped_notice();
+        let notice = skipped_notice(false);
         assert_eq!(notice.check_id, "github");
         assert_eq!(notice.severity, Severity::Info);
         assert_eq!(
@@ -446,6 +563,33 @@ mod tests {
             "GitHub checks skipped: gh not authenticated"
         );
         assert!(notice.remediation.contains("gh auth login"));
+        assert!(!notice.remediation.contains("secrets.GITHUB_TOKEN"));
+    }
+
+    #[test]
+    fn skipped_notice_in_github_actions_is_a_warning_naming_the_workflow_token() {
+        let notice = skipped_notice(true);
+        assert_eq!(notice.check_id, "github");
+        assert_eq!(notice.severity, Severity::Warn);
+        assert_eq!(
+            notice.message,
+            "GitHub checks skipped: gh not authenticated"
+        );
+        assert!(
+            notice
+                .remediation
+                .contains("GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}"),
+            "remediation names the workflow token: {}",
+            notice.remediation
+        );
+        assert!(
+            notice
+                .remediation
+                .contains("hpds use gha --workflows audit-bot --force"),
+            "remediation says how to regenerate the workflow: {}",
+            notice.remediation
+        );
+        assert!(!notice.remediation.contains("gh auth login"));
     }
 
     #[test]

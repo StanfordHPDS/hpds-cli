@@ -223,9 +223,55 @@ mod tests {
             !rendered.contains("> audit.json") && !rendered.contains("--input audit.json"),
             "nothing reads or writes audit.json in the working directory: {rendered}"
         );
-        assert!(
-            rendered.contains("GITHUB_TOKEN"),
-            "reporter step gets the Actions token: {rendered}"
+        assert_audit_bot_token_and_fork_guard(&doc, &rendered);
+    }
+
+    /// The workflow `if:` that keeps fork pull requests from reporting.
+    const FORK_GUARD: &str = "github.event_name != 'pull_request' || \
+                              github.event.pull_request.head.repo.full_name == github.repository";
+
+    /// Whether `env` (a job or step `env:` mapping) passes the Actions token.
+    fn passes_token(env: Option<&serde_yaml::Value>) -> bool {
+        env.and_then(|env| env.get("GITHUB_TOKEN"))
+            .and_then(|value| value.as_str())
+            == Some("${{ secrets.GITHUB_TOKEN }}")
+    }
+
+    /// Both the audit and the report steps see `GITHUB_TOKEN`, through a
+    /// job-level or step-level `env`, and the report step skips fork pull
+    /// requests.
+    fn assert_audit_bot_token_and_fork_guard(doc: &serde_yaml::Value, rendered: &str) {
+        let job = doc
+            .get("jobs")
+            .and_then(|jobs| jobs.get("audit"))
+            .expect("workflow has an audit job");
+        let steps = job
+            .get("steps")
+            .and_then(|steps| steps.as_sequence())
+            .expect("audit job has steps");
+        let step_running = |needle: &str| {
+            steps
+                .iter()
+                .find(|step| {
+                    step.get("run")
+                        .and_then(|run| run.as_str())
+                        .is_some_and(|run| run.contains(needle))
+                })
+                .unwrap_or_else(|| panic!("a step runs `{needle}`: {rendered}"))
+        };
+        let job_token = passes_token(job.get("env"));
+        for needle in ["hpds audit --format json", "hpds audit report-github"] {
+            let step = step_running(needle);
+            assert!(
+                job_token || passes_token(step.get("env")),
+                "the step running `{needle}` gets GITHUB_TOKEN: {rendered}"
+            );
+        }
+        let report = step_running("hpds audit report-github");
+        assert_eq!(
+            report.get("if").and_then(|cond| cond.as_str()),
+            Some(FORK_GUARD),
+            "the report step skips fork pull requests: {rendered}"
         );
     }
 

@@ -148,8 +148,9 @@ fn with_github(
             check_id: check_id.to_string(),
             severity: Severity::Warn,
             message: format!("could not complete this GitHub check: {err}"),
-            remediation: "check `gh auth status`, your network, and your access to the \
-                          repo, then re-run `hpds audit`"
+            remediation: "check that gh can reach GitHub (`gh auth status` locally, or the \
+                          workflow's `GITHUB_TOKEN` in GitHub Actions), your network, and \
+                          your access to the repo, then re-run `hpds audit`"
                 .to_string(),
         }],
     }
@@ -208,7 +209,8 @@ impl Check for Watchers {
                             "the workflow token cannot read the repo's watchers; grant \
                              `contents: write` in the workflow's `permissions` block \
                              (tokens for pull requests from forks are always read-only, \
-                             so this warning is expected there)"
+                             so this warning is expected there and the audit-bot \
+                             workflow does not post it)"
                                 .to_string(),
                         )]);
                     }
@@ -856,6 +858,7 @@ mod tests {
         assert_eq!(findings[0].severity, Severity::Warn);
         assert!(findings[0].message.contains("could not complete"));
         assert!(findings[0].remediation.contains("gh auth status"));
+        assert!(findings[0].remediation.contains("GITHUB_TOKEN"));
     }
 
     #[test]
