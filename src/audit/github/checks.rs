@@ -8,7 +8,7 @@ use std::collections::BTreeSet;
 use std::time::SystemTime;
 
 use super::model::{
-    self, Account, BranchDetail, BranchSummary, Comparison, ModelError, Release, RepoInfo,
+    self, BranchDetail, BranchSummary, Comparison, GithubUser, ModelError, Release, RepoInfo,
 };
 use super::{GhApiError, GithubCtx};
 use crate::audit::{AuditCtx, Check, Finding, Severity};
@@ -167,8 +167,8 @@ fn repo_info(github: &GithubCtx) -> Result<RepoInfo, CheckError> {
     )?)
 }
 
-/// A paginated list of accounts (subscribers, contributors, org members).
-fn accounts(github: &GithubCtx, endpoint: &str) -> Result<Vec<Account>, CheckError> {
+/// A paginated list of users (subscribers, contributors, org members).
+fn fetch_users(github: &GithubCtx, endpoint: &str) -> Result<Vec<GithubUser>, CheckError> {
     Ok(model::parse_pages(&github.api_pages(endpoint)?)?)
 }
 
@@ -188,7 +188,7 @@ impl Check for Watchers {
 
     fn run(&self, ctx: &AuditCtx) -> Vec<Finding> {
         with_github(ctx, self.id(), |github| {
-            let subscribers = accounts(github, &format!("repos/{}/subscribers", github.slug))?;
+            let subscribers = fetch_users(github, &format!("repos/{}/subscribers", github.slug))?;
             let watching: BTreeSet<String> = subscribers.iter().map(|a| fold(&a.login)).collect();
 
             let mut required: Vec<&str> = ctx
@@ -234,7 +234,7 @@ impl Check for Contributors {
 
     fn run(&self, ctx: &AuditCtx) -> Vec<Finding> {
         with_github(ctx, self.id(), |github| {
-            let contributors = accounts(github, &format!("repos/{}/contributors", github.slug))?;
+            let contributors = fetch_users(github, &format!("repos/{}/contributors", github.slug))?;
             let mut findings = Vec::new();
 
             let author = ctx.config.project.primary_author.as_str();
@@ -263,13 +263,13 @@ impl Contributors {
     /// with adequate token scopes, so a 403/404 there silently skips the
     /// flag instead of failing the check; membership can also be private,
     /// making members invisible and this flag a false positive, hence
-    /// Info severity. Bot accounts are excluded from "contributors".
+    /// Info severity. Bot users are excluded from "contributors".
     /// A members payload that arrives but does not parse is NOT skipped:
     /// malformed gh JSON always becomes an error finding.
     fn all_left_org(
         &self,
         github: &GithubCtx,
-        contributors: &[Account],
+        contributors: &[GithubUser],
     ) -> Result<Option<Finding>, CheckError> {
         let info = repo_info(github)?;
         if info.owner.kind != "Organization" {
@@ -278,9 +278,9 @@ impl Contributors {
         let Ok(body) = github.api_pages(&format!("orgs/{}/members", info.owner.login)) else {
             return Ok(None);
         };
-        let members: Vec<Account> = model::parse_pages(&body)?;
+        let members: Vec<GithubUser> = model::parse_pages(&body)?;
         let member_logins: BTreeSet<String> = members.iter().map(|m| fold(&m.login)).collect();
-        let humans: Vec<&Account> = contributors
+        let humans: Vec<&GithubUser> = contributors
             .iter()
             .filter(|c| !c.login.ends_with("[bot]"))
             .collect();
