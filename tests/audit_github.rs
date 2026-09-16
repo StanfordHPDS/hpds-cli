@@ -232,6 +232,38 @@ fn project_config_required_watchers_reach_the_watchers_check() {
 }
 
 #[test]
+fn terminal_and_json_reports_keep_plain_watcher_logins() {
+    let sb = setup();
+    fs::write(
+        sb.repo.join("hpds.toml"),
+        "[project]\nstatus = \"active\"\nprimary-author = \"malcolmbarrett\"\n\n\
+         [audit]\nrequired-watchers = [\"ghost-watcher\"]\n",
+    )
+    .expect("write hpds.toml");
+
+    audit(&sb).assert().success().stdout(
+        predicate::str::contains("not watching the repo on GitHub: ghost-watcher")
+            .and(predicate::str::contains("@ghost-watcher").not()),
+    );
+
+    let assert = audit(&sb).args(["--format", "json"]).assert().success();
+    let stdout =
+        String::from_utf8(assert.get_output().stdout.clone()).expect("stdout should be UTF-8");
+    let report: serde_json::Value = serde_json::from_str(&stdout).expect("valid JSON report");
+    let watchers: Vec<&serde_json::Value> = report["findings"]
+        .as_array()
+        .expect("findings array")
+        .iter()
+        .filter(|f| f["check_id"] == "watchers")
+        .collect();
+    assert_eq!(watchers.len(), 1, "{report}");
+    assert_eq!(
+        watchers[0]["message"],
+        "not watching the repo on GitHub: ghost-watcher"
+    );
+}
+
+#[test]
 fn user_config_required_watchers_reach_the_watchers_check() {
     let sb = setup();
     fs::write(

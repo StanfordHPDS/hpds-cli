@@ -10,6 +10,10 @@ The workflow (`.github/workflows/hpds-audit.yml`) runs on two triggers:
 - **Every pull request.** The bot posts a single sticky comment containing the findings table (severity, check, finding, and suggested fix).
   On subsequent pushes to the same pull request it edits that comment in place rather than posting a new one, so the pull request does not accumulate outdated audit comments.
   The comment is identified by an invisible HTML marker, `<!-- hpds-audit -->`; if the comment is deleted, the next run recreates it.
+  When the `watchers` check reports people who are not watching the repository, the comment writes each entry that is a valid GitHub login as an `@login` mention; entries that are not valid logins stay plain text.
+  GitHub notifies the mentioned people only when the bot creates the comment (the first run on a pull request, or the first run after the comment is deleted), not when later runs edit it in place.
+  In practice these mentions appear only in the pull request comment: the `watchers` finding is a warning, and issues are filed only for errors.
+  The terminal and `--format json` output of `hpds audit` keep the plain logins.
 
 - **A weekly schedule** (Monday morning UTC).
   The bot files one GitHub issue per *new* error-severity finding, labeled `hpds-audit`.

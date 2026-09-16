@@ -154,6 +154,53 @@ fn pr_mode_creates_the_sticky_comment_when_none_exists() {
 }
 
 #[test]
+fn pr_mode_comment_mentions_missing_watchers_only() {
+    let sb = setup();
+    fs::write(
+        &sb.input,
+        r#"{
+  "repo": "demo",
+  "findings": [
+    {
+      "check_id": "watchers",
+      "severity": "warn",
+      "message": "not watching the repo on GitHub: lead1, collab1",
+      "remediation": "have them open https://github.com/acme/demo and set Watch"
+    },
+    {
+      "check_id": "contributors",
+      "severity": "warn",
+      "message": "primary author researcher1 is not a contributor",
+      "remediation": "push a commit as researcher1"
+    }
+  ],
+  "summary": { "errors": 0, "warnings": 2, "infos": 0 }
+}"#,
+    )
+    .expect("write watchers audit json");
+    report_github(&sb)
+        .args(["--input"])
+        .arg(&sb.input)
+        .args(["--repo", "acme/demo", "--pr", "7", "--mode", "pr"])
+        .assert()
+        .success();
+
+    let log = gh_log(&sb);
+    assert!(
+        log.contains("not watching the repo on GitHub: @lead1, @collab1 |"),
+        "watcher logins are mentions:\n{log}"
+    );
+    assert!(
+        log.contains("primary author researcher1 is not a contributor"),
+        "other messages are unchanged:\n{log}"
+    );
+    assert!(
+        !log.contains("@researcher1"),
+        "other messages gain no mentions:\n{log}"
+    );
+}
+
+#[test]
 fn pr_mode_updates_the_existing_sticky_comment_in_place() {
     let sb = setup();
     report_github(&sb)

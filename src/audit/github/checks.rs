@@ -10,7 +10,7 @@ use std::time::SystemTime;
 use super::model::{
     self, BranchDetail, BranchSummary, Comparison, GithubUser, ModelError, Release, RepoInfo,
 };
-use super::{GhApiError, GithubCtx, LocalTip};
+use super::{GhApiError, GithubCtx, LocalTip, WATCHERS_MESSAGE_PREFIX};
 use crate::audit::{AuditCtx, Check, Finding, Severity};
 use crate::config::{fold_login, same_login};
 
@@ -239,7 +239,7 @@ impl Check for Watchers {
             Ok(vec![finding(
                 self.id(),
                 Severity::Warn,
-                format!("not watching the repo on GitHub: {}", missing.join(", ")),
+                format!("{WATCHERS_MESSAGE_PREFIX}{}", missing.join(", ")),
                 format!(
                     "have them open https://github.com/{} and set Watch → All activity",
                     github.slug

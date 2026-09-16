@@ -19,6 +19,7 @@ use std::process::Command;
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 
+use super::github::WATCHERS_MESSAGE_PREFIX;
 use super::github::model::{self, ModelError};
 use super::{Finding, Severity};
 
@@ -111,7 +112,7 @@ pub fn comment_body(report: &AuditReport) -> String {
             out.push_str(&format!(
                 "| {severity} | `{}` | {} | {} |\n",
                 table_cell(&finding.check_id),
-                table_cell(&finding.message),
+                table_cell(&github_message(finding)),
                 table_cell(&finding.remediation),
             ));
         }
@@ -128,6 +129,37 @@ pub fn comment_body(report: &AuditReport) -> String {
         "\n_Posted by `hpds audit report-github`; this comment is updated in place on every run._",
     );
     out
+}
+
+/// A finding's message as the bot renders it on GitHub: the logins in a
+/// `watchers` finding become `@login` mentions so GitHub notifies those
+/// people. Every other message is returned unchanged.
+fn github_message(finding: &Finding) -> String {
+    let logins = match finding.message.strip_prefix(WATCHERS_MESSAGE_PREFIX) {
+        Some(logins) if finding.check_id == "watchers" => logins,
+        _ => return finding.message.clone(),
+    };
+    let mentioned: Vec<String> = logins
+        .split(", ")
+        .map(|token| {
+            let login = token.strip_prefix('@').unwrap_or(token);
+            if is_github_login(login) {
+                format!("@{login}")
+            } else {
+                token.to_string()
+            }
+        })
+        .collect();
+    format!("{WATCHERS_MESSAGE_PREFIX}{}", mentioned.join(", "))
+}
+
+/// Whether `text` is a well-formed GitHub login: 1 to 39 ASCII letters,
+/// digits, or hyphens, not starting with a hyphen. Only such text is given
+/// an `@` prefix.
+fn is_github_login(text: &str) -> bool {
+    (1..=39).contains(&text.len())
+        && !text.starts_with('-')
+        && text.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
 }
 
 /// A finding string flattened into one Markdown table cell: pipes escaped,
@@ -158,7 +190,9 @@ pub fn issue_body(repo: &str, findings: &[&Finding], fingerprint: &str) -> Strin
     for finding in findings {
         out.push_str(&format!(
             "\n- **check:** `{}`\n- **finding:** {}\n- **fix:** {}\n",
-            finding.check_id, finding.message, finding.remediation,
+            finding.check_id,
+            github_message(finding),
+            finding.remediation,
         ));
     }
     out.push_str(
@@ -816,6 +850,114 @@ mod tests {
     fn comment_body_names_the_audited_repo() {
         let body = comment_body(&report(vec![]));
         assert!(body.contains("demo"), "{body}");
+    }
+
+    // -- watcher mentions -------------------------------------------------
+
+    fn watchers_finding(logins: &str) -> Finding {
+        finding(
+            "watchers",
+            Severity::Warn,
+            &format!("{WATCHERS_MESSAGE_PREFIX}{logins}"),
+            "have them watch the repo",
+        )
+    }
+
+    #[test]
+    fn comment_body_mentions_missing_watchers() {
+        let body = comment_body(&report(vec![watchers_finding("lead1, collab1")]));
+        assert!(
+            body.contains(
+                "| warn | `watchers` | not watching the repo on GitHub: @lead1, @collab1 | \
+                 have them watch the repo |"
+            ),
+            "{body}"
+        );
+    }
+
+    #[test]
+    fn comment_body_does_not_double_prefix_a_login_that_is_already_a_mention() {
+        let body = comment_body(&report(vec![watchers_finding("@lead1, collab1")]));
+        assert!(body.contains("GitHub: @lead1, @collab1 |"), "{body}");
+        assert!(!body.contains("@@"), "{body}");
+    }
+
+    #[test]
+    fn comment_body_mentions_only_valid_github_logins() {
+        let too_long = "a".repeat(40);
+        let longest = "b".repeat(39);
+        let body = comment_body(&report(vec![watchers_finding(&format!(
+            "lead1, Mixed-Case-9, bad login, evil<b>, -dash, dependabot[bot], x|y, @, , \
+             {too_long}, {longest}"
+        ))]));
+        assert!(
+            body.contains(&format!(
+                "GitHub: @lead1, @Mixed-Case-9, bad login, evil<b>, -dash, dependabot[bot], \
+                 x\\|y, @, , {too_long}, @{longest} |"
+            )),
+            "{body}"
+        );
+        assert!(!body.contains("@bad"), "{body}");
+        assert!(!body.contains("@-dash"), "{body}");
+        assert!(!body.contains("@dependabot"), "{body}");
+        assert!(!body.contains(&format!("@{too_long}")), "{body}");
+    }
+
+    #[test]
+    fn comment_body_leaves_other_messages_without_mentions() {
+        let body = comment_body(&report(vec![
+            finding(
+                "contributors",
+                Severity::Warn,
+                &format!("{WATCHERS_MESSAGE_PREFIX}lead1"),
+                "fix",
+            ),
+            finding(
+                "watchers",
+                Severity::Warn,
+                "could not complete this GitHub check: lead1, collab1",
+                "fix",
+            ),
+            error_finding("dirty-files"),
+        ]));
+        assert!(!body.contains('@'), "{body}");
+        assert!(
+            body.contains("| `contributors` | not watching the repo on GitHub: lead1 |"),
+            "{body}"
+        );
+        assert!(
+            body.contains("could not complete this GitHub check: lead1, collab1"),
+            "{body}"
+        );
+        assert!(body.contains("dirty-files went wrong"), "{body}");
+    }
+
+    #[test]
+    fn issue_body_mentions_missing_watchers() {
+        let mut f = watchers_finding("lead1, collab1");
+        f.severity = Severity::Error;
+        let body = issue_body("acme/demo", &[&f], "abc123");
+        assert!(
+            body.contains("- **finding:** not watching the repo on GitHub: @lead1, @collab1\n"),
+            "{body}"
+        );
+    }
+
+    #[test]
+    fn json_and_terminal_reports_keep_plain_watcher_logins() {
+        let findings = vec![watchers_finding("lead1, collab1")];
+        let json = super::super::render_json("demo", &findings).expect("render json");
+        assert!(
+            json.contains("\"not watching the repo on GitHub: lead1, collab1\""),
+            "{json}"
+        );
+        assert!(!json.contains('@'), "{json}");
+        let text = super::super::render_text("demo", &findings, 1, false, true);
+        assert!(
+            text.contains("not watching the repo on GitHub: lead1, collab1"),
+            "{text}"
+        );
+        assert!(!text.contains('@'), "{text}");
     }
 
     // -- issue body -------------------------------------------------------

@@ -173,6 +173,34 @@ fn doc_matches_the_workflow_template() {
 }
 
 #[test]
+fn doc_describes_when_watcher_mentions_notify() {
+    // GitHub notifies mentioned users only when a comment is created, and
+    // the bot edits its sticky comment in place on later runs.
+    let doc = doc();
+    assert!(
+        doc.contains("`@login` mention"),
+        "doc says missing watchers are mentioned"
+    );
+    assert!(
+        doc.contains("only when the bot creates the comment")
+            && doc.contains("not when later runs edit it in place"),
+        "doc says only comment creation notifies the mentioned people"
+    );
+    assert!(
+        doc.contains("not valid logins stay plain text"),
+        "doc says invalid entries are not mentioned"
+    );
+    assert!(
+        doc.contains("mentions appear only in the pull request comment"),
+        "doc says issues never carry the watcher mentions in practice"
+    );
+    assert!(
+        !doc.contains("so GitHub notifies them"),
+        "doc must not promise a notification on every run"
+    );
+}
+
+#[test]
 fn doc_covers_the_audit_config_knobs() {
     let doc = doc();
     assert!(doc.contains("[audit]"), "doc points at the [audit] table");

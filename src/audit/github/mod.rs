@@ -20,6 +20,11 @@ use std::process::{Command, Output, Stdio};
 use super::{Check, Finding, Severity};
 use crate::gitx::{self, GhAuth};
 
+/// Message prefix of the `watchers` finding; the logins that follow are
+/// joined with `, `. The audit bot matches on it to render those logins as
+/// GitHub mentions, so the check and the bot share this one definition.
+pub const WATCHERS_MESSAGE_PREFIX: &str = "not watching the repo on GitHub: ";
+
 /// `owner/repo` on github.com, detected from the `origin` remote.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RepoSlug {
