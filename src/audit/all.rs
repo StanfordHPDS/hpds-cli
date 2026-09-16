@@ -126,8 +126,9 @@ pub fn audit_spec(spec: &RepoSpec, dest: &Path) -> RepoReport {
 /// The standard audit against a fresh clone: layered config from the
 /// clone, the local checks, and, when the clone's `origin` points at
 /// github.com and `gh` is authenticated, the GitHub checks too.
-/// Config *warnings* (unknown keys) are dropped here: in a sweep across
-/// many repos they are noise for someone who cannot fix them in place.
+/// Config *warnings* (unknown keys, invalid GitHub logins) are dropped
+/// here: in a sweep across many repos they are noise for someone who
+/// cannot fix them in place.
 fn clone_and_audit(spec: &RepoSpec, dest: &Path) -> anyhow::Result<Vec<Finding>> {
     clone(spec, dest)?;
     let loaded = config::load(dest, None, Layer::default())?;

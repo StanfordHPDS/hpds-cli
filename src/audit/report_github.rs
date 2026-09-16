@@ -143,7 +143,7 @@ fn github_message(finding: &Finding) -> String {
         .split(", ")
         .map(|token| {
             let login = token.strip_prefix('@').unwrap_or(token);
-            if is_github_login(login) {
+            if crate::config::is_github_login(login) {
                 format!("@{login}")
             } else {
                 token.to_string()
@@ -151,15 +151,6 @@ fn github_message(finding: &Finding) -> String {
         })
         .collect();
     format!("{WATCHERS_MESSAGE_PREFIX}{}", mentioned.join(", "))
-}
-
-/// Whether `text` is a well-formed GitHub login: 1 to 39 ASCII letters,
-/// digits, or hyphens, not starting with a hyphen. Only such text is given
-/// an `@` prefix.
-fn is_github_login(text: &str) -> bool {
-    (1..=39).contains(&text.len())
-        && !text.starts_with('-')
-        && text.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
 }
 
 /// A finding string flattened into one Markdown table cell: pipes escaped,

@@ -332,3 +332,64 @@ fn json_sources_are_null_when_no_files_contribute() {
     assert!(value["sources"]["project"].is_null());
     assert_eq!(value["config"]["audit"]["stale-days"], 90);
 }
+
+#[test]
+fn invalid_user_required_watcher_warns_and_is_left_out() {
+    let sb = Sandbox::new();
+    sb.write_user_config("[audit]\nrequired-watchers = [\"lead1\", \"alice, bob\"]\n");
+
+    sb.config_cmd()
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(r#"required-watchers = ["lead1"]"#))
+        .stderr(
+            predicate::str::contains("warning:")
+                .and(predicate::str::contains("`alice, bob`"))
+                .and(predicate::str::contains("audit.required-watchers"))
+                .and(predicate::str::contains("config.toml"))
+                .and(predicate::str::contains(
+                    "list each login as its own string",
+                )),
+        );
+}
+
+#[test]
+fn invalid_project_primary_author_warns_and_is_left_unset() {
+    let sb = Sandbox::new();
+    sb.write_project_config(
+        "[project]\nprimary-author = \"x @bob\"\n[audit]\nrequired-watchers = [\"alice, bob\"]\n",
+    );
+
+    let output = sb.config_cmd().output().expect("hpds config runs");
+    assert!(output.status.success(), "{output:?}");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stdout.contains(r#"primary-author = """#), "{stdout}");
+    assert!(
+        stdout.contains(r#"required-watchers = ["malcolmbarrett", "sherrirose"]"#),
+        "{stdout}"
+    );
+    assert!(!stdout.contains("bob"), "{stdout}");
+    assert!(stderr.contains("`x @bob`"), "{stderr}");
+    assert!(stderr.contains("project.primary-author"), "{stderr}");
+    assert!(stderr.contains("`alice, bob`"), "{stderr}");
+    assert!(stderr.contains("hpds.toml"), "{stderr}");
+}
+
+#[test]
+fn explicit_config_naming_the_user_file_warns_only_once() {
+    let sb = Sandbox::new();
+    sb.write_user_config("[audit]\nrequired-watchers = [\"lead1\", \"alice, bob\"]\n");
+
+    let mut cmd = sb.config_cmd();
+    cmd.arg("--config").arg(sb.user_dir.join("config.toml"));
+    let output = cmd.output().expect("hpds config runs");
+    assert!(output.status.success(), "{output:?}");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stdout.contains(r#"required-watchers = ["lead1"]"#),
+        "{stdout}"
+    );
+    assert_eq!(stderr.matches("`alice, bob`").count(), 1, "{stderr}");
+}

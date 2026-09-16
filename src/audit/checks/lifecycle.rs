@@ -1,5 +1,6 @@
 //! `lifecycle-metadata`: the repo's `hpds.toml` declares its lifecycle:
-//! a `[project]` table with a valid `status` and a `primary-author`.
+//! a `[project]` table with a valid `status` and a well-formed
+//! `primary-author`.
 //!
 //! The check reads the repo's own `hpds.toml` (not the layered config),
 //! because a status inherited from defaults or user config is exactly the
@@ -7,7 +8,7 @@
 
 use super::{Check, Finding, Severity};
 use crate::audit::AuditCtx;
-use crate::config::PROJECT_STATUSES;
+use crate::config::{PROJECT_STATUSES, is_github_login};
 
 pub(super) struct LifecycleMetadata;
 
@@ -63,16 +64,21 @@ impl Check for LifecycleMetadata {
             }
             Some(_) => {}
         }
-        if layer
-            .project_primary_author
-            .as_deref()
-            .unwrap_or("")
-            .trim()
-            .is_empty()
-        {
+        let author = layer.project_primary_author.as_deref().unwrap_or("");
+        let login = author.strip_prefix('@').unwrap_or(author);
+        if author.trim().is_empty() {
             findings.push(self.finding(
                 "hpds.toml does not set `project.primary-author`",
                 "add `primary-author = \"<github-username>\"` under [project] in hpds.toml",
+            ));
+        } else if !is_github_login(login) {
+            findings.push(self.finding(
+                &format!(
+                    "`{author}` is not a valid GitHub login for \
+                     `project.primary-author` in hpds.toml, so the audit ignores it"
+                ),
+                "set primary-author to a single GitHub login (letters, digits, and hyphens only) \
+                 so the `watchers` and `contributors` checks can verify the author",
             ));
         }
         findings
@@ -164,6 +170,49 @@ mod tests {
             findings[0].message.contains("primary-author"),
             "{findings:?}"
         );
+    }
+
+    #[test]
+    fn invalid_primary_author_is_an_error_naming_the_value() {
+        let (_tmp, repo) = init_repo();
+        write(
+            &repo,
+            "hpds.toml",
+            "[project]\nstatus = \"active\"\nprimary-author = \"alice, bob\"\n",
+        );
+        let findings = LifecycleMetadata.run(&ctx(&repo));
+        assert_eq!(findings.len(), 1, "{findings:?}");
+        assert_eq!(findings[0].severity, Severity::Error);
+        assert!(findings[0].message.contains("`alice, bob`"), "{findings:?}");
+        assert!(
+            findings[0].message.contains("the audit ignores it"),
+            "{findings:?}"
+        );
+        assert!(
+            findings[0]
+                .remediation
+                .contains("`watchers` and `contributors`"),
+            "{findings:?}"
+        );
+        assert!(
+            findings[0].message.contains("primary-author"),
+            "{findings:?}"
+        );
+        assert!(
+            findings[0].remediation.contains("single GitHub login"),
+            "{findings:?}"
+        );
+    }
+
+    #[test]
+    fn primary_author_with_one_leading_at_sign_passes() {
+        let (_tmp, repo) = init_repo();
+        write(
+            &repo,
+            "hpds.toml",
+            "[project]\nstatus = \"active\"\nprimary-author = \"@malcolm\"\n",
+        );
+        assert_eq!(LifecycleMetadata.run(&ctx(&repo)), Vec::new());
     }
 
     #[test]
