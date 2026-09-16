@@ -7,6 +7,10 @@
 //! config directory) to an isolated temp dir so the developer's real user
 //! config can never leak into assertions.
 
+mod common;
+
+#[cfg(unix)]
+use common::write_executable_shim;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -126,10 +130,8 @@ fn write(repo: &Path, rel: &str, content: &str) {
 /// with success, i.e. an authenticated session.
 #[cfg(unix)]
 fn write_gh_shim(dir: &Path) -> PathBuf {
-    use std::os::unix::fs::PermissionsExt;
     let gh = dir.join("gh");
-    fs::write(&gh, "#!/bin/sh\nexit 0\n").expect("write gh shim");
-    fs::set_permissions(&gh, fs::Permissions::from_mode(0o755)).expect("make gh shim executable");
+    write_executable_shim(&gh, "#!/bin/sh\nexit 0\n");
     gh
 }
 

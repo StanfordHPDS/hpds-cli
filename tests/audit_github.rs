@@ -15,6 +15,9 @@
 //! platform-independent and unit-tested in `src/audit/github/`.
 #![cfg(unix)]
 
+mod common;
+
+use common::write_executable_shim;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -67,11 +70,7 @@ fn setup() -> Sandbox {
     let shim_dir = tmp.path().join("bin");
     fs::create_dir(&shim_dir).expect("create shim dir");
     let gh = shim_dir.join("gh");
-    fs::write(&gh, GH_SHIM).expect("write gh shim");
-    {
-        use std::os::unix::fs::PermissionsExt;
-        fs::set_permissions(&gh, fs::Permissions::from_mode(0o755)).expect("chmod gh shim");
-    }
+    write_executable_shim(&gh, GH_SHIM);
 
     let gitconfig = tmp.path().join("gitconfig");
     fs::write(

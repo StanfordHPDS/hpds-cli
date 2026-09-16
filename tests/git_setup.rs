@@ -10,8 +10,11 @@
 //! `gh.exe`, so a script shim on PATH cannot intercept the call there.
 #![cfg(unix)]
 
+mod common;
+
+use common::write_executable_shim;
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use assert_cmd::Command;
 use predicates::prelude::*;
@@ -45,8 +48,7 @@ impl Sandbox {
     fn new() -> Self {
         let (tmp, bin) = Self::base_dirs();
         let gh = bin.join("gh");
-        fs::write(&gh, GH_SHIM).expect("write gh shim");
-        make_executable(&gh);
+        write_executable_shim(&gh, GH_SHIM);
         let orig = std::env::var_os("PATH").unwrap_or_default();
         let path = std::env::join_paths(std::iter::once(bin).chain(std::env::split_paths(&orig)))
             .expect("join PATH");
@@ -148,11 +150,6 @@ impl Sandbox {
             .map(str::to_string)
             .collect()
     }
-}
-
-fn make_executable(path: &Path) {
-    use std::os::unix::fs::PermissionsExt;
-    fs::set_permissions(path, fs::Permissions::from_mode(0o755)).expect("chmod shim");
 }
 
 /// Resolve a program on the test process's own PATH.

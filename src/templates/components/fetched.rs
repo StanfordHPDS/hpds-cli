@@ -531,6 +531,8 @@ fn clear_readonly_recursively(path: &Path) -> std::io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(unix)]
+    use crate::tools::test_support::write_executable_shim;
     use std::fs;
 
     /// A temp dir posing as a PATH entry, holding fake executables.
@@ -545,12 +547,10 @@ mod tests {
         let tmp = tempfile::tempdir().expect("create tempdir");
         for tool in tools {
             let file = tmp.path().join(shim_file_name(tool));
-            fs::write(&file, "#!/bin/sh\nexit 0\n").expect("write shim");
             #[cfg(unix)]
-            {
-                use std::os::unix::fs::PermissionsExt;
-                fs::set_permissions(&file, fs::Permissions::from_mode(0o755)).expect("chmod shim");
-            }
+            write_executable_shim(&file, "#!/bin/sh\nexit 0\n");
+            #[cfg(not(unix))]
+            fs::write(&file, "#!/bin/sh\nexit 0\n").expect("write shim");
         }
         let path_var = std::env::join_paths([tmp.path()]).expect("join PATH");
         ShimPath {
@@ -653,19 +653,16 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn quarto_is_invoked_with_use_template_no_prompt_inside_the_dest() {
-        use std::os::unix::fs::PermissionsExt;
         let tmp = tempfile::tempdir().expect("create tempdir");
         let capture = tmp.path().join("capture.txt");
         let shim = tmp.path().join("quarto");
-        fs::write(
+        write_executable_shim(
             &shim,
             format!(
                 "#!/bin/sh\n{{ pwd; printf '%s\\n' \"$@\"; }} > '{}'\n",
                 capture.display()
             ),
-        )
-        .expect("write shim");
-        fs::set_permissions(&shim, fs::Permissions::from_mode(0o755)).expect("chmod shim");
+        );
         let dest = tmp.path().join("hpds-slides-theme");
         fs::create_dir(&dest).expect("create dest");
 
@@ -698,16 +695,13 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn failed_quarto_fetch_removes_the_destination_so_retries_are_not_poisoned() {
-        use std::os::unix::fs::PermissionsExt;
         let tmp = tempfile::tempdir().expect("create tempdir");
         let shim = tmp.path().join("quarto");
         // Simulate quarto dying mid-fetch: partial output, then failure.
-        fs::write(
+        write_executable_shim(
             &shim,
             "#!/bin/sh\necho partial > _partial.qmd\necho 'no route to host' >&2\nexit 1\n",
-        )
-        .expect("write shim");
-        fs::set_permissions(&shim, fs::Permissions::from_mode(0o755)).expect("chmod shim");
+        );
         let dest = tmp.path().join("hpds-slides-theme");
 
         let err =
@@ -733,10 +727,9 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn failed_quarto_fetch_truncates_stderr_to_the_first_error_line_without_ansi() {
-        use std::os::unix::fs::PermissionsExt;
         let tmp = tempfile::tempdir().expect("create tempdir");
         let shim = tmp.path().join("quarto");
-        fs::write(
+        write_executable_shim(
             &shim,
             concat!(
                 "#!/bin/sh\n",
@@ -749,9 +742,7 @@ mod tests {
                 "printf '    at async mainFetch (ext:deno_fetch/26_fetch.js:181:5)\\n' >&2\n",
                 "exit 1\n"
             ),
-        )
-        .expect("write shim");
-        fs::set_permissions(&shim, fs::Permissions::from_mode(0o755)).expect("chmod shim");
+        );
         let dest = tmp.path().join("hpds-slides-theme");
 
         let err =
@@ -814,19 +805,16 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn gh_is_invoked_with_repo_clone_slug_dest_and_shallow_passthrough() {
-        use std::os::unix::fs::PermissionsExt;
         let tmp = tempfile::tempdir().expect("create tempdir");
         let capture = tmp.path().join("capture.txt");
         let shim = tmp.path().join("gh");
-        fs::write(
+        write_executable_shim(
             &shim,
             format!(
                 "#!/bin/sh\nprintf '%s\\n' \"$@\" > '{}'\n",
                 capture.display()
             ),
-        )
-        .expect("write shim");
-        fs::set_permissions(&shim, fs::Permissions::from_mode(0o755)).expect("chmod shim");
+        );
         let dest = tmp.path().join("hpds-poster");
 
         clone_and_strip(

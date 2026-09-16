@@ -15,6 +15,9 @@
 //! platform-independent and unit-tested in `src/audit/report_github.rs`.
 #![cfg(unix)]
 
+mod common;
+
+use common::write_executable_shim;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -76,11 +79,7 @@ fn setup() -> Sandbox {
     let shim_dir = tmp.path().join("bin");
     fs::create_dir(&shim_dir).expect("create shim dir");
     let gh = shim_dir.join("gh");
-    fs::write(&gh, GH_SHIM).expect("write gh shim");
-    {
-        use std::os::unix::fs::PermissionsExt;
-        fs::set_permissions(&gh, fs::Permissions::from_mode(0o755)).expect("chmod gh shim");
-    }
+    write_executable_shim(&gh, GH_SHIM);
 
     let log = tmp.path().join("gh.log");
     fs::write(&log, "").expect("create gh log");
@@ -303,16 +302,10 @@ fn gh_runs_the_explicit_override_and_never_falls_through_to_path() {
     let decoy_dir = sb.tmp.path().join("decoy-bin");
     fs::create_dir(&decoy_dir).expect("create decoy dir");
     let sentinel = sb.tmp.path().join("real-gh-was-invoked");
-    fs::write(
-        decoy_dir.join("gh"),
+    write_executable_shim(
+        &decoy_dir.join("gh"),
         format!("#!/bin/sh\ntouch \"{}\"\nexit 1\n", sentinel.display()),
-    )
-    .expect("write decoy gh");
-    {
-        use std::os::unix::fs::PermissionsExt;
-        fs::set_permissions(decoy_dir.join("gh"), fs::Permissions::from_mode(0o755))
-            .expect("chmod decoy gh");
-    }
+    );
     let orig_path = std::env::var_os("PATH").unwrap_or_default();
     let decoy_path =
         std::env::join_paths(std::iter::once(decoy_dir).chain(std::env::split_paths(&orig_path)))

@@ -7,6 +7,10 @@
 //! covered by unit tests against shim tools and by the `online-tests`
 //! feature.
 
+mod common;
+
+#[cfg(unix)]
+use common::write_executable_shim;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -97,14 +101,11 @@ fn poster_rejects_the_workflows_flag_without_fetching() {
 #[cfg(unix)]
 #[test]
 fn successful_fetch_prints_created_before_the_next_steps() {
-    use std::os::unix::fs::PermissionsExt;
-
     let sandbox = Sandbox::new();
     let shim_dir = sandbox.home.path().join("bin");
     fs::create_dir(&shim_dir).expect("create shim dir");
     let quarto = shim_dir.join("quarto");
-    fs::write(&quarto, "#!/bin/sh\nexit 0\n").expect("write quarto shim");
-    fs::set_permissions(&quarto, fs::Permissions::from_mode(0o755)).expect("chmod quarto shim");
+    write_executable_shim(&quarto, "#!/bin/sh\nexit 0\n");
 
     let assert = sandbox
         .hpds_use(&["slides"])

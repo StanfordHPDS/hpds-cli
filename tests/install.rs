@@ -5,7 +5,11 @@
 //! only up to their idempotent already-installed check, against fake
 //! tools on a controlled `PATH`.
 
+mod common;
+
 use assert_cmd::Command;
+#[cfg(unix)]
+use common::write_executable_shim;
 use predicates::prelude::*;
 
 fn hpds() -> Command {
@@ -75,8 +79,6 @@ fn install_tinytex_without_quarto_says_install_quarto_first() {
 #[cfg(unix)]
 #[test]
 fn install_is_a_no_op_when_the_tool_is_already_on_path() {
-    use std::os::unix::fs::PermissionsExt;
-
     let bin = tempfile::tempdir().expect("tempdir");
     // (hpds tool name, executable name, --version output, detected version)
     let fake_tools = [
@@ -94,16 +96,13 @@ fn install_is_a_no_op_when_the_tool_is_already_on_path() {
     ];
     for (_, exe, version_output, _) in fake_tools {
         let path = bin.path().join(exe);
-        std::fs::write(&path, format!("#!/bin/sh\necho '{version_output}'\n"))
-            .expect("write fake tool");
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755))
-            .expect("mark fake tool executable");
+        write_executable_shim(&path, format!("#!/bin/sh\necho '{version_output}'\n"));
     }
 
     // quarto answers both `--version` (its own detection) and `list tools`
     // (tinytex detection), covering the last two installers.
     let quarto = bin.path().join("quarto");
-    std::fs::write(
+    write_executable_shim(
         &quarto,
         "#!/bin/sh\n\
          if [ \"$1\" = list ]; then\n\
@@ -112,10 +111,7 @@ fn install_is_a_no_op_when_the_tool_is_already_on_path() {
          else\n\
          echo '1.9.36'\n\
          fi\n",
-    )
-    .expect("write fake quarto");
-    std::fs::set_permissions(&quarto, std::fs::Permissions::from_mode(0o755))
-        .expect("mark fake quarto executable");
+    );
 
     let no_ops = fake_tools
         .into_iter()
@@ -160,13 +156,9 @@ fn install_accepts_short_yes_flag() {
 #[cfg(unix)]
 #[test]
 fn install_pinned_to_the_installed_version_is_a_no_op() {
-    use std::os::unix::fs::PermissionsExt;
-
     let bin = tempfile::tempdir().expect("tempdir");
     let path = bin.path().join("quarto");
-    std::fs::write(&path, "#!/bin/sh\necho '1.9.36'\n").expect("write fake quarto");
-    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755))
-        .expect("mark fake quarto executable");
+    write_executable_shim(&path, "#!/bin/sh\necho '1.9.36'\n");
 
     hpds()
         .args(["install", "quarto", "--version", "1.9.36", "--yes"])
@@ -181,15 +173,10 @@ fn install_pinned_to_the_installed_version_is_a_no_op() {
 #[cfg(unix)]
 #[test]
 fn install_without_yes_non_interactively_refuses_before_running_anything() {
-    use std::os::unix::fs::PermissionsExt;
-
     let bin = tempfile::tempdir().expect("tempdir");
     let marker = bin.path().join("brew-ran");
     let brew = bin.path().join("brew");
-    std::fs::write(&brew, format!("#!/bin/sh\ntouch {}\n", marker.display()))
-        .expect("write fake brew");
-    std::fs::set_permissions(&brew, std::fs::Permissions::from_mode(0o755))
-        .expect("mark fake brew executable");
+    write_executable_shim(&brew, format!("#!/bin/sh\ntouch {}\n", marker.display()));
 
     hpds()
         .args(["install", "uv"])
@@ -228,11 +215,9 @@ fn install_togi_plan_names_the_source_release_repo() {
 #[cfg(unix)]
 #[test]
 fn install_with_yes_prints_the_plan_and_runs_the_strategy() {
-    use std::os::unix::fs::PermissionsExt;
-
     let bin = tempfile::tempdir().expect("tempdir");
     let brew = bin.path().join("brew");
-    std::fs::write(
+    write_executable_shim(
         &brew,
         format!(
             "#!/bin/sh\n\
@@ -240,10 +225,7 @@ fn install_with_yes_prints_the_plan_and_runs_the_strategy() {
              chmod +x {dir}/uv\n",
             dir = bin.path().display()
         ),
-    )
-    .expect("write fake brew");
-    std::fs::set_permissions(&brew, std::fs::Permissions::from_mode(0o755))
-        .expect("mark fake brew executable");
+    );
 
     hpds()
         .args(["install", "uv", "--yes"])

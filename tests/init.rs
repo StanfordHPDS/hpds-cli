@@ -23,7 +23,11 @@
 //! cd .. && rm -rf smoke-hpds-init
 //! ```
 
+mod common;
+
 use assert_cmd::Command;
+#[cfg(unix)]
+use common::write_executable_shim;
 use predicates::prelude::*;
 use std::fs;
 
@@ -459,8 +463,6 @@ fn init_yes_rerun_over_an_existing_project_is_not_gated() {
 #[cfg(unix)]
 #[test]
 fn init_yes_author_defaults_to_the_gh_login() {
-    use std::os::unix::fs::PermissionsExt;
-
     let tmp = tempfile::tempdir().expect("tempdir");
     let shim_dir = tmp.path().join("bin");
     let project = tmp.path().join("proj");
@@ -468,15 +470,13 @@ fn init_yes_author_defaults_to_the_gh_login() {
     fs::create_dir_all(&project).expect("create project dir");
     let log = tmp.path().join("gh.log");
     let gh = shim_dir.join("gh");
-    fs::write(
+    write_executable_shim(
         &gh,
         format!(
             "#!/bin/sh\nprintf 'gh %s\\n' \"$*\" >> '{}'\necho octocat\n",
             log.display()
         ),
-    )
-    .expect("write gh shim");
-    fs::set_permissions(&gh, fs::Permissions::from_mode(0o755)).expect("chmod gh shim");
+    );
 
     hpds()
         .args(["init", "--yes"])
