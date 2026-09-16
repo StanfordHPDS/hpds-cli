@@ -247,8 +247,8 @@ impl GithubCtx {
     /// endpoint that fails here is simply left uncached, so the check
     /// that needs it refetches and reports its own finding exactly as it
     /// would without prefetch.
-    pub fn prefetch(&self, config: &crate::config::Config) {
-        checks::prefetch(self, config);
+    pub fn prefetch(&self, config: &crate::config::Config, pull_request_run: bool) {
+        checks::prefetch(self, config, pull_request_run);
     }
 
     /// Batch-fetch the not-yet-cached endpoints among `requests` and

@@ -144,11 +144,12 @@ fn clone_and_audit(spec: &RepoSpec, dest: &Path) -> anyhow::Result<Vec<Finding>>
         repo: dest.to_path_buf(),
         config: loaded.config,
         github: github_ctx,
+        pull_request_run: false,
     };
     if let Some(github) = ctx.github.as_ref() {
         // Warm the GitHub cache in concurrent batches before the checks
         // run sequentially; findings and their order are unaffected.
-        github.prefetch(&ctx.config);
+        github.prefetch(&ctx.config, ctx.pull_request_run);
     }
     let mut findings = super::run_checks(&checks, &ctx);
     findings.extend(notice);
@@ -235,9 +236,10 @@ pub fn audit_metadata(slug: &str, config: &Config, scratch: &Path) -> RepoReport
             owner: owner.to_string(),
             repo: name.to_string(),
         })),
+        pull_request_run: false,
     };
     if let Some(github) = ctx.github.as_ref() {
-        github.prefetch(&ctx.config);
+        github.prefetch(&ctx.config, ctx.pull_request_run);
     }
     let findings = super::run_checks(&metadata_registry(), &ctx);
     RepoReport {

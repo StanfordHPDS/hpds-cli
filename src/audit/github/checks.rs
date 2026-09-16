@@ -10,7 +10,7 @@ use std::time::SystemTime;
 use super::model::{
     self, BranchDetail, BranchSummary, Comparison, GithubUser, ModelError, Release, RepoInfo,
 };
-use super::{GhApiError, GithubCtx};
+use super::{GhApiError, GithubCtx, LocalTip};
 use crate::audit::{AuditCtx, Check, Finding, Severity};
 use crate::config::{fold_login, same_login};
 
@@ -32,7 +32,7 @@ pub(super) fn registry() -> Vec<Box<dyn Check>> {
 /// checks build theirs; anything that fails to fetch or parse here is
 /// skipped silently, leaving that check to refetch sequentially and
 /// report as usual.
-pub(super) fn prefetch(github: &GithubCtx, config: &crate::config::Config) {
+pub(super) fn prefetch(github: &GithubCtx, config: &crate::config::Config, pull_request_run: bool) {
     let slug = &github.slug;
 
     // Wave 1: the endpoints no check needs prior data to name. The
@@ -62,7 +62,10 @@ pub(super) fn prefetch(github: &GithubCtx, config: &crate::config::Config) {
     if info.owner.kind == "Organization" {
         wave.push((format!("orgs/{}/members", info.owner.login), true));
     }
-    if let Some(tip) = github.local_branch_commit(&info.default_branch) {
+    if let Some(tip) = github
+        .local_branch_commit(&info.default_branch)
+        .filter(|tip| !skips_head_comparison(tip, pull_request_run))
+    {
         wave.push((
             format!(
                 "repos/{slug}/compare/{}...{}",
@@ -334,7 +337,19 @@ impl Contributors {
 /// behind the local checkout? Compared via `gh api compare` between the
 /// local branch tip and the remote branch, so no fetch is needed; a local
 /// tip GitHub has never seen (404) means unpushed or rewritten history.
+///
+/// In a pull request run with no local default branch, HEAD is a detached
+/// commit that is not the default branch (the PR merge commit, or the base
+/// tip on `pull_request_target`), so any difference describes the pull
+/// request context rather than a stale default branch; the check reports
+/// nothing and skips the compare.
 struct DefaultBranchStaleness;
+
+/// Whether the staleness comparison is skipped for `tip`: a HEAD stand-in
+/// during a pull request run.
+fn skips_head_comparison(tip: &LocalTip, pull_request_run: bool) -> bool {
+    pull_request_run && tip.from_head
+}
 
 impl Check for DefaultBranchStaleness {
     fn id(&self) -> &str {
@@ -353,6 +368,9 @@ impl Check for DefaultBranchStaleness {
                     format!("check out or fetch `{branch}`, then re-run `hpds audit`"),
                 )]);
             };
+            if skips_head_comparison(&tip, ctx.pull_request_run) {
+                return Ok(Vec::new());
+            }
             // When no local branch matched the remote default (e.g. a
             // single-branch clone of a feature branch), HEAD stood in for
             // it: say so, and never advise pushing/pulling `branch` from a
@@ -729,6 +747,7 @@ mod tests {
                 },
                 Box::new(fake),
             )),
+            pull_request_run: false,
         }
     }
 
@@ -764,6 +783,7 @@ mod tests {
             repo: PathBuf::from("/tmp/demo"),
             config: Config::default(),
             github: None,
+            pull_request_run: false,
         };
         for check in registry() {
             assert_eq!(check.run(&ctx), Vec::new(), "{}", check.id());
@@ -1101,6 +1121,92 @@ mod tests {
         );
     }
 
+    /// A pull request run in GitHub Actions: HEAD is the PR merge commit.
+    fn pr_ctx(fake: FakeGh) -> AuditCtx {
+        AuditCtx {
+            pull_request_run: true,
+            ..ctx(fake, Config::default())
+        }
+    }
+
+    #[test]
+    fn staleness_pr_run_head_fallback_is_silent_for_every_comparison() {
+        for fixture in [
+            "compare-behind.json",
+            "compare-ahead.json",
+            "compare-diverged.json",
+            "compare-identical.json",
+        ] {
+            let ctx = pr_ctx(staleness_fake(fixture).with_head_fallback());
+            assert_eq!(
+                run_one(&DefaultBranchStaleness, &ctx),
+                Vec::new(),
+                "{fixture}"
+            );
+        }
+    }
+
+    #[test]
+    fn staleness_pr_run_head_fallback_unknown_commit_is_silent() {
+        let fake = FakeGh::new()
+            .serve_fixture("repos/acme/demo", "repo.json")
+            .serve_not_found(&format!("repos/acme/demo/compare/{LOCAL_SHA}...main"))
+            .with_head_fallback();
+        let ctx = pr_ctx(fake);
+        assert_eq!(run_one(&DefaultBranchStaleness, &ctx), Vec::new());
+    }
+
+    #[test]
+    fn staleness_pr_run_head_fallback_skips_the_compare_request() {
+        let fake = staleness_fake("compare-behind.json").with_head_fallback();
+        let calls = fake.call_log();
+        let ctx = pr_ctx(fake);
+        let github = ctx.github.as_ref().expect("github context");
+        github.prefetch(&ctx.config, ctx.pull_request_run);
+        run_one(&DefaultBranchStaleness, &ctx);
+        assert!(
+            calls.borrow().iter().all(|(e, _)| !e.contains("/compare/")),
+            "{:?}",
+            calls.borrow()
+        );
+    }
+
+    #[test]
+    fn staleness_pr_run_with_a_real_local_branch_still_warns() {
+        let ctx = pr_ctx(staleness_fake("compare-behind.json"));
+        let findings = run_one(&DefaultBranchStaleness, &ctx);
+        assert_eq!(findings.len(), 1, "{findings:?}");
+        assert_eq!(findings[0].severity, Severity::Warn);
+        assert!(
+            findings[0].remediation.contains("git push origin main"),
+            "{findings:?}"
+        );
+    }
+
+    #[test]
+    fn staleness_pr_run_with_a_real_local_branch_still_reports_unknown_commit() {
+        let fake = FakeGh::new()
+            .serve_fixture("repos/acme/demo", "repo.json")
+            .serve_not_found(&format!("repos/acme/demo/compare/{LOCAL_SHA}...main"));
+        let ctx = pr_ctx(fake);
+        let findings = run_one(&DefaultBranchStaleness, &ctx);
+        assert_eq!(findings.len(), 1, "{findings:?}");
+        assert!(
+            findings[0].message.contains("not on GitHub"),
+            "{findings:?}"
+        );
+    }
+
+    #[test]
+    fn staleness_non_pr_run_head_fallback_diverged_warns_twice() {
+        let ctx = ctx(
+            staleness_fake("compare-diverged.json").with_head_fallback(),
+            Config::default(),
+        );
+        let findings = run_one(&DefaultBranchStaleness, &ctx);
+        assert_eq!(findings.len(), 2, "{findings:?}");
+    }
+
     #[test]
     fn staleness_never_panics_on_malformed_repo_json() {
         let fake = FakeGh::new().serve_fixture("repos/acme/demo", "malformed.json");
@@ -1259,7 +1365,7 @@ mod tests {
         let calls = fake.call_log();
         let ctx = ctx(fake, config_with_author("researcher1"));
         let github = ctx.github.as_ref().expect("github context");
-        github.prefetch(&ctx.config);
+        github.prefetch(&ctx.config, ctx.pull_request_run);
         run_registry(&ctx);
 
         let calls = calls.borrow();
@@ -1293,7 +1399,7 @@ mod tests {
             .github
             .as_ref()
             .expect("github context")
-            .prefetch(&ctx_prefetch.config);
+            .prefetch(&ctx_prefetch.config, false);
         let mut actual = prefetch_calls.borrow().clone();
         actual.sort();
 
@@ -1310,7 +1416,7 @@ mod tests {
             .github
             .as_ref()
             .expect("github context")
-            .prefetch(&ctx_prefetched.config);
+            .prefetch(&ctx_prefetched.config, false);
         let prefetched = run_registry(&ctx_prefetched);
 
         assert_eq!(prefetched, plain);
@@ -1322,7 +1428,7 @@ mod tests {
         let calls = fake.call_log();
         let ctx = ctx(fake, config_with_author("researcher1"));
         let github = ctx.github.as_ref().expect("github context");
-        github.prefetch(&ctx.config);
+        github.prefetch(&ctx.config, ctx.pull_request_run);
 
         // The failed endpoint was not cached; the check retries it and
         // owns the resulting finding, exactly as without prefetch.
