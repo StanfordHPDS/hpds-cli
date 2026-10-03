@@ -26,10 +26,14 @@ Run them from the repo root before you commit:
 
 ```
 cargo fmt --check
-cargo clippy --all-targets -- -D warnings
-cargo test
+cargo clippy --all-targets --all-features --locked -- -D warnings
+cargo test --locked
+RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --locked
+typos
 ```
 
+The `typos` spell check runs on Linux only in CI.
+Install it with `cargo install typos-cli` or `brew install typos-cli`.
 If `cargo fmt --check` fails, run `cargo fmt` to fix formatting and re-check.
 
 CI also runs `cargo test --features online-tests` in a separate job that is allowed to fail; those tests exercise the network and real tool downloads, so they are not required and you do not need to run them locally.
