@@ -130,12 +130,14 @@ $ hpds repo create
 ## Development
 
 Requires a stable Rust toolchain (Rust 2024 edition; `rust-toolchain.toml` pins the channel and components).
-See [CONTRIBUTING.md](CONTRIBUTING.md) for the developer workflow. CI requires these gates on Linux, macOS, and Windows:
+See [CONTRIBUTING.md](CONTRIBUTING.md) for the developer workflow. CI requires these gates on Linux, macOS, and Windows (the typos check runs on Linux only):
 
 ```sh
 cargo fmt --check
-cargo clippy --all-targets -- -D warnings
-cargo test
+cargo clippy --all-targets --all-features --locked -- -D warnings
+cargo test --locked
+RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --locked
+typos
 ```
 
 CI also runs `cargo test --features online-tests` in a separate job that is allowed to fail; those tests exercise the network and real tool downloads and are not required.

@@ -40,6 +40,8 @@ case "$1" in
       repos/acme/demo/branches/fresh-idea)      cat "$GH_FIXTURES/branch-fresh.json" ;;
       repos/acme/demo/branches)                 cat "$GH_FIXTURES/branches.json" ;;
       repos/acme/demo/compare/main...old-analysis) cat "$GH_FIXTURES/compare-ahead.json" ;;
+      repos/acme/demo/compare/main...fresh-idea) cat "$GH_FIXTURES/compare-identical.json" ;;
+      repos/acme/demo/pulls?state=open)         cat "$GH_FIXTURES/pulls-open.json" ;;
       repos/acme/demo/compare/*...main)         cat "$GH_FIXTURES/compare-identical.json" ;;
       repos/acme/demo/releases)                 cat "$GH_FIXTURES/releases-empty.json" ;;
       repos/acme/demo)                          cat "$GH_FIXTURES/repo.json" ;;
@@ -410,5 +412,7 @@ fn authenticated_audit_reports_github_findings_end_to_end() {
     );
     assert!(by_check("contributors").is_empty(), "{findings:?}");
     assert!(by_check("lifecycle-consistency").is_empty(), "{findings:?}");
+    // fresh-idea is recent but already merged, so no branch lacks a PR.
+    assert!(by_check("branches-without-pr").is_empty(), "{findings:?}");
     assert!(by_check("github").is_empty(), "{findings:?}");
 }

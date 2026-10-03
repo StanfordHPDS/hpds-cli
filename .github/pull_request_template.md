@@ -2,10 +2,6 @@
 
 <!-- Describe the changes in this PR and why they were made. -->
 
-## Related issue
-
-<!-- br issue id(s), e.g. `br: hpds-12`. -->
-
 ## Important decisions
 
 <!-- Document design decisions, trade-offs, or spec ambiguities you resolved
@@ -13,7 +9,9 @@
 
 ## Checklist
 
-- [ ] `cargo test` passes
-- [ ] `cargo clippy --all-targets -- -D warnings` passes
+- [ ] `cargo test --locked` passes
+- [ ] `cargo clippy --all-targets --all-features --locked -- -D warnings` passes
 - [ ] `cargo fmt --check` passes
+- [ ] `RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --locked` passes
+- [ ] `typos` passes
 - [ ] New behavior is covered by tests (test-first)

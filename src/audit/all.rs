@@ -207,7 +207,12 @@ fn one_line(text: &str) -> String {
 /// excluded deliberately: `default-branch-staleness` compares against a
 /// local checkout, and `releases` / `lifecycle-consistency` read the
 /// project status from `hpds.toml`, which only exists in a working tree.
-pub const NO_CLONE_CHECK_IDS: &[&str] = &["watchers", "contributors", "stale-remote-branches"];
+pub const NO_CLONE_CHECK_IDS: &[&str] = &[
+    "watchers",
+    "contributors",
+    "stale-remote-branches",
+    "branches-without-pr",
+];
 
 /// The [`NO_CLONE_CHECK_IDS`] subset of the GitHub check registry.
 fn metadata_registry() -> Vec<Box<dyn Check>> {
@@ -680,6 +685,22 @@ mod tests {
             .map(|c| c.id().to_string())
             .collect();
         assert_eq!(ids, NO_CLONE_CHECK_IDS);
+    }
+
+    #[test]
+    fn no_clone_mode_runs_the_github_checks_that_need_no_working_tree() {
+        let expected = [
+            "watchers",
+            "contributors",
+            "stale-remote-branches",
+            "branches-without-pr",
+        ];
+        assert_eq!(NO_CLONE_CHECK_IDS, expected);
+        let ids: Vec<String> = metadata_registry()
+            .iter()
+            .map(|c| c.id().to_string())
+            .collect();
+        assert_eq!(ids, expected);
     }
 
     #[test]

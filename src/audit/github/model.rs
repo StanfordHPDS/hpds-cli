@@ -86,6 +86,31 @@ pub struct Comparison {
     pub behind_by: u64,
 }
 
+/// One entry of `repos/{owner}/{repo}/pulls?state=open`: just enough to
+/// tell which branch of which repository the pull request comes from.
+#[derive(Debug, Clone, Deserialize)]
+pub struct PullRequest {
+    pub head: PrHead,
+}
+
+/// The head side of a [`PullRequest`]: the branch it proposes to merge.
+#[derive(Debug, Clone, Deserialize)]
+pub struct PrHead {
+    /// The head branch name, without the `owner:` prefix of `label`.
+    #[serde(rename = "ref")]
+    pub ref_name: String,
+    /// The repository holding the head branch; `null` when that repository
+    /// (typically a fork) has since been deleted.
+    pub repo: Option<PrRepo>,
+}
+
+/// The repository holding a [`PrHead`] branch.
+#[derive(Debug, Clone, Deserialize)]
+pub struct PrRepo {
+    /// `owner/repo`.
+    pub full_name: String,
+}
+
 /// One entry of `repos/{owner}/{repo}/releases`.
 #[derive(Debug, Clone, Deserialize)]
 pub struct Release {
@@ -267,6 +292,59 @@ pub(crate) mod tests {
         let branches: Vec<BranchSummary> = parse_pages(&fixture("branches.json")).expect("parses");
         let names: Vec<&str> = branches.iter().map(|b| b.name.as_str()).collect();
         assert_eq!(names, ["main", "old-analysis", "fresh-idea"]);
+    }
+
+    #[test]
+    fn recorded_open_pulls_span_two_pages_with_every_head_shape() {
+        // pulls-open.json records two concatenated pages, the raw shape of
+        // `gh api --paginate`: a draft and a ready PR from the repo itself,
+        // a fork PR whose head ref matches a same-repo branch name, and a
+        // PR whose fork was deleted (head.repo is null).
+        let pulls: Vec<serde_json::Value> =
+            parse_pages(&fixture("pulls-open.json")).expect("parses");
+        let heads: Vec<(&str, Option<&str>, bool)> = pulls
+            .iter()
+            .map(|pr| {
+                (
+                    pr["head"]["ref"].as_str().expect("head ref"),
+                    pr["head"]["repo"]["full_name"].as_str(),
+                    pr["draft"].as_bool().expect("draft flag"),
+                )
+            })
+            .collect();
+        assert_eq!(
+            heads,
+            [
+                ("draft-work", Some("acme/demo"), true),
+                ("ready-work", Some("acme/demo"), false),
+                ("shared-name", Some("contributor/demo"), false),
+                ("orphan-ref", None, false),
+            ]
+        );
+        assert!(pulls[3]["head"]["repo"].is_null());
+    }
+
+    #[test]
+    fn parses_the_recorded_open_pulls_into_typed_heads() {
+        let pulls: Vec<PullRequest> = parse_pages(&fixture("pulls-open.json")).expect("parses");
+        let heads: Vec<(&str, Option<&str>)> = pulls
+            .iter()
+            .map(|pr| {
+                (
+                    pr.head.ref_name.as_str(),
+                    pr.head.repo.as_ref().map(|repo| repo.full_name.as_str()),
+                )
+            })
+            .collect();
+        assert_eq!(
+            heads,
+            [
+                ("draft-work", Some("acme/demo")),
+                ("ready-work", Some("acme/demo")),
+                ("shared-name", Some("contributor/demo")),
+                ("orphan-ref", None),
+            ]
+        );
     }
 
     #[test]
