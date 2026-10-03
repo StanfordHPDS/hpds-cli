@@ -1,0 +1,196 @@
+[
+  {
+    "url": "https://api.github.com/repos/acme/demo/pulls/14",
+    "id": 2087654314,
+    "node_id": "PR_kwDOHomYzs58bKqq",
+    "html_url": "https://github.com/acme/demo/pull/14",
+    "number": 14,
+    "state": "open",
+    "locked": false,
+    "title": "WIP: bootstrap confidence intervals",
+    "user": {
+      "login": "researcher1",
+      "id": 4410021,
+      "type": "User"
+    },
+    "body": null,
+    "created_at": "2025-06-02T15:20:11Z",
+    "updated_at": "2025-06-09T08:41:37Z",
+    "draft": true,
+    "head": {
+      "label": "acme:draft-work",
+      "ref": "draft-work",
+      "sha": "3a4b5c6d7e8f9a0b1c2d3e4f5a6b7c8d9e0f1a2b",
+      "user": {
+        "login": "acme",
+        "id": 9919,
+        "type": "Organization"
+      },
+      "repo": {
+        "id": 512345678,
+        "node_id": "R_kgDOHomYzg",
+        "name": "demo",
+        "full_name": "acme/demo",
+        "private": true,
+        "fork": false
+      }
+    },
+    "base": {
+      "label": "acme:main",
+      "ref": "main",
+      "sha": "d6f2e5a9c0b1d2e3f4a5b6c7d8e9f0a1b2c3d4e5",
+      "repo": {
+        "id": 512345678,
+        "node_id": "R_kgDOHomYzg",
+        "name": "demo",
+        "full_name": "acme/demo",
+        "private": true,
+        "fork": false
+      }
+    }
+  },
+  {
+    "url": "https://api.github.com/repos/acme/demo/pulls/13",
+    "id": 2081234513,
+    "node_id": "PR_kwDOHomYzs58Ape1",
+    "html_url": "https://github.com/acme/demo/pull/13",
+    "number": 13,
+    "state": "open",
+    "locked": false,
+    "title": "Add sensitivity analysis for missing covariates",
+    "user": {
+      "login": "malcolmbarrett",
+      "id": 1311107,
+      "type": "User"
+    },
+    "body": "Adds a tipping-point analysis to the supplement.",
+    "created_at": "2025-05-28T10:02:45Z",
+    "updated_at": "2025-06-08T17:13:02Z",
+    "draft": false,
+    "head": {
+      "label": "acme:ready-work",
+      "ref": "ready-work",
+      "sha": "4b5c6d7e8f9a0b1c2d3e4f5a6b7c8d9e0f1a2b3c",
+      "user": {
+        "login": "acme",
+        "id": 9919,
+        "type": "Organization"
+      },
+      "repo": {
+        "id": 512345678,
+        "node_id": "R_kgDOHomYzg",
+        "name": "demo",
+        "full_name": "acme/demo",
+        "private": true,
+        "fork": false
+      }
+    },
+    "base": {
+      "label": "acme:main",
+      "ref": "main",
+      "sha": "d6f2e5a9c0b1d2e3f4a5b6c7d8e9f0a1b2c3d4e5",
+      "repo": {
+        "id": 512345678,
+        "node_id": "R_kgDOHomYzg",
+        "name": "demo",
+        "full_name": "acme/demo",
+        "private": true,
+        "fork": false
+      }
+    }
+  }
+][
+  {
+    "url": "https://api.github.com/repos/acme/demo/pulls/9",
+    "id": 2054321009,
+    "node_id": "PR_kwDOHomYzs56cQ4x",
+    "html_url": "https://github.com/acme/demo/pull/9",
+    "number": 9,
+    "state": "open",
+    "locked": false,
+    "title": "Fix typo in README",
+    "user": {
+      "login": "contributor",
+      "id": 7781234,
+      "type": "User"
+    },
+    "body": "Small wording fix.",
+    "created_at": "2025-05-12T21:48:30Z",
+    "updated_at": "2025-05-13T07:05:19Z",
+    "draft": false,
+    "head": {
+      "label": "contributor:shared-name",
+      "ref": "shared-name",
+      "sha": "5c6d7e8f9a0b1c2d3e4f5a6b7c8d9e0f1a2b3c4d",
+      "user": {
+        "login": "contributor",
+        "id": 7781234,
+        "type": "User"
+      },
+      "repo": {
+        "id": 598765432,
+        "node_id": "R_kgDOI_Ab8A",
+        "name": "demo",
+        "full_name": "contributor/demo",
+        "private": false,
+        "fork": true
+      }
+    },
+    "base": {
+      "label": "acme:main",
+      "ref": "main",
+      "sha": "d6f2e5a9c0b1d2e3f4a5b6c7d8e9f0a1b2c3d4e5",
+      "repo": {
+        "id": 512345678,
+        "node_id": "R_kgDOHomYzg",
+        "name": "demo",
+        "full_name": "acme/demo",
+        "private": true,
+        "fork": false
+      }
+    }
+  },
+  {
+    "url": "https://api.github.com/repos/acme/demo/pulls/7",
+    "id": 2041122007,
+    "node_id": "PR_kwDOHomYzs55qW9m",
+    "html_url": "https://github.com/acme/demo/pull/7",
+    "number": 7,
+    "state": "open",
+    "locked": false,
+    "title": "Update data dictionary",
+    "user": {
+      "login": "former-contributor",
+      "id": 6650021,
+      "type": "User"
+    },
+    "body": null,
+    "created_at": "2025-04-30T13:11:52Z",
+    "updated_at": "2025-05-02T09:27:14Z",
+    "draft": false,
+    "head": {
+      "label": "former-contributor:orphan-ref",
+      "ref": "orphan-ref",
+      "sha": "6d7e8f9a0b1c2d3e4f5a6b7c8d9e0f1a2b3c4d5e",
+      "user": {
+        "login": "former-contributor",
+        "id": 6650021,
+        "type": "User"
+      },
+      "repo": null
+    },
+    "base": {
+      "label": "acme:main",
+      "ref": "main",
+      "sha": "d6f2e5a9c0b1d2e3f4a5b6c7d8e9f0a1b2c3d4e5",
+      "repo": {
+        "id": 512345678,
+        "node_id": "R_kgDOHomYzg",
+        "name": "demo",
+        "full_name": "acme/demo",
+        "private": true,
+        "fork": false
+      }
+    }
+  }
+]

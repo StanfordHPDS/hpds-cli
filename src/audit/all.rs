@@ -683,6 +683,22 @@ mod tests {
     }
 
     #[test]
+    fn no_clone_mode_runs_the_github_checks_that_need_no_working_tree() {
+        let expected = [
+            "watchers",
+            "contributors",
+            "stale-remote-branches",
+            "branches-without-pr",
+        ];
+        assert_eq!(NO_CLONE_CHECK_IDS, expected);
+        let ids: Vec<String> = metadata_registry()
+            .iter()
+            .map(|c| c.id().to_string())
+            .collect();
+        assert_eq!(ids, expected);
+    }
+
+    #[test]
     fn no_clone_check_ids_all_exist_in_the_github_registry() {
         let github_ids: Vec<String> = github::registry()
             .iter()

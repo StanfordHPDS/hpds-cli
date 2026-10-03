@@ -764,7 +764,7 @@ mod tests {
     }
 
     #[test]
-    fn registry_has_the_six_documented_checks_in_order() {
+    fn registry_has_the_seven_documented_checks_in_order() {
         let ids: Vec<String> = registry().iter().map(|c| c.id().to_string()).collect();
         assert_eq!(
             ids,
@@ -773,6 +773,7 @@ mod tests {
                 "contributors",
                 "default-branch-staleness",
                 "stale-remote-branches",
+                "branches-without-pr",
                 "releases",
                 "lifecycle-consistency",
             ]
@@ -1335,6 +1336,406 @@ mod tests {
         assert_eq!(run_one(&StaleRemoteBranches, &ctx), Vec::new());
     }
 
+    // ---- branches-without-pr ----
+
+    const BRANCHES_WITHOUT_PR: &str = "branches-without-pr";
+    const OPEN_PULLS: &str = "repos/acme/demo/pulls?state=open";
+
+    /// The registered `branches-without-pr` check, looked up by id so these
+    /// tests exercise exactly what the audit runs.
+    fn branches_without_pr() -> Box<dyn Check> {
+        registry()
+            .into_iter()
+            .find(|check| check.id() == BRANCHES_WITHOUT_PR)
+            .unwrap_or_else(|| panic!("`{BRANCHES_WITHOUT_PR}` is not in the GitHub registry"))
+    }
+
+    /// Civil date (proleptic Gregorian) of a day count from the Unix epoch;
+    /// the inverse of `model::days_from_civil`.
+    fn civil_from_days(days: i64) -> (i64, i64, i64) {
+        let z = days + 719_468;
+        let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
+        let day_of_era = z - era * 146_097;
+        let year_of_era =
+            (day_of_era - day_of_era / 1460 + day_of_era / 36_524 - day_of_era / 146_096) / 365;
+        let day_of_year = day_of_era - (365 * year_of_era + year_of_era / 4 - year_of_era / 100);
+        let month_index = (5 * day_of_year + 2) / 153;
+        let day = day_of_year - (153 * month_index + 2) / 5 + 1;
+        let month = if month_index < 10 {
+            month_index + 3
+        } else {
+            month_index - 9
+        };
+        let year = year_of_era + era * 400 + i64::from(month <= 2);
+        (year, month, day)
+    }
+
+    /// An ISO 8601 timestamp exactly `days` whole days before now.
+    fn iso_days_ago(days: u64) -> String {
+        let now = SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock after the epoch")
+            .as_secs();
+        let then = now - days * 86_400;
+        let seconds = then % 86_400;
+        let (year, month, day) = civil_from_days((then / 86_400) as i64);
+        format!(
+            "{year:04}-{month:02}-{day:02}T{:02}:{:02}:{:02}Z",
+            seconds / 3600,
+            seconds % 3600 / 60,
+            seconds % 60
+        )
+    }
+
+    #[test]
+    fn iso_days_ago_round_trips_through_days_since() {
+        for days in [0, 1, 5, 90, 200, 4000] {
+            let stamp = iso_days_ago(days);
+            let age = model::days_since(&stamp, SystemTime::now()).expect("valid timestamp");
+            assert_eq!(age, days as i64, "{stamp}");
+        }
+    }
+
+    /// The recorded branch detail, renamed and re-dated.
+    fn branch_detail(name: &str, date: &str) -> String {
+        fixture("branch-fresh.json")
+            .replace("\"fresh-idea\"", &format!("\"{name}\""))
+            .replace("2099-01-01T00:00:00Z", date)
+    }
+
+    /// A repo with default branch `main` plus one non-default branch per
+    /// `(name, tip age in days, compare fixture against main)`, and the
+    /// recorded open pull requests.
+    fn pr_fake(branches: &[(&str, u64, &str)]) -> FakeGh {
+        let list: Vec<String> = std::iter::once("main")
+            .chain(branches.iter().map(|(name, _, _)| *name))
+            .map(|name| format!(r#"{{"name": "{name}"}}"#))
+            .collect();
+        let mut fake = FakeGh::new()
+            .serve_fixture("repos/acme/demo", "repo.json")
+            .serve_body(
+                "repos/acme/demo/branches",
+                &format!("[{}]", list.join(", ")),
+            )
+            .serve_fixture(OPEN_PULLS, "pulls-open.json");
+        for (name, age, compare) in branches {
+            fake = fake
+                .serve_body(
+                    &format!("repos/acme/demo/branches/{name}"),
+                    &branch_detail(name, &iso_days_ago(*age)),
+                )
+                .serve_fixture(&format!("repos/acme/demo/compare/main...{name}"), compare);
+        }
+        fake
+    }
+
+    /// Every message and remediation the check produced, for asserting on
+    /// which branches were named regardless of how findings are grouped.
+    fn all_text(findings: &[Finding]) -> String {
+        findings
+            .iter()
+            .map(|f| format!("{}\n{}", f.message, f.remediation))
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    #[test]
+    fn branches_without_pr_flags_a_recent_unmerged_branch_with_no_open_pr() {
+        let fake = pr_fake(&[("recent-work", 5, "compare-ahead.json")]);
+        let calls = fake.call_log();
+        let ctx = ctx(fake, Config::default());
+        let findings = run_one(branches_without_pr().as_ref(), &ctx);
+        assert_eq!(findings.len(), 1, "{findings:?}");
+        assert_eq!(findings[0].check_id, BRANCHES_WITHOUT_PR);
+        assert_eq!(findings[0].severity, Severity::Warn);
+        assert!(findings[0].message.contains("recent-work"), "{findings:?}");
+        assert!(findings[0].message.contains("5 days"), "{findings:?}");
+        assert!(
+            findings[0]
+                .remediation
+                .contains("gh pr create --draft --head"),
+            "{findings:?}"
+        );
+        assert!(findings[0].remediation.contains("delete"), "{findings:?}");
+        assert!(
+            calls
+                .borrow()
+                .iter()
+                .any(|(endpoint, paginate)| endpoint == OPEN_PULLS && *paginate),
+            "the open pull requests are listed with pagination: {:?}",
+            calls.borrow()
+        );
+    }
+
+    #[test]
+    fn branches_without_pr_skips_a_branch_with_an_open_draft_pr() {
+        let ctx = ctx(
+            pr_fake(&[("draft-work", 5, "compare-ahead.json")]),
+            Config::default(),
+        );
+        assert_eq!(run_one(branches_without_pr().as_ref(), &ctx), Vec::new());
+    }
+
+    #[test]
+    fn branches_without_pr_skips_a_branch_with_an_open_ready_pr() {
+        let ctx = ctx(
+            pr_fake(&[("ready-work", 5, "compare-ahead.json")]),
+            Config::default(),
+        );
+        assert_eq!(run_one(branches_without_pr().as_ref(), &ctx), Vec::new());
+    }
+
+    #[test]
+    fn branches_without_pr_matches_the_head_repo_case_insensitively() {
+        // The PR's head repo is this repo, spelled with different case
+        // than the slug detected from `origin`.
+        let pulls = fixture("pulls-open.json").replace(
+            "\"full_name\": \"acme/demo\"",
+            "\"full_name\": \"ACME/Demo\"",
+        );
+        let fake =
+            pr_fake(&[("draft-work", 5, "compare-ahead.json")]).serve_body(OPEN_PULLS, &pulls);
+        let ctx = ctx(fake, Config::default());
+        assert_eq!(run_one(branches_without_pr().as_ref(), &ctx), Vec::new());
+    }
+
+    #[test]
+    fn branches_without_pr_is_not_satisfied_by_a_fork_pr_with_the_same_head_ref() {
+        // PR #9 comes from contributor/demo with head ref `shared-name`;
+        // it does not cover this repo's own `shared-name` branch.
+        let ctx = ctx(
+            pr_fake(&[("shared-name", 5, "compare-ahead.json")]),
+            Config::default(),
+        );
+        let findings = run_one(branches_without_pr().as_ref(), &ctx);
+        assert_eq!(findings.len(), 1, "{findings:?}");
+        assert_eq!(findings[0].check_id, BRANCHES_WITHOUT_PR);
+        assert_eq!(findings[0].severity, Severity::Warn);
+        assert!(findings[0].message.contains("shared-name"), "{findings:?}");
+    }
+
+    #[test]
+    fn branches_without_pr_is_not_satisfied_by_a_pr_whose_fork_was_deleted() {
+        // PR #7 has head ref `orphan-ref` but a null head repo, so it
+        // covers no branch at all.
+        let ctx = ctx(
+            pr_fake(&[("orphan-ref", 5, "compare-ahead.json")]),
+            Config::default(),
+        );
+        let findings = run_one(branches_without_pr().as_ref(), &ctx);
+        assert_eq!(findings.len(), 1, "{findings:?}");
+        assert_eq!(findings[0].severity, Severity::Warn);
+        assert!(findings[0].message.contains("orphan-ref"), "{findings:?}");
+    }
+
+    #[test]
+    fn branches_without_pr_names_only_the_uncovered_branches() {
+        let ctx = ctx(
+            pr_fake(&[
+                ("draft-work", 5, "compare-ahead.json"),
+                ("ready-work", 6, "compare-ahead.json"),
+                ("shared-name", 7, "compare-ahead.json"),
+                ("orphan-ref", 8, "compare-ahead.json"),
+                ("recent-work", 9, "compare-ahead.json"),
+            ]),
+            Config::default(),
+        );
+        let findings = run_one(branches_without_pr().as_ref(), &ctx);
+        assert!(!findings.is_empty());
+        for finding in &findings {
+            assert_eq!(finding.check_id, BRANCHES_WITHOUT_PR);
+            assert_eq!(finding.severity, Severity::Warn);
+        }
+        let text = all_text(&findings);
+        for flagged in ["shared-name", "orphan-ref", "recent-work"] {
+            assert!(text.contains(flagged), "{flagged} missing: {findings:?}");
+        }
+        for covered in ["draft-work", "ready-work"] {
+            assert!(!text.contains(covered), "{covered} flagged: {findings:?}");
+        }
+    }
+
+    #[test]
+    fn branches_without_pr_never_flags_merged_old_or_default_branches() {
+        // `merged-work` is recent but contained in main; `old-work` is
+        // unmerged but past stale-days, so stale-remote-branches owns it;
+        // `main` is the default branch.
+        let ctx = ctx(
+            pr_fake(&[
+                ("merged-work", 5, "compare-identical.json"),
+                ("old-work", 200, "compare-ahead.json"),
+            ]),
+            Config::default(),
+        );
+        assert_eq!(run_one(branches_without_pr().as_ref(), &ctx), Vec::new());
+
+        // The old branch is still reported, once, by the stale check.
+        let stale = run_one(&StaleRemoteBranches, &ctx);
+        assert_eq!(stale.len(), 1, "{stale:?}");
+        assert!(stale[0].message.contains("old-work"), "{stale:?}");
+        assert!(!stale[0].message.contains("merged-work"), "{stale:?}");
+    }
+
+    #[test]
+    fn branches_without_pr_and_stale_remote_branches_split_at_stale_days() {
+        // A branch exactly stale-days old is not yet stale, so it belongs
+        // to branches-without-pr; one day older belongs to the stale check.
+        let ctx = ctx(
+            pr_fake(&[
+                ("boundary-work", 90, "compare-ahead.json"),
+                ("older-work", 91, "compare-ahead.json"),
+            ]),
+            Config::default(),
+        );
+        let without_pr = all_text(&run_one(branches_without_pr().as_ref(), &ctx));
+        assert!(without_pr.contains("boundary-work"), "{without_pr}");
+        assert!(!without_pr.contains("older-work"), "{without_pr}");
+
+        let stale = all_text(&run_one(&StaleRemoteBranches, &ctx));
+        assert!(stale.contains("older-work"), "{stale}");
+        assert!(!stale.contains("boundary-work"), "{stale}");
+    }
+
+    #[test]
+    fn branches_without_pr_ignores_a_recent_branch_that_is_only_behind() {
+        // Behind the default branch with nothing of its own (ahead_by 0,
+        // status `behind`): fully merged, so there is nothing to review.
+        let ctx = ctx(
+            pr_fake(&[("behind-work", 5, "compare-behind.json")]),
+            Config::default(),
+        );
+        assert_eq!(run_one(branches_without_pr().as_ref(), &ctx), Vec::new());
+    }
+
+    /// True when `text` contains a minus sign directly before a digit.
+    fn has_negative_number(text: &str) -> bool {
+        text.as_bytes()
+            .windows(2)
+            .any(|pair| pair[0] == b'-' && pair[1].is_ascii_digit())
+    }
+
+    /// One unmerged branch with no PR whose tip is dated in the future.
+    fn future_tip_fake() -> FakeGh {
+        pr_fake(&[("future-work", 0, "compare-ahead.json")]).serve_body(
+            "repos/acme/demo/branches/future-work",
+            &branch_detail("future-work", "2099-01-01T00:00:00Z"),
+        )
+    }
+
+    #[test]
+    fn branches_without_pr_reports_a_future_dated_tip_as_zero_days_old() {
+        let ctx = ctx(future_tip_fake(), Config::default());
+        let findings = run_one(branches_without_pr().as_ref(), &ctx);
+        assert_eq!(findings.len(), 1, "{findings:?}");
+        assert_eq!(findings[0].check_id, BRANCHES_WITHOUT_PR);
+        assert_eq!(findings[0].severity, Severity::Warn);
+        assert!(findings[0].message.contains("future-work"), "{findings:?}");
+        assert!(findings[0].message.contains("0 days"), "{findings:?}");
+        assert!(!has_negative_number(&findings[0].message), "{findings:?}");
+    }
+
+    #[test]
+    fn prefetch_warms_the_compare_for_a_future_dated_branch() {
+        let fake = future_tip_fake();
+        let calls = fake.call_log();
+        let ctx = ctx(fake, Config::default());
+        let github = ctx.github.as_ref().expect("github context");
+        github.prefetch(&ctx.config, ctx.pull_request_run);
+
+        let prefetched = calls.borrow().clone();
+        let expected = (
+            "repos/acme/demo/compare/main...future-work".to_string(),
+            false,
+        );
+        assert!(
+            prefetched.contains(&expected),
+            "prefetch did not request {expected:?}: {prefetched:?}"
+        );
+
+        run_one(branches_without_pr().as_ref(), &ctx);
+        let after = calls.borrow()[prefetched.len()..].to_vec();
+        assert!(
+            after.is_empty(),
+            "the check made uncached calls after prefetch: {after:?}"
+        );
+    }
+
+    #[test]
+    fn branches_without_pr_honors_the_configured_stale_days() {
+        // With stale-days 3, a five-day-old branch is the stale check's.
+        let mut config = Config::default();
+        config.audit.stale_days = 3;
+        let ctx = ctx(pr_fake(&[("recent-work", 5, "compare-ahead.json")]), config);
+        assert_eq!(run_one(branches_without_pr().as_ref(), &ctx), Vec::new());
+    }
+
+    #[test]
+    fn branches_without_pr_pulls_failure_is_a_warn_finding_not_a_crash() {
+        let fake = pr_fake(&[("recent-work", 5, "compare-ahead.json")]).serve_failure(OPEN_PULLS);
+        let ctx = ctx(fake, Config::default());
+        let findings = run_one(branches_without_pr().as_ref(), &ctx);
+        assert_eq!(findings.len(), 1, "{findings:?}");
+        assert_eq!(findings[0].check_id, BRANCHES_WITHOUT_PR);
+        assert_eq!(findings[0].severity, Severity::Warn);
+        assert!(
+            findings[0].message.contains("could not complete"),
+            "{findings:?}"
+        );
+    }
+
+    #[test]
+    fn branches_without_pr_malformed_pulls_json_is_a_warn_finding() {
+        let fake = pr_fake(&[("recent-work", 5, "compare-ahead.json")])
+            .serve_fixture(OPEN_PULLS, "malformed.json");
+        let ctx = ctx(fake, Config::default());
+        let findings = run_one(branches_without_pr().as_ref(), &ctx);
+        assert_eq!(findings.len(), 1, "{findings:?}");
+        assert_eq!(findings[0].severity, Severity::Warn);
+        assert!(
+            findings[0].message.contains("could not complete"),
+            "{findings:?}"
+        );
+    }
+
+    #[test]
+    fn prefetch_warms_everything_branches_without_pr_requests() {
+        let fake = pr_fake(&[
+            ("recent-work", 5, "compare-ahead.json"),
+            ("draft-work", 5, "compare-ahead.json"),
+            ("old-work", 200, "compare-ahead.json"),
+        ]);
+        let calls = fake.call_log();
+        let ctx = ctx(fake, Config::default());
+        let github = ctx.github.as_ref().expect("github context");
+        github.prefetch(&ctx.config, ctx.pull_request_run);
+
+        let prefetched = calls.borrow().clone();
+        for expected in [
+            (OPEN_PULLS.to_string(), true),
+            (
+                "repos/acme/demo/compare/main...recent-work".to_string(),
+                false,
+            ),
+            (
+                "repos/acme/demo/compare/main...draft-work".to_string(),
+                false,
+            ),
+        ] {
+            assert!(
+                prefetched.contains(&expected),
+                "prefetch did not request {expected:?}: {prefetched:?}"
+            );
+        }
+
+        let findings = run_one(branches_without_pr().as_ref(), &ctx);
+        assert!(all_text(&findings).contains("recent-work"), "{findings:?}");
+        let after = calls.borrow()[prefetched.len()..].to_vec();
+        assert!(
+            after.is_empty(),
+            "the check made uncached calls after prefetch: {after:?}"
+        );
+    }
+
     // ---- prefetch ----
 
     /// Every endpoint the full registry needs, so a prefetch-then-check
@@ -1356,6 +1757,17 @@ mod tests {
                 "repos/acme/demo/compare/main...old-analysis",
                 "compare-ahead.json",
             )
+            // fresh-idea is future-dated, so branches-without-pr treats it
+            // as recent. Serving it as unmerged here guarantees the full
+            // registry run requests the open pull requests, so the prefetch
+            // tests cover that endpoint. The integration shim serves it as
+            // identical instead, keeping that end-to-end report free of a
+            // branches-without-pr finding.
+            .serve_fixture(
+                "repos/acme/demo/compare/main...fresh-idea",
+                "compare-ahead.json",
+            )
+            .serve_fixture(OPEN_PULLS, "pulls-open.json")
     }
 
     fn run_registry(ctx: &AuditCtx) -> Vec<Finding> {

@@ -270,6 +270,36 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn recorded_open_pulls_span_two_pages_with_every_head_shape() {
+        // pulls-open.json records two concatenated pages, the raw shape of
+        // `gh api --paginate`: a draft and a ready PR from the repo itself,
+        // a fork PR whose head ref matches a same-repo branch name, and a
+        // PR whose fork was deleted (head.repo is null).
+        let pulls: Vec<serde_json::Value> =
+            parse_pages(&fixture("pulls-open.json")).expect("parses");
+        let heads: Vec<(&str, Option<&str>, bool)> = pulls
+            .iter()
+            .map(|pr| {
+                (
+                    pr["head"]["ref"].as_str().expect("head ref"),
+                    pr["head"]["repo"]["full_name"].as_str(),
+                    pr["draft"].as_bool().expect("draft flag"),
+                )
+            })
+            .collect();
+        assert_eq!(
+            heads,
+            [
+                ("draft-work", Some("acme/demo"), true),
+                ("ready-work", Some("acme/demo"), false),
+                ("shared-name", Some("contributor/demo"), false),
+                ("orphan-ref", None, false),
+            ]
+        );
+        assert!(pulls[3]["head"]["repo"].is_null());
+    }
+
+    #[test]
     fn parses_the_recorded_branch_detail_with_its_tip_date() {
         let branch: BranchDetail = parse_one(&fixture("branch-old.json")).expect("parses");
         assert_eq!(branch.name, "old-analysis");
