@@ -26,7 +26,7 @@ Options:
           Suppress all output except errors
 
       --no-clone
-          Skip cloning: audit GitHub metadata only (runs just the watchers, contributors, and stale-remote-branches checks; the other checks need a working tree)
+          Skip cloning: audit GitHub metadata only (runs just the watchers, contributors, stale-remote-branches, and branches-without-pr checks; the other checks need a working tree)
 
       --no-color
           Disable colored output

@@ -1,4 +1,4 @@
-//! The six GitHub-side checks. Each one is a pure inspector over
+//! The seven GitHub-side checks. Each one is a pure inspector over
 //! [`GithubCtx`]: it fetches what it needs through the [`GithubApi`](super::GithubApi) seam,
 //! parses via [`model`], and returns findings. Failures to reach or
 //! understand GitHub become Warn findings on the same check: never a
@@ -8,9 +8,10 @@ use std::collections::BTreeSet;
 use std::time::SystemTime;
 
 use super::model::{
-    self, BranchDetail, BranchSummary, Comparison, GithubUser, ModelError, Release, RepoInfo,
+    self, BranchDetail, BranchSummary, Comparison, GithubUser, ModelError, PullRequest, Release,
+    RepoInfo,
 };
-use super::{GhApiError, GithubCtx, LocalTip, WATCHERS_MESSAGE_PREFIX};
+use super::{GhApiError, GithubCtx, LocalTip, RepoSlug, WATCHERS_MESSAGE_PREFIX};
 use crate::audit::{AuditCtx, Check, Finding, Severity};
 use crate::config::{fold_login, same_login};
 
@@ -21,6 +22,7 @@ pub(super) fn registry() -> Vec<Box<dyn Check>> {
         Box::new(Contributors),
         Box::new(DefaultBranchStaleness),
         Box::new(StaleRemoteBranches),
+        Box::new(BranchesWithoutPr),
         Box::new(Releases),
         Box::new(LifecycleConsistency),
     ]
@@ -37,12 +39,15 @@ pub(super) fn prefetch(github: &GithubCtx, config: &crate::config::Config, pull_
 
     // Wave 1: the endpoints no check needs prior data to name. The
     // releases list is only requested at the milestones where the
-    // releases check actually runs.
+    // releases check actually runs. The open pull requests are fetched
+    // here too, although branches-without-pr skips them when no recent
+    // branch is unmerged, so that they need no wave of their own.
     let mut wave = vec![
         (format!("repos/{slug}"), false),
         (format!("repos/{slug}/subscribers"), true),
         (format!("repos/{slug}/contributors"), true),
         (format!("repos/{slug}/branches"), true),
+        (open_pulls_endpoint(slug), true),
     ];
     let status = config.project.status.as_str();
     if status == "submitted" || status == "published" {
@@ -91,24 +96,22 @@ pub(super) fn prefetch(github: &GithubCtx, config: &crate::config::Config, pull_
     }
     github.cache_many(wave);
 
-    // Wave 3: the staleness comparisons, needed only for unmerged-branch
-    // candidates old enough to matter (mirroring the stale-remote-branches
-    // check's age gate, so nothing is fetched that the check would skip).
-    let stale_days = i64::from(config.audit.stale_days);
+    // Wave 3: the comparisons against the default branch, one per dated
+    // non-default branch. The stale-remote-branches check compares the
+    // branches older than stale-days and branches-without-pr compares the
+    // rest, so together they request every one.
     let now = SystemTime::now();
     let mut wave = Vec::new();
     for branch in &non_default {
-        let Some(age) = github
+        let dated = github
             .cached(&format!(
                 "repos/{slug}/branches/{}",
                 encode_ref(&branch.name)
             ))
             .and_then(|body| model::parse_one::<BranchDetail>(&body).ok())
             .and_then(|detail| model::days_since(&detail.commit.commit.committer.date, now).ok())
-        else {
-            continue;
-        };
-        if age > stale_days {
+            .is_some();
+        if dated {
             wave.push((
                 format!(
                     "repos/{slug}/compare/{}...{}",
@@ -530,7 +533,7 @@ impl Check for StaleRemoteBranches {
                     encode_ref(&branch.name)
                 ))?)?;
                 if comparison.ahead_by > 0 {
-                    stale.push(format!("{} ({age} days)", branch.name));
+                    stale.push(format!("{} ({})", branch.name, days(age)));
                 }
             }
 
@@ -541,12 +544,122 @@ impl Check for StaleRemoteBranches {
                 self.id(),
                 Severity::Warn,
                 format!(
-                    "unmerged remote branches with no commits in over {stale_days} days: {}",
+                    "unmerged remote branches with no commits in over {}: {}",
+                    days(stale_days),
                     stale.join(", ")
                 ),
                 "merge what still matters, then delete the rest: \
                  `git push origin --delete <branch>`"
                     .to_string(),
+            )])
+        })
+    }
+}
+
+/// The paginated list of the repo's open pull requests, drafts included.
+fn open_pulls_endpoint(slug: &RepoSlug) -> String {
+    format!("repos/{slug}/pulls?state=open")
+}
+
+/// Head branch names of the open pull requests whose head repository is
+/// `slug` itself, matched case-insensitively. Pull requests from forks, and
+/// those whose fork has been deleted, cover no branch of this repo.
+fn same_repo_pr_heads(pulls: &[PullRequest], slug: &RepoSlug) -> BTreeSet<String> {
+    let slug = slug.to_string();
+    pulls
+        .iter()
+        .filter(|pr| {
+            pr.head
+                .repo
+                .as_ref()
+                .is_some_and(|repo| repo.full_name.eq_ignore_ascii_case(&slug))
+        })
+        .map(|pr| pr.head.ref_name.clone())
+        .collect()
+}
+
+/// `1 day` / `5 days`.
+fn days(n: i64) -> String {
+    let s = if n == 1 { "" } else { "s" };
+    format!("{n} day{s}")
+}
+
+/// `branches-without-pr`: unmerged remote branches with commits within
+/// `[audit] stale-days` that are not the head of any open pull request
+/// from this repo. Older branches are left to `stale-remote-branches`, so
+/// no branch is reported twice.
+struct BranchesWithoutPr;
+
+impl Check for BranchesWithoutPr {
+    fn id(&self) -> &str {
+        "branches-without-pr"
+    }
+
+    fn run(&self, ctx: &AuditCtx) -> Vec<Finding> {
+        with_github(ctx, self.id(), |github| {
+            let info = repo_info(github)?;
+            let branches: Vec<BranchSummary> =
+                model::parse_pages(&github.api_pages(&format!("repos/{}/branches", github.slug))?)?;
+            let stale_days = i64::from(ctx.config.audit.stale_days);
+            let now = SystemTime::now();
+
+            // A tip dated in the future counts as recent, aged zero days.
+            // Only branches with commits the default branch lacks are
+            // unmerged; merged leftovers are the local checks' concern.
+            let mut unmerged = Vec::new();
+            for branch in branches.iter().filter(|b| b.name != info.default_branch) {
+                let detail: BranchDetail = model::parse_one(&github.api_one(&format!(
+                    "repos/{}/branches/{}",
+                    github.slug,
+                    encode_ref(&branch.name)
+                ))?)?;
+                let age = model::days_since(&detail.commit.commit.committer.date, now)?;
+                if age > stale_days {
+                    continue;
+                }
+                let comparison: Comparison = model::parse_one(&github.api_one(&format!(
+                    "repos/{}/compare/{}...{}",
+                    github.slug,
+                    encode_ref(&info.default_branch),
+                    encode_ref(&branch.name)
+                ))?)?;
+                if comparison.ahead_by > 0 {
+                    unmerged.push((branch.name.as_str(), age.max(0)));
+                }
+            }
+            if unmerged.is_empty() {
+                return Ok(Vec::new());
+            }
+
+            let pulls: Vec<PullRequest> =
+                model::parse_pages(&github.api_pages(&open_pulls_endpoint(&github.slug))?)?;
+            let covered = same_repo_pr_heads(&pulls, &github.slug);
+            let flagged: Vec<(&str, i64)> = unmerged
+                .into_iter()
+                .filter(|(name, _)| !covered.contains(*name))
+                .collect();
+
+            let head = match flagged.as_slice() {
+                [] => return Ok(Vec::new()),
+                [(name, _)] => (*name).to_string(),
+                _ => "<branch>".to_string(),
+            };
+            let listed: Vec<String> = flagged
+                .iter()
+                .map(|(name, age)| format!("{name} ({})", days(*age)))
+                .collect();
+            Ok(vec![finding(
+                self.id(),
+                Severity::Warn,
+                format!(
+                    "unmerged remote branches with recent commits and no open pull request: {}",
+                    listed.join(", ")
+                ),
+                format!(
+                    "for each branch, open a draft pull request so the work is visible \
+                     (`gh pr create --draft --head {head}`), or delete it if it is \
+                     abandoned (`git push origin --delete {head}`)"
+                ),
             )])
         })
     }
@@ -1328,6 +1441,19 @@ mod tests {
     }
 
     #[test]
+    fn stale_remote_branches_says_one_day_in_the_singular() {
+        let mut config = Config::default();
+        config.audit.stale_days = 1;
+        let ctx = ctx(branches_fake(), config);
+        let findings = run_one(&StaleRemoteBranches, &ctx);
+        assert_eq!(findings.len(), 1, "{findings:?}");
+        assert!(
+            findings[0].message.contains("in over 1 day:"),
+            "{findings:?}"
+        );
+    }
+
+    #[test]
     fn stale_remote_branches_honors_a_huge_configured_threshold() {
         let mut config = Config::default();
         // Larger than any plausible age of the 2023 fixture branch.
@@ -1630,7 +1756,16 @@ mod tests {
         assert_eq!(findings[0].check_id, BRANCHES_WITHOUT_PR);
         assert_eq!(findings[0].severity, Severity::Warn);
         assert!(findings[0].message.contains("future-work"), "{findings:?}");
-        assert!(findings[0].message.contains("0 days"), "{findings:?}");
+        let message = &findings[0].message;
+        assert!(
+            message.match_indices("0 days").any(|(at, _)| {
+                !message[..at]
+                    .chars()
+                    .next_back()
+                    .is_some_and(|c| c.is_ascii_digit())
+            }),
+            "a standalone `0 days`: {findings:?}"
+        );
         assert!(!has_negative_number(&findings[0].message), "{findings:?}");
     }
 

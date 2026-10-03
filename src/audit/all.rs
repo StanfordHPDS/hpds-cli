@@ -207,7 +207,12 @@ fn one_line(text: &str) -> String {
 /// excluded deliberately: `default-branch-staleness` compares against a
 /// local checkout, and `releases` / `lifecycle-consistency` read the
 /// project status from `hpds.toml`, which only exists in a working tree.
-pub const NO_CLONE_CHECK_IDS: &[&str] = &["watchers", "contributors", "stale-remote-branches"];
+pub const NO_CLONE_CHECK_IDS: &[&str] = &[
+    "watchers",
+    "contributors",
+    "stale-remote-branches",
+    "branches-without-pr",
+];
 
 /// The [`NO_CLONE_CHECK_IDS`] subset of the GitHub check registry.
 fn metadata_registry() -> Vec<Box<dyn Check>> {

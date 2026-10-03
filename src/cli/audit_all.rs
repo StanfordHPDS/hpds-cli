@@ -27,8 +27,8 @@ pub struct AllArgs {
     limit: u32,
 
     /// Skip cloning: audit GitHub metadata only (runs just the watchers,
-    /// contributors, and stale-remote-branches checks; the other checks
-    /// need a working tree)
+    /// contributors, stale-remote-branches, and branches-without-pr checks;
+    /// the other checks need a working tree)
     #[arg(long)]
     no_clone: bool,
 
