@@ -174,7 +174,7 @@ fn refuses_competing_devcontainer_configurations_before_writing() {
         project
             .run(&[])
             .failure()
-            .stderr(predicate::str::contains(competing));
+            .stderr(predicate::str::contains(path.display().to_string()));
         assert!(!project.path(".devcontainer/devcontainer.json").exists());
         assert!(!project.path(".devcontainer/README.md").exists());
         assert_eq!(fs::read_to_string(path).unwrap(), "{}\n");
