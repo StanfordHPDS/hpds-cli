@@ -99,11 +99,11 @@ $ hpds use devcontainer
 
 In either editor, run `Dev Containers: Reopen in Container` from the Command
 Palette. After changing the configuration, run `Dev Containers: Rebuild
-Container`. To run the production image outside an editor, use
+Container`. To open the production analysis image interactively outside an editor, use
 `docker build --target hpds-analysis -t my-project-analysis .` and then
-`docker run --rm my-project-analysis`.
+`docker run --rm -it my-project-analysis`.
 
-The second command runs offline. It checks for the generated `hpds-dev` target
+`hpds use devcontainer` runs offline. It checks for the generated `hpds-dev` target
 and creates `.devcontainer/devcontainer.json` plus setup guidance in
 `.devcontainer/README.md`; it does not build or start a container. The editor
 workspace is mounted under `/workspaces/<checkout-folder>`, while Python, R,
