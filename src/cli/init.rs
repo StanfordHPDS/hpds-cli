@@ -33,7 +33,7 @@ use anyhow::Context;
 use clap::Args;
 
 use crate::gitx;
-use crate::templates::components::{self, ComponentCtx, container, gha, pipeline};
+use crate::templates::components::{self, ComponentCtx, container, devcontainer, gha, pipeline};
 use crate::templates::{FileOutcome, Vars, write_rendered};
 use crate::ui;
 
@@ -65,7 +65,7 @@ pub struct InitArgs {
     pub language: Option<String>,
 
     /// Components to apply (comma-separated): pipeline, readme, container,
-    /// slurm, gha. Attach a variant with `:` -- pipeline:make|targets|both,
+    /// devcontainer, slurm, gha. Attach a variant with `:` -- pipeline:make|targets|both,
     /// container:docker|apptainer|both, gha:pr-template+lint+audit-bot.
     /// Without a variant, --yes defaults pipeline to make, container to
     /// docker, and gha to every workflow, and reports each defaulted kind
@@ -140,13 +140,14 @@ pub fn run(args: InitArgs) -> anyhow::Result<()> {
     // A defaulted component that needs a language it does not have is
     // skipped (with a notice) rather than failing the run; an explicit
     // `--use` keeps it so the request fails loudly below.
-    let selections = if language.is_none() && args.components.is_none() {
+    let mut selections = if language.is_none() && args.components.is_none() {
         drop_language_needing(selections)
     } else {
         selections
     };
     ensure_language_for(&selections, language.as_deref())?;
     validate_r_version_scope(args.r_version.as_deref(), &selections, language.as_deref())?;
+    preflight_devcontainer(&mut selections, &target, args.force)?;
     let selected_r_version = if selections
         .iter()
         .any(|selection| selection.spec.name == "container")
@@ -397,6 +398,13 @@ const SELECTABLE: &[Selectable] = &[
         takes_workflows: false,
     },
     Selectable {
+        name: "devcontainer",
+        needs_language: false,
+        default_kind: None,
+        kinds: None,
+        takes_workflows: false,
+    },
+    Selectable {
         name: "slurm",
         needs_language: true,
         default_kind: None,
@@ -463,6 +471,46 @@ fn selectable_names() -> String {
         .map(|s| s.name)
         .collect::<Vec<_>>()
         .join(", ")
+}
+
+fn preflight_devcontainer(
+    selections: &mut [Selection],
+    target: &Path,
+    force: bool,
+) -> anyhow::Result<()> {
+    if !selections
+        .iter()
+        .any(|selection| selection.spec.name == "devcontainer")
+    {
+        return Ok(());
+    }
+
+    devcontainer::preflight_competing(target)?;
+    devcontainer::preflight_workspace(target)?;
+    let dockerfile = target.join("Dockerfile");
+    let replaces_dockerfile = force
+        && selections.iter().any(|selection| {
+            selection.spec.name == "container"
+                && matches!(selection.kind.as_deref(), Some("docker" | "both"))
+        });
+    if dockerfile.exists() && !replaces_dockerfile {
+        devcontainer::require_dev_stage(&dockerfile)?;
+    } else {
+        let creates_dockerfile = selections.iter().any(|selection| {
+            selection.spec.name == "container"
+                && matches!(selection.kind.as_deref(), Some("docker" | "both"))
+        });
+        if !creates_dockerfile && !dockerfile.exists() {
+            devcontainer::require_dev_stage(&dockerfile)?;
+        }
+    }
+
+    selections.sort_by_key(|selection| match selection.spec.name {
+        "container" => 0,
+        "devcontainer" => 2,
+        _ => 1,
+    });
+    Ok(())
 }
 
 /// One resolved `--use` entry (or multi-select pick).

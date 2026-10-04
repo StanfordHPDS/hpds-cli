@@ -99,6 +99,155 @@ def check_command(
     return ["sh", "-ceu", f"{hpds_check}\n{poison_check}\n{runtime}"]
 
 
+def validate_dev_target(docker: str, project: Path, tag: str) -> None:
+    workspace = "/workspaces/both"
+    dev_tag = f"{tag}-dev"
+    host_uid = project.stat().st_uid
+    host_gid = project.stat().st_gid
+    image_built = False
+    ownership_changed = False
+    build = [
+        docker,
+        "buildx",
+        "build",
+        "--load",
+        "--target",
+        "hpds-dev",
+        "--build-arg",
+        f"HPDS_PROJECT_DIR={workspace}",
+        "--build-arg",
+        "HPDS_UID=2501",
+        "--build-arg",
+        "HPDS_GID=2501",
+        "--tag",
+        dev_tag,
+        ".",
+    ]
+    mount = f"type=bind,source={project},target={workspace}"
+    try:
+        invalid = build.copy()
+        invalid[invalid.index("HPDS_UID=2501")] = "HPDS_UID=0"
+        rejected = subprocess.run(invalid, cwd=project, text=True, capture_output=True)
+        assert rejected.returncode != 0, "UID 0 unexpectedly built a non-root development target"
+        assert "nonzero" in rejected.stdout + rejected.stderr
+        run(build, cwd=project)
+        image_built = True
+        ownership_changed = True
+        run(
+            [
+                docker,
+                "run",
+                "--rm",
+                "--user",
+                "root",
+                "--mount",
+                mount,
+                dev_tag,
+                "chown",
+                "-R",
+                "2501:2501",
+                workspace,
+            ]
+        )
+        run(
+            [
+                docker,
+                "run",
+                "--rm",
+                "--mount",
+                mount,
+                "--workdir",
+                "/tmp",
+                dev_tag,
+                "sh",
+                "-ceu",
+                f"""
+test "$(id -u)" = 2501
+test "$(id -g)" = 2501
+test "$UV_PROJECT_ENVIRONMENT" = /opt/venv
+test "$RENV_PATHS_LIBRARY" = /opt/renv/library
+test ! -e /opt/venv/HPDS_HOST_POISON
+python -c 'from hpds_mixed_fixture import fixture_value; assert fixture_value() == 42'
+cd {workspace}
+R -s -e 'stopifnot(as.character(packageVersion("digest")) == "0.6.37"); stopifnot(vendored::fixture_value() == 42L); stopifnot(startsWith(.libPaths()[1], "/opt/renv/library/")); stopifnot(file.create(file.path(.libPaths()[1], "hpds-write-check")))'
+R -s -e 'renv::install("./vendor-src/vendored")'
+R -s -e 'source("source_value.R"); stopifnot(source_value() == 42L)'
+uv sync --locked
+printf output > dev-output
+sed -i 's/return 42/return 43/' src/hpds_mixed_fixture/__init__.py
+sed -i 's/42L/43L/' source_value.R
+""",
+            ]
+        )
+        if sys.platform.startswith("linux"):
+            assert (project / "dev-output").stat().st_uid == 2501
+        run(
+            [
+                docker,
+                "run",
+                "--rm",
+                "--mount",
+                mount,
+                "--workdir",
+                "/tmp",
+                dev_tag,
+                "sh",
+                "-ceu",
+                f"python -c 'from hpds_mixed_fixture import fixture_value; assert fixture_value() == 43'; cd {workspace}; R -s -e 'source(\"source_value.R\"); stopifnot(source_value() == 43L)'; sed -i 's/version = \"0.1.0\"/version = \"0.1.1\"/' pyproject.toml; uv lock",
+            ]
+        )
+        run(build, cwd=project)
+        run(
+            [
+                docker,
+                "run",
+                "--rm",
+                "--workdir",
+                "/tmp",
+                dev_tag,
+                "python",
+                "-c",
+                "import importlib.metadata as m; assert m.version('hpds-mixed-fixture') == '0.1.1'",
+            ]
+        )
+        cid = subprocess.check_output(
+            [docker, "run", "--rm", "--detach", dev_tag], text=True
+        ).strip()
+        try:
+            state = subprocess.check_output(
+                [docker, "inspect", "--format", "{{.State.Running}}", cid], text=True
+            ).strip()
+            assert state == "true", state
+        finally:
+            subprocess.run([docker, "stop", cid], check=False, stdout=subprocess.DEVNULL)
+    finally:
+        try:
+            if ownership_changed and image_built:
+                run(
+                    [
+                        docker,
+                        "run",
+                        "--rm",
+                        "--user",
+                        "root",
+                        "--mount",
+                        mount,
+                        dev_tag,
+                        "chown",
+                        "-R",
+                        f"{host_uid}:{host_gid}",
+                        workspace,
+                    ]
+                )
+        finally:
+            subprocess.run(
+                [docker, "image", "rm", "--force", dev_tag],
+                check=False,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -180,6 +329,8 @@ def main() -> int:
                             *check_command(name, expected_hpds_version),
                         ]
                     )
+                    if name == "both":
+                        validate_dev_target(docker, project, tag)
                 if apptainer is not None:
                     image = temporary_root / f"{name}.sif"
                     runtime_home = temporary_root / f"{name}-home"

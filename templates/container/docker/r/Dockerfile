@@ -17,7 +17,9 @@ RUN apt-get update \
     && sha256sum --check "$asset.sha256" \
     && tar -xzf "$asset" \
     && install -m 0755 "hpds-${target}-unknown-linux-musl/hpds" /hpds
-FROM rocker/r-ver:{{r_version}}
+FROM rocker/r-ver:{{r_version}} AS hpds-project
+
+ARG HPDS_PROJECT_DIR=/project
 
 LABEL org.opencontainers.image.title="{{project}}"
 
@@ -34,7 +36,7 @@ RUN apt-get update \
 
 COPY --from=hpds /hpds /usr/local/bin/hpds
 
-WORKDIR /project
+WORKDIR ${HPDS_PROJECT_DIR}
 
 # Copy the complete renv bootstrap before the project source so the package
 # restore layer changes only when the locked environment changes.
@@ -43,12 +45,34 @@ COPY renv.lock .Rprofile ./
 COPY renv/activate.R renv/settings.json renv/
 {{renv_cellar_docker_copy}}
 
-ENV RENV_PATHS_CACHE=/project/.cache/renv \
+ENV RENV_PATHS_LIBRARY=/opt/renv/library \
+    RENV_PATHS_CACHE=/opt/renv/cache \
     RENV_CONFIG_CACHE_SYMLINKS=FALSE
 
-RUN --mount=type=cache,target=/project/.cache/renv \
+RUN --mount=type=cache,target=/opt/renv/cache \
+    mkdir -p /opt/renv/library /opt/renv/cache \
+    && \
     R -s -e 'renv::restore()'
 
 COPY . .
 
+FROM hpds-project AS hpds-dev
+ARG HPDS_UID=1000
+ARG HPDS_GID=1000
+RUN case "${HPDS_UID}:${HPDS_GID}" in *[!0-9:]*|:*|*:) echo "HPDS_UID and HPDS_GID must be positive numeric IDs" >&2; exit 2 ;; esac \
+    && if [ "${HPDS_UID}" -eq 0 ] || [ "${HPDS_GID}" -eq 0 ]; then echo "HPDS_UID and HPDS_GID must be nonzero" >&2; exit 2; fi \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends curl openssh-client wget \
+    && rm -rf /var/lib/apt/lists/* \
+    && group_name="$(getent group "${HPDS_GID}" | cut -d: -f1 || true)" \
+    && if [ -z "$group_name" ]; then groupadd --gid "${HPDS_GID}" hpds; elif [ "$group_name" != hpds ]; then groupmod --new-name hpds "$group_name"; fi \
+    && user_name="$(getent passwd "${HPDS_UID}" | cut -d: -f1 || true)" \
+    && if [ -z "$user_name" ]; then useradd --uid "${HPDS_UID}" --gid "${HPDS_GID}" --create-home --shell /bin/bash hpds; elif [ "$user_name" != hpds ]; then usermod --login hpds --home /home/hpds --move-home "$user_name"; fi \
+    && usermod --gid "${HPDS_GID}" hpds \
+    && mkdir -p /home/hpds \
+    && chown -R "${HPDS_UID}:${HPDS_GID}" /opt/renv /home/hpds
+USER hpds
+CMD ["sleep", "infinity"]
+
+FROM hpds-project AS hpds-analysis
 CMD ["R"]

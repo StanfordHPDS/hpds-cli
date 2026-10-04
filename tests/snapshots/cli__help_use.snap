@@ -4,7 +4,7 @@ expression: "help_output(& [\"use\", \"--help\"])"
 ---
 Apply a template component to the current project
 
-Applies a lab template: container, gha, hpds.toml, pipeline, poster, readme, slides, slurm, or thesis. Omit the component to list what is available. Embedded templates leave existing files untouched unless --force is given. The slides, poster, and thesis templates require network access and create repository-named subdirectories; existing destinations are refused even with --force.
+Applies a lab template: container, devcontainer, gha, hpds.toml, pipeline, poster, readme, slides, slurm, or thesis. Omit the component to list what is available. Embedded templates leave existing files untouched unless --force is given. The slides, poster, and thesis templates require network access and create repository-named subdirectories; existing destinations are refused even with --force.
 
 Usage: hpds use [OPTIONS] [COMPONENT]
 
