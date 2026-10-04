@@ -33,6 +33,9 @@ pub struct ComponentCtx<'a> {
     /// The gha component's `--workflows` selection, unvalidated; every
     /// other component rejects the flag.
     pub workflows: Option<&'a [String]>,
+    /// Explicit R version requested by the command layer. Only the
+    /// container component accepts this value.
+    pub r_version: Option<&'a str>,
     /// Overwrite files that conflict with the template.
     pub force: bool,
     /// Project root the component renders into.
@@ -133,6 +136,7 @@ pub(crate) fn test_ctx<'a>(dest: &'a Path, language: &str) -> ComponentCtx<'a> {
     ComponentCtx {
         kind: None,
         workflows: None,
+        r_version: None,
         force: false,
         dest,
         vars: Vars::standard("malaria-icu", Some(language), "HPDS Lab"),

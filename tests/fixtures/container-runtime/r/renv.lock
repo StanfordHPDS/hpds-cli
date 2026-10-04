@@ -1,0 +1,33 @@
+{
+  "R": {
+    "Version": "4.4.3",
+    "Repositories": [
+      {
+        "Name": "CRAN",
+        "URL": "https://cloud.r-project.org"
+      }
+    ]
+  },
+  "Packages": {
+    "renv": {
+      "Package": "renv",
+      "Version": "1.1.5",
+      "Source": "Repository",
+      "Repository": "CRAN"
+    },
+    "vendored": {
+      "Package": "vendored",
+      "Version": "1.0.0",
+      "Source": "Cellar",
+      "Description": "A local fixture package restored from the renv cellar.",
+      "License": "MIT",
+      "Encoding": "UTF-8"
+    },
+    "digest": {
+      "Package": "digest",
+      "Version": "0.6.37",
+      "Source": "Repository",
+      "Repository": "CRAN"
+    }
+  }
+}

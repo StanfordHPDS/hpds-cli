@@ -100,6 +100,7 @@ fn offer_gha(yes: bool, global: &GlobalArgs) -> anyhow::Result<()> {
                         force: false,
                         language: None,
                         workflows: None,
+                        r_version: None,
                     },
                     global,
                 )

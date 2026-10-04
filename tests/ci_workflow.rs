@@ -201,6 +201,48 @@ fn ci_workflow_runs_the_full_gate_set() {
     }
 }
 
+#[test]
+fn ci_runs_the_explicit_container_runtime_harness_on_linux() {
+    let doc = workflow_doc();
+    let job = doc
+        .get("jobs")
+        .and_then(|jobs| jobs.get("container-runtime"))
+        .expect("CI has a container-runtime job");
+    assert_eq!(
+        job.get("runs-on").and_then(|value| value.as_str()),
+        Some("ubuntu-latest")
+    );
+    assert_ne!(
+        job.get("continue-on-error"),
+        Some(&serde_yaml::Value::Bool(true))
+    );
+    let steps = job
+        .get("steps")
+        .and_then(|steps| steps.as_sequence())
+        .expect("container-runtime job has steps");
+    let commands: Vec<_> = steps.iter().flat_map(step_commands).collect();
+    assert!(
+        commands.iter().any(|command| {
+            command
+                == &[
+                    "python3",
+                    "tests/container-runtime/run.py",
+                    "--engine",
+                    "all",
+                    "--apptainer-build-as-root",
+                ]
+        }),
+        "container-runtime job invokes the real harness: {commands:?}"
+    );
+    assert!(
+        commands.iter().any(|command| {
+            command.windows(2).any(|pair| pair == ["install", "-y"])
+                && command.iter().any(|token| token == "apptainer")
+        }),
+        "container-runtime job installs Apptainer: {commands:?}"
+    );
+}
+
 fn gates_doc(steps_yaml: &str) -> serde_yaml::Value {
     let yml = format!("jobs:\n  gates:\n    steps:\n      - uses: crate-ci/typos@v1\n{steps_yaml}");
     serde_yaml::from_str(&yml).expect("test yaml must parse")

@@ -39,5 +39,8 @@ Options:
       --workflows <NAMES>
           gha workflows to add without prompting (comma-separated or repeated: pr-template, lint, audit-bot)
 
+      --r-version <VERSION>
+          R version for an R container. Overrides renv.lock; when omitted, the lockfile version is used before the current R release
+
   -h, --help
           Print help (see a summary with '-h')

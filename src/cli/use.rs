@@ -43,9 +43,20 @@ pub struct UseArgs {
     /// pr-template, lint, audit-bot)
     #[arg(long, value_delimiter = ',', value_name = "NAMES")]
     pub workflows: Option<Vec<String>>,
+
+    /// R version for an R container. Overrides renv.lock; when omitted,
+    /// the lockfile version is used before the current R release
+    #[arg(long, value_name = "VERSION")]
+    pub r_version: Option<String>,
 }
 
 pub fn run(args: UseArgs, global: &GlobalArgs) -> anyhow::Result<()> {
+    if args.r_version.is_some() && args.component.as_deref() != Some("container") {
+        return Err(super::usage_error(
+            "--r-version applies only to the container component",
+            "drop --r-version or run `hpds use container --language r --r-version VERSION`",
+        ));
+    }
     let Some(name) = args.component else {
         list_components();
         return Ok(());
@@ -67,6 +78,7 @@ pub fn run(args: UseArgs, global: &GlobalArgs) -> anyhow::Result<()> {
     let ctx = ComponentCtx {
         kind: args.kind.as_deref(),
         workflows: args.workflows.as_deref(),
+        r_version: args.r_version.as_deref(),
         force: args.force,
         dest: &cwd,
         vars: standard_vars(&cwd, global, language.as_deref())?,

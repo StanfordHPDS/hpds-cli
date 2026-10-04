@@ -1,0 +1,5 @@
+Package: vendored
+Version: 1.0.0
+Description: A local fixture package restored from the renv cellar.
+License: MIT
+Encoding: UTF-8

@@ -9,6 +9,7 @@
 //! version is likewise rendered into the release image reference.
 
 use std::fmt;
+use std::fs;
 use std::io::Read;
 
 use anyhow::Context;
@@ -77,6 +78,85 @@ fn resolve_r_release() -> anyhow::Result<String> {
         .with_context(|| format!("could not read R-hub's response from `{url}`"))?;
     parse_r_release(&body)
         .hint("R-hub returned an unexpected response; retry, or report the response to hpds")
+}
+
+fn validate_r_version(version: &str, source: &str) -> anyhow::Result<String> {
+    let parts: Vec<_> = version.split('.').collect();
+    if parts.len() != 3
+        || parts
+            .iter()
+            .any(|part| part.is_empty() || !part.chars().all(|c| c.is_ascii_digit()))
+    {
+        anyhow::bail!(
+            "{source} contains invalid R version `{version}`; use a full numeric version such as 4.4.3"
+        );
+    }
+    Ok(version.to_string())
+}
+
+fn r_version_from_lock(path: &std::path::Path) -> anyhow::Result<Option<String>> {
+    let text = match fs::read_to_string(path) {
+        Ok(text) => text,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(err) => {
+            return Err(err)
+                .with_context(|| format!("could not read `{}`", path.display()))
+                .hint("check that renv.lock is readable, then retry container generation");
+        }
+    };
+    let value: serde_json::Value = serde_json::from_str(&text)
+        .with_context(|| format!("could not parse R version metadata in `{}`", path.display()))
+        .hint("repair or regenerate renv.lock, then retry container generation")?;
+    let root = value
+        .as_object()
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "R version metadata file `{}` must contain a JSON object",
+                path.display()
+            )
+        })
+        .hint("repair or regenerate renv.lock, then retry container generation")?;
+    let Some(r) = root.get("R") else {
+        return Ok(None);
+    };
+    let object = r
+        .as_object()
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "R version metadata in `{}` must make `R` an object",
+                path.display()
+            )
+        })
+        .hint("repair or regenerate renv.lock, then retry container generation")?;
+    let Some(version) = object.get("Version") else {
+        return Ok(None);
+    };
+    let version = version
+        .as_str()
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "R version metadata in `{}` must make `R.Version` a string",
+                path.display()
+            )
+        })
+        .hint("repair or regenerate renv.lock, then retry container generation")?;
+    validate_r_version(version, &format!("`{}`", path.display()))
+        .map(Some)
+        .hint("repair or regenerate renv.lock, then retry container generation")
+}
+
+pub(crate) fn resolve_r_version(
+    dest: &std::path::Path,
+    explicit: Option<&str>,
+) -> anyhow::Result<String> {
+    if let Some(version) = explicit {
+        return validate_r_version(version, "--r-version")
+            .hint("pass a full numeric R version such as `--r-version 4.4.3`");
+    }
+    if let Some(version) = r_version_from_lock(&dest.join("renv.lock"))? {
+        return Ok(version);
+    }
+    resolve_r_release()
 }
 
 /// Which container file(s) to render.
@@ -148,12 +228,56 @@ fn run(ctx: &ComponentCtx) -> anyhow::Result<Vec<FileOutcome>> {
     super::reject_workflows(ctx, "container")?;
     let kind = resolve_kind(ctx.kind)?;
     let language = super::require_language(ctx, "container")?;
+    if ctx.r_version.is_some() && language == "python" {
+        return Err(crate::cli::usage_error(
+            "an R --r-version cannot be used for a Python-only container",
+            "drop --r-version, or select --language r or --language both",
+        ));
+    }
     let mut vars = ctx.vars.clone();
     if matches!(language, "python" | "both") {
-        vars = vars.with("uv_version", crate::tools::versions::UV);
+        let python_version = ctx.dest.join(".python-version").is_file();
+        vars = vars
+            .with("uv_version", crate::tools::versions::UV)
+            .with(
+                "python_version_docker_source",
+                if python_version {
+                    " .python-version"
+                } else {
+                    ""
+                },
+            )
+            .with(
+                "python_version_apptainer_file",
+                if python_version {
+                    "    .python-version /project/.python-version"
+                } else {
+                    ""
+                },
+            );
     }
     if matches!(language, "r" | "both") && vars.get("r_version").is_none() {
-        vars = vars.with("r_version", resolve_r_release()?);
+        vars = vars.with("r_version", resolve_r_version(ctx.dest, ctx.r_version)?);
+    }
+    if matches!(language, "r" | "both") {
+        let cellar = ctx.dest.join("renv/cellar").is_dir();
+        vars = vars
+            .with(
+                "renv_cellar_docker_copy",
+                if cellar {
+                    "COPY renv/cellar renv/cellar"
+                } else {
+                    ""
+                },
+            )
+            .with(
+                "renv_cellar_apptainer_file",
+                if cellar {
+                    "    renv/cellar /project/renv/cellar"
+                } else {
+                    ""
+                },
+            );
     }
     let mut outcomes = Vec::new();
     for format in kind.formats() {
@@ -192,6 +316,30 @@ mod tests {
     fn rejects_an_r_hub_response_without_a_semantic_version() {
         for body in [r#"{"date":"2026-06-24"}"#, r#"{"version":"release"}"#] {
             assert!(parse_r_release(body).is_err(), "{body}");
+        }
+    }
+
+    #[test]
+    fn lock_without_r_version_metadata_uses_the_fallback_path() {
+        let tmp = tempfile::tempdir().unwrap();
+        let lock = tmp.path().join("renv.lock");
+        fs::write(&lock, r#"{"Packages":{}}"#).unwrap();
+        assert_eq!(r_version_from_lock(&lock).unwrap(), None);
+
+        fs::write(&lock, r#"{"R":{},"Packages":{}}"#).unwrap();
+        assert_eq!(r_version_from_lock(&lock).unwrap(), None);
+    }
+
+    #[test]
+    fn malformed_lock_metadata_shape_is_actionable() {
+        let tmp = tempfile::tempdir().unwrap();
+        let lock = tmp.path().join("renv.lock");
+        for malformed in ["null", "[]", r#"{"R":[]}"#, r#"{"R":{"Version":443}}"#] {
+            fs::write(&lock, malformed).unwrap();
+            let err = r_version_from_lock(&lock).unwrap_err();
+            let rendered = ui::render_error(&err, false);
+            assert!(rendered.contains("renv.lock"), "{rendered}");
+            assert!(rendered.contains("hint:"), "{rendered}");
         }
     }
 
@@ -241,14 +389,16 @@ mod tests {
         let mut ctx = container_ctx(tmp.path(), "r");
         ctx.kind = Some("docker");
         let outcomes = run(&ctx).unwrap();
-        assert_eq!(outcomes.len(), 1, "{outcomes:?}");
-        assert_eq!(outcomes[0].path.to_str(), Some("Dockerfile"));
-        assert_eq!(outcomes[0].outcome, WriteOutcome::Created);
+        let dockerfile = outcomes
+            .iter()
+            .find(|outcome| outcome.path == std::path::Path::new("Dockerfile"))
+            .expect("Dockerfile outcome");
+        assert_eq!(dockerfile.outcome, WriteOutcome::Created);
         let text = fs::read_to_string(tmp.path().join("Dockerfile")).unwrap();
         assert!(text.contains("FROM rocker/r-ver:4.6.1"), "{text}");
         assert!(
             text.contains(&format!(
-                "FROM ghcr.io/stanfordhpds/hpds-cli:{} AS hpds",
+                "https://github.com/StanfordHPDS/hpds-cli/releases/download/v{}/$asset",
                 env!("CARGO_PKG_VERSION")
             )),
             "{text}"
@@ -269,7 +419,7 @@ mod tests {
         let text = fs::read_to_string(tmp.path().join("container.def")).unwrap();
         assert!(
             text.contains(&format!(
-                "From: ghcr.io/stanfordhpds/hpds-cli:{}",
+                "https://github.com/StanfordHPDS/hpds-cli/releases/download/v{}/$asset",
                 env!("CARGO_PKG_VERSION")
             )),
             "{text}"
@@ -294,7 +444,7 @@ mod tests {
         let mut ctx = container_ctx(tmp.path(), "both");
         ctx.kind = Some("both");
         let outcomes = run(&ctx).unwrap();
-        assert_eq!(outcomes.len(), 2, "{outcomes:?}");
+        assert_eq!(outcomes.len(), 3, "{outcomes:?}");
         for file in ["Dockerfile", "container.def"] {
             let text = fs::read_to_string(tmp.path().join(file)).unwrap();
             assert!(
@@ -325,8 +475,12 @@ mod tests {
         let mut ctx = container_ctx(tmp.path(), "r");
         ctx.kind = Some("docker");
         let outcomes = run(&ctx).unwrap();
+        let dockerfile = outcomes
+            .iter()
+            .find(|outcome| outcome.path == std::path::Path::new("Dockerfile"))
+            .expect("Dockerfile outcome");
         assert!(
-            matches!(outcomes[0].outcome, WriteOutcome::SkippedConflict { .. }),
+            matches!(dockerfile.outcome, WriteOutcome::SkippedConflict { .. }),
             "{outcomes:?}"
         );
         assert_eq!(
@@ -343,7 +497,11 @@ mod tests {
         ctx.kind = Some("docker");
         ctx.force = true;
         let outcomes = run(&ctx).unwrap();
-        assert_eq!(outcomes[0].outcome, WriteOutcome::Overwritten);
+        let dockerfile = outcomes
+            .iter()
+            .find(|outcome| outcome.path == std::path::Path::new("Dockerfile"))
+            .expect("Dockerfile outcome");
+        assert_eq!(dockerfile.outcome, WriteOutcome::Overwritten);
         let text = fs::read_to_string(tmp.path().join("Dockerfile")).unwrap();
         assert!(text.contains("FROM rocker/r-ver:4.6.1"), "{text}");
     }

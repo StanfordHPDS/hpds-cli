@@ -73,6 +73,11 @@ pub struct InitArgs {
     #[arg(long = "use", value_delimiter = ',', value_name = "COMPONENTS")]
     pub components: Option<Vec<String>>,
 
+    /// R version for an R container. Overrides renv.lock; valid only when
+    /// the selected components include a container and the language uses R
+    #[arg(long, value_name = "VERSION")]
+    pub r_version: Option<String>,
+
     /// Primary author (GitHub username) for hpds.toml [default: the login
     /// gh is authenticated as, else empty]
     #[arg(long, value_name = "AUTHOR")]
@@ -141,11 +146,27 @@ pub fn run(args: InitArgs) -> anyhow::Result<()> {
         selections
     };
     ensure_language_for(&selections, language.as_deref())?;
+    validate_r_version_scope(args.r_version.as_deref(), &selections, language.as_deref())?;
+    let selected_r_version = if selections
+        .iter()
+        .any(|selection| selection.spec.name == "container")
+        && matches!(language.as_deref(), Some("r" | "both"))
+    {
+        Some(container::resolve_r_version(
+            &target,
+            args.r_version.as_deref(),
+        )?)
+    } else {
+        None
+    };
     let author = gitx::repo::resolve_with(args.author.clone(), args.yes, default_author, |d| {
         ui::text("Primary author (GitHub username)", d)
     })?;
 
-    let vars = Vars::standard(&name, language.as_deref(), &author);
+    let mut vars = Vars::standard(&name, language.as_deref(), &author);
+    if let Some(r_version) = selected_r_version {
+        vars = vars.with("r_version", r_version);
+    }
 
     // hpds.toml first: the project metadata is the one thing init always
     // writes. Existing files go through the engine's conflict handling:
@@ -167,6 +188,7 @@ pub fn run(args: InitArgs) -> anyhow::Result<()> {
         let ctx = ComponentCtx {
             kind: selection.kind.as_deref(),
             workflows: selection.workflows.as_deref(),
+            r_version: args.r_version.as_deref(),
             force: args.force,
             dest: &target,
             vars: vars.clone(),
@@ -193,6 +215,26 @@ pub fn run(args: InitArgs) -> anyhow::Result<()> {
         );
     }
     ui::success(&format!("{name} is set up"));
+    Ok(())
+}
+
+fn validate_r_version_scope(
+    r_version: Option<&str>,
+    selections: &[Selection],
+    language: Option<&str>,
+) -> anyhow::Result<()> {
+    if r_version.is_none() {
+        return Ok(());
+    }
+    let has_container = selections
+        .iter()
+        .any(|selection| selection.spec.name == "container");
+    if !has_container || !matches!(language, Some("r" | "both")) {
+        return Err(super::usage_error(
+            "--r-version requires an R container selection",
+            "select an R container, or drop --r-version and re-run `hpds init`",
+        ));
+    }
     Ok(())
 }
 

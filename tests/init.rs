@@ -44,6 +44,104 @@ fn read(dir: &tempfile::TempDir, rel: &str) -> String {
     fs::read_to_string(dir.path().join(rel)).unwrap_or_else(|e| panic!("{rel} should exist: {e}"))
 }
 
+#[test]
+fn init_container_accepts_an_explicit_r_version() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    hpds()
+        .args([
+            "init",
+            "--yes",
+            "--author",
+            "malcolm",
+            "--language",
+            "r",
+            "--use",
+            "container:both",
+            "--r-version",
+            "4.2.2",
+        ])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    for file in ["Dockerfile", "container.def"] {
+        let text = read(&tmp, file);
+        assert!(text.contains("rocker/r-ver:4.2.2"), "{file}: {text}");
+        assert!(!text.contains("rocker/r-ver:4.6.1"), "{file}: {text}");
+    }
+}
+
+#[test]
+fn init_rejects_r_version_without_an_r_container_before_writing() {
+    for args in [
+        vec!["init", "--yes", "--r-version", "4.4.2"],
+        vec![
+            "init",
+            "--yes",
+            "--language",
+            "python",
+            "--use",
+            "container:docker",
+            "--r-version",
+            "4.4.2",
+        ],
+    ] {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        hpds()
+            .args(args)
+            .current_dir(tmp.path())
+            .assert()
+            .code(2)
+            .stderr(
+                predicate::str::contains("--r-version").and(predicate::str::contains("container")),
+            );
+        assert!(!tmp.path().join("hpds.toml").exists());
+        assert!(!tmp.path().join("Dockerfile").exists());
+        assert!(!tmp.path().join(".dockerignore").exists());
+    }
+}
+
+#[test]
+fn init_rejects_malformed_r_versions_before_writing_any_component() {
+    for (lock, extra_args) in [
+        (Some(r#"{"R":{"Version":443}}"#), Vec::new()),
+        (None, vec!["--r-version", "release"]),
+    ] {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        if let Some(lock) = lock {
+            fs::write(tmp.path().join("renv.lock"), lock).expect("write malformed lock");
+        }
+        let mut args = vec![
+            "init",
+            "--yes",
+            "--force",
+            "--author",
+            "malcolm",
+            "--language",
+            "r",
+            "--use",
+            "pipeline:make,container:docker",
+        ];
+        args.extend(extra_args);
+        hpds()
+            .args(args)
+            .current_dir(tmp.path())
+            .assert()
+            .failure()
+            .stderr(
+                predicate::str::contains("version")
+                    .or(predicate::str::contains("Version"))
+                    .and(predicate::str::contains("hint:")),
+            );
+        for file in ["hpds.toml", "Makefile", "Dockerfile", ".dockerignore"] {
+            assert!(
+                !tmp.path().join(file).exists(),
+                "malformed R metadata must fail before writing {file}"
+            );
+        }
+    }
+}
+
 // --- --yes produces a complete project ---------------------------------------
 
 #[test]
@@ -84,7 +182,9 @@ fn init_yes_full_options_produces_a_complete_project() {
     assert!(makefile.contains("clean:"), "{makefile}");
     let readme = read(&tmp, "README.md");
     assert!(readme.contains("malaria-icu"), "{readme}");
-    assert!(read(&tmp, "Dockerfile").contains("stanfordhpds"));
+    assert!(
+        read(&tmp, "Dockerfile").contains("github.com/StanfordHPDS/hpds-cli/releases/download/")
+    );
     let slurm = read(&tmp, "scripts/slurm_job.sh");
     assert!(slurm.contains("https://www.sherlock.stanford.edu/docs/"));
     assert!(!tmp.path().join("docs/slurm.md").exists());
