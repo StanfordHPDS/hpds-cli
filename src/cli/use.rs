@@ -29,7 +29,8 @@ pub struct UseArgs {
     #[arg(long, value_name = "VALUE")]
     pub kind: Option<String>,
 
-    /// Overwrite existing files that differ from the template
+    /// Overwrite differing files for embedded templates; slides, poster,
+    /// and thesis always refuse existing destinations
     #[arg(long)]
     pub force: bool,
 
