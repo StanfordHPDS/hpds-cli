@@ -168,7 +168,9 @@ fn refuses_competing_devcontainer_configurations_before_writing() {
         ".devcontainer/alternate/devcontainer.json",
     ] {
         let project = Project::new("competing-config");
-        let path = project.path(competing);
+        let path = competing
+            .split('/')
+            .fold(project.root.clone(), |path, segment| path.join(segment));
         fs::create_dir_all(path.parent().unwrap()).unwrap();
         fs::write(&path, "{}\n").unwrap();
         project
