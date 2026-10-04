@@ -77,10 +77,12 @@ pub enum Command {
     Project(project::ProjectArgs),
     /// Apply a template component to the current project
     ///
-    /// Drops a single lab template into the current project: hpds.toml,
-    /// pipeline, readme, container, slurm, or gha. Omit the component to list
-    /// what is available. Existing files are left untouched unless --force
-    /// is given.
+    /// Applies a lab template: container, gha, hpds.toml, pipeline, poster,
+    /// readme, slides, slurm, or thesis. Omit the component to list what is
+    /// available. Embedded templates leave existing files untouched unless
+    /// --force is given. The slides, poster, and thesis templates require
+    /// network access and create repository-named subdirectories; existing
+    /// destinations are refused even with --force.
     Use(r#use::UseArgs),
     /// Install external software (r, quarto, uv, gh, rig, tinytex, duckdb, togi)
     ///

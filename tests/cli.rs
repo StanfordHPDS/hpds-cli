@@ -46,6 +46,31 @@ help_snapshot!(help_version, "version");
 help_snapshot!(help_upgrade, "upgrade");
 
 #[test]
+fn use_help_mentions_every_listed_component() {
+    let listing = help_output(&["use", "--no-color"]);
+    let components: Vec<_> = listing
+        .lines()
+        .filter(|line| line.starts_with("  "))
+        .filter_map(|line| line.split_whitespace().next())
+        .collect();
+    assert!(!components.is_empty(), "component listing was empty");
+
+    let help = help_output(&["use", "--help"]);
+    let words: Vec<_> = help
+        .split(|c: char| !c.is_alphanumeric() && !matches!(c, '.' | '_' | '-'))
+        .map(|word| word.trim_matches('.'))
+        .collect();
+    let missing: Vec<_> = components
+        .into_iter()
+        .filter(|component| !words.contains(component))
+        .collect();
+    assert!(
+        missing.is_empty(),
+        "`hpds use --help` omits listed components: {missing:?}"
+    );
+}
+
+#[test]
 fn version_command_prints_version() {
     hpds()
         .arg("version")

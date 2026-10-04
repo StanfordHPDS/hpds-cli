@@ -84,6 +84,26 @@ fn readme_shows_a_healthy_number_of_hpds_commands() {
 }
 
 #[test]
+fn readme_has_runnable_fetched_template_examples() {
+    let commands = extract_commands(&readme());
+    let missing: Vec<_> = ["slides", "poster", "thesis"]
+        .into_iter()
+        .filter(|component| {
+            !commands.iter().any(|command| {
+                command
+                    .split_whitespace()
+                    .take(3)
+                    .eq(["hpds", "use", component])
+            })
+        })
+        .collect();
+    assert!(
+        missing.is_empty(),
+        "README needs fenced `hpds use` examples for: {missing:?}"
+    );
+}
+
+#[test]
 fn every_readme_hpds_command_parses() {
     let commands = extract_commands(&readme());
     for command in &commands {

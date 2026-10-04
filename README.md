@@ -71,6 +71,35 @@ $ hpds use pipeline --kind targets
 
 Formatting and linting the code you write there is [togi](https://github.com/StanfordHPDS/togi)'s job (`togi format`, `togi lint`); install it with `hpds install togi`.
 
+### Slides, posters, and dissertations
+
+Fetch the lab's document templates into the current directory:
+
+```console
+$ hpds use slides
+$ hpds use poster
+$ hpds use thesis
+```
+
+Each command creates a subdirectory named after its template repository.
+Use `thesis` for the Stanford dissertation and thesis template.
+
+| Component | Template repository | Destination subdirectory |
+| --- | --- | --- |
+| `slides` | [StanfordHPDS/hpds-slides-theme](https://github.com/StanfordHPDS/hpds-slides-theme) | `hpds-slides-theme/` |
+| `poster` | [StanfordHPDS/hpds-poster](https://github.com/StanfordHPDS/hpds-poster) | `hpds-poster/` |
+| `thesis` | [StanfordHPDS/typst-stanford-thesis](https://github.com/StanfordHPDS/typst-stanford-thesis) | `typst-stanford-thesis/` |
+
+All three commands require network access. For slides and posters, `hpds`
+uses `quarto use template` when Quarto is on `PATH`; otherwise it clones
+the repository. The thesis template is always cloned. Cloning uses the
+GitHub CLI (`gh`) when available, or `git` otherwise, and requires Git
+even when using `gh`.
+
+Existing destination directories are refused, including empty directories
+and when `--force` is given. Choose another working directory or move the
+existing destination before fetching again.
+
 ### Set up a machine
 
 Install a single tool:
