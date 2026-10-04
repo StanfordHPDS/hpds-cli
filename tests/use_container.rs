@@ -55,6 +55,9 @@ impl Sandbox {
     }
 
     fn write(&self, rel: &str, content: &str) {
+        if let Some(parent) = self.path(rel).parent() {
+            fs::create_dir_all(parent).expect("create sandbox parent directory");
+        }
         fs::write(self.path(rel), content).expect("write sandbox file");
     }
 
@@ -126,41 +129,81 @@ fn assert_def_well_formed(text: &str) {
 
 fn assert_pinned_hpds_docker_stage(text: &str) {
     assert!(
-        text.contains(&format!(
-            "FROM ghcr.io/stanfordhpds/hpds-cli:{} AS hpds",
-            env!("CARGO_PKG_VERSION")
-        )),
-        "hpds stage is pinned to the generating release: {text}"
+        text.contains("FROM debian:trixie-slim AS hpds"),
+        "hpds has a public release download stage: {text}"
     );
     assert!(
         text.contains("COPY --from=hpds /hpds /usr/local/bin/hpds"),
-        "hpds is copied from its registry image: {text}"
+        "verified hpds is copied from its download stage: {text}"
     );
     assert!(
-        !text.contains("ARG HPDS"),
-        "hpds pin is rendered, not a build arg: {text}"
+        text.contains(&format!(
+            "https://github.com/StanfordHPDS/hpds-cli/releases/download/v{}/$asset",
+            env!("CARGO_PKG_VERSION")
+        )),
+        "hpds download is pinned to the generating release: {text}"
+    );
+    for mapping in ["amd64) target=x86_64", "arm64) target=aarch64"] {
+        assert!(
+            text.contains(mapping),
+            "architecture mapping `{mapping}`: {text}"
+        );
+    }
+    assert!(
+        text.contains("unsupported TARGETARCH"),
+        "actionable unsupported architecture: {text}"
+    );
+    let verify = text
+        .find("sha256sum --check")
+        .expect("checksum verification");
+    let extract = text.find("tar -xzf").expect("archive extraction");
+    assert!(
+        verify < extract,
+        "checksum is verified before extraction: {text}"
     );
     assert!(
-        !text.contains("hpds-cli:latest"),
-        "hpds never uses a rolling tag: {text}"
+        !text.contains("ghcr.io/stanfordhpds/hpds-cli"),
+        "does not require the hpds registry image: {text}"
     );
 }
 
 fn assert_pinned_hpds_apptainer_stage(text: &str) {
     assert!(
-        text.contains(&format!(
-            "From: ghcr.io/stanfordhpds/hpds-cli:{}",
-            env!("CARGO_PKG_VERSION")
-        )) && text.contains("Stage: hpds"),
-        "pinned hpds source stage: {text}"
+        text.contains("From: debian:trixie-slim") && text.contains("Stage: hpds"),
+        "hpds has a public release download stage: {text}"
     );
     assert!(
         text.contains("%files from hpds") && text.contains("/hpds /usr/local/bin/hpds"),
-        "hpds is copied between Apptainer stages: {text}"
+        "verified hpds is copied between Apptainer stages: {text}"
     );
     assert!(
-        !text.contains("hpds-cli:latest"),
-        "hpds never uses a rolling tag: {text}"
+        text.contains(&format!(
+            "https://github.com/StanfordHPDS/hpds-cli/releases/download/v{}/$asset",
+            env!("CARGO_PKG_VERSION")
+        )),
+        "hpds download is pinned to the generating release: {text}"
+    );
+    for mapping in ["x86_64) target=x86_64", "aarch64) target=aarch64"] {
+        assert!(
+            text.contains(mapping),
+            "architecture mapping `{mapping}`: {text}"
+        );
+    }
+    assert!(
+        text.contains("unsupported architecture"),
+        "actionable unsupported architecture: {text}"
+    );
+    let verify = text
+        .find("sha256sum --check")
+        .expect("checksum verification");
+    let extract = text.find("tar -xzf").expect("archive extraction");
+    assert!(
+        verify < extract,
+        "checksum is verified before extraction: {text}"
+    );
+    assert!(
+        !text.contains("ghcr.io/stanfordhpds/hpds-cli"),
+        "does not require the hpds registry image: {text}"
     );
 }
 
@@ -225,6 +268,336 @@ fn assert_r_system_dependency_guidance(text: &str) {
         text.contains("https://rstudio.github.io/renv/articles/docker.html#system-dependencies"),
         "R container links to the renv system-dependency guidance: {text}"
     );
+    assert!(
+        !text.contains("distro = \"ubuntu:24.04\""),
+        "system dependency guidance must not assume one distro for every R image: {text}"
+    );
+}
+
+fn assert_apptainer_restore_disables_cache_symlinks(text: &str) {
+    let setting = text
+        .find("export RENV_CONFIG_CACHE_SYMLINKS=FALSE")
+        .expect("Apptainer disables renv cache symlinks");
+    let restore = text.rfind("renv::restore()").expect("renv restore step");
+    assert!(
+        setting < restore,
+        "renv cache symlinks must be disabled before restore: {text}"
+    );
+}
+
+fn renv_lock(version: &str) -> String {
+    format!(r#"{{"R":{{"Version":"{version}"}},"Packages":{{}}}}"#)
+}
+
+fn assert_python_version_precedes_first_sync(text: &str) {
+    let version = text
+        .find(".python-version")
+        .expect("available Python version metadata is copied into the image");
+    let sync = text
+        .find("uv sync")
+        .expect("container synchronizes with uv");
+    assert!(
+        version < sync,
+        "Python version metadata must be available before the first uv sync: {text}"
+    );
+}
+
+fn dockerignore_lines(text: &str) -> Vec<&str> {
+    text.lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty() && !line.starts_with('#'))
+        .collect()
+}
+
+fn assert_safe_dockerignore(text: &str) {
+    let lines = dockerignore_lines(text);
+    for ignored in [
+        ".venv",
+        "renv/library",
+        "R-renv-library",
+        "R-library",
+        ".cache",
+    ] {
+        assert!(
+            lines.contains(&ignored),
+            "generated .dockerignore excludes {ignored}: {text}"
+        );
+    }
+    for overbroad in ["*", "renv", "renv/"] {
+        assert!(
+            !lines.contains(&overbroad),
+            "generated .dockerignore must retain project source and vendored renv files: {text}"
+        );
+    }
+}
+
+#[test]
+fn container_help_documents_the_r_version_override() {
+    let sandbox = Sandbox::new();
+    sandbox
+        .hpds_use(&["container", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("--r-version").and(predicate::str::contains("renv.lock")));
+}
+
+#[test]
+fn explicit_r_version_overrides_project_metadata_and_the_test_fallback() {
+    let sandbox = Sandbox::new();
+    sandbox.write("renv.lock", &renv_lock("4.3.3"));
+    sandbox
+        .use_container(&["--kind", "both", "--language", "r", "--r-version", "4.2.2"])
+        .assert()
+        .success();
+
+    for file in ["Dockerfile", "container.def"] {
+        let text = sandbox.read(file);
+        assert!(text.contains("rocker/r-ver:4.2.2"), "{file}: {text}");
+        assert!(!text.contains("rocker/r-ver:4.3.3"), "{file}: {text}");
+        assert!(!text.contains("rocker/r-ver:4.6.1"), "{file}: {text}");
+    }
+}
+
+#[test]
+fn renv_lock_version_overrides_the_current_release_fallback_for_both_formats() {
+    let sandbox = Sandbox::new();
+    sandbox.write("renv.lock", &renv_lock("4.1.3"));
+    sandbox
+        .use_container(&["--kind", "both", "--language", "r"])
+        .assert()
+        .success();
+
+    for file in ["Dockerfile", "container.def"] {
+        let text = sandbox.read(file);
+        assert!(text.contains("rocker/r-ver:4.1.3"), "{file}: {text}");
+        assert!(!text.contains("rocker/r-ver:4.6.1"), "{file}: {text}");
+    }
+}
+
+#[test]
+fn current_release_fallback_is_used_only_when_r_metadata_is_absent() {
+    let sandbox = Sandbox::new();
+    sandbox
+        .use_container(&["--kind", "both", "--language", "r"])
+        .assert()
+        .success();
+
+    for file in ["Dockerfile", "container.def"] {
+        assert!(
+            sandbox.read(file).contains("rocker/r-ver:4.6.1"),
+            "{file} uses the offline current-release seam"
+        );
+    }
+}
+
+#[test]
+fn malformed_r_version_metadata_fails_without_writing_components() {
+    for malformed in ["not json", "null", "[]", r#"{"R":{"Version":"release"}}"#] {
+        let sandbox = Sandbox::new();
+        sandbox.write("renv.lock", malformed);
+        sandbox
+            .use_container(&["--kind", "both", "--language", "r"])
+            .assert()
+            .failure()
+            .stderr(
+                predicate::str::contains("renv.lock")
+                    .and(
+                        predicate::str::contains("version").or(predicate::str::contains("Version")),
+                    )
+                    .and(predicate::str::contains("hint:")),
+            );
+        assert!(!sandbox.path("Dockerfile").exists());
+        assert!(!sandbox.path("container.def").exists());
+    }
+}
+
+#[test]
+fn changing_r_metadata_does_not_reuse_a_stale_selected_version() {
+    let sandbox = Sandbox::new();
+    sandbox.write("renv.lock", &renv_lock("4.2.3"));
+    sandbox
+        .use_container(&["--kind", "both", "--language", "r"])
+        .assert()
+        .success();
+    assert!(sandbox.read("Dockerfile").contains("rocker/r-ver:4.2.3"));
+
+    sandbox.write("renv.lock", &renv_lock("4.4.2"));
+    sandbox
+        .use_container(&["--kind", "both", "--language", "r", "--force"])
+        .assert()
+        .success();
+    for file in ["Dockerfile", "container.def"] {
+        let text = sandbox.read(file);
+        assert!(text.contains("rocker/r-ver:4.4.2"), "{file}: {text}");
+        assert!(!text.contains("rocker/r-ver:4.2.3"), "{file}: {text}");
+    }
+}
+
+#[test]
+fn r_version_is_rejected_for_non_container_and_python_only_generation() {
+    let no_component = Sandbox::new();
+    no_component
+        .hpds_use(&["--r-version", "4.4.2"])
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains("--r-version").and(predicate::str::contains("container")));
+
+    let non_container = Sandbox::new();
+    non_container
+        .hpds_use(&["readme", "--language", "r", "--r-version", "4.4.2"])
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains("--r-version").and(predicate::str::contains("container")));
+    assert!(!non_container.path("README.md").exists());
+
+    let python = Sandbox::new();
+    python
+        .use_container(&[
+            "--kind",
+            "docker",
+            "--language",
+            "python",
+            "--r-version",
+            "4.4.2",
+        ])
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains("--r-version").and(predicate::str::contains("R")));
+    assert!(!python.path("Dockerfile").exists());
+    assert!(!python.path(".dockerignore").exists());
+}
+
+#[test]
+fn optional_python_version_metadata_precedes_uv_sync_in_every_template() {
+    for (kind, language, file) in [
+        ("docker", "python", "Dockerfile"),
+        ("docker", "both", "Dockerfile"),
+        ("apptainer", "python", "container.def"),
+        ("apptainer", "both", "container.def"),
+    ] {
+        let sandbox = Sandbox::new();
+        sandbox.write(".python-version", "3.12\n");
+        sandbox
+            .use_container(&["--kind", kind, "--language", language])
+            .assert()
+            .success();
+        assert_python_version_precedes_first_sync(&sandbox.read(file));
+    }
+}
+
+#[test]
+fn optional_renv_cellar_is_available_before_restore_in_every_r_template() {
+    for (kind, language, file) in [
+        ("docker", "r", "Dockerfile"),
+        ("docker", "both", "Dockerfile"),
+        ("apptainer", "r", "container.def"),
+        ("apptainer", "both", "container.def"),
+    ] {
+        let sandbox = Sandbox::new();
+        sandbox.write("renv/cellar/package_1.0.0.tar.gz", "fixture archive");
+        sandbox
+            .use_container(&["--kind", kind, "--language", language])
+            .assert()
+            .success();
+        let text = sandbox.read(file);
+        let cellar = text
+            .find("renv/cellar")
+            .expect("available renv cellar is copied into the image");
+        let restore = text.rfind("renv::restore()").expect("renv restore step");
+        assert!(
+            cellar < restore,
+            "{kind}/{language} must provide the cellar before restore: {text}"
+        );
+    }
+}
+
+#[test]
+fn renv_cellar_remains_optional_in_every_r_template() {
+    for (kind, language, file) in [
+        ("docker", "r", "Dockerfile"),
+        ("docker", "both", "Dockerfile"),
+        ("apptainer", "r", "container.def"),
+        ("apptainer", "both", "container.def"),
+    ] {
+        let sandbox = Sandbox::new();
+        sandbox
+            .use_container(&["--kind", kind, "--language", language])
+            .assert()
+            .success();
+        assert!(
+            !sandbox.read(file).contains("renv/cellar"),
+            "{kind}/{language} must not require an absent cellar"
+        );
+    }
+}
+
+#[test]
+fn python_version_metadata_remains_optional_in_every_template() {
+    for (kind, language, file) in [
+        ("docker", "python", "Dockerfile"),
+        ("docker", "both", "Dockerfile"),
+        ("apptainer", "python", "container.def"),
+        ("apptainer", "both", "container.def"),
+    ] {
+        let sandbox = Sandbox::new();
+        sandbox
+            .use_container(&["--kind", kind, "--language", language])
+            .assert()
+            .success();
+        assert!(
+            !sandbox.read(file).contains(".python-version"),
+            "{kind}/{language} must not require absent metadata"
+        );
+    }
+}
+
+#[test]
+fn docker_selections_generate_a_safe_dockerignore_but_apptainer_does_not() {
+    for kind in ["docker", "both"] {
+        let sandbox = Sandbox::new();
+        sandbox
+            .use_container(&["--kind", kind, "--language", "both"])
+            .assert()
+            .success();
+        assert_safe_dockerignore(&sandbox.read(".dockerignore"));
+    }
+
+    let sandbox = Sandbox::new();
+    sandbox
+        .use_container(&["--kind", "apptainer", "--language", "both"])
+        .assert()
+        .success();
+    assert!(!sandbox.path(".dockerignore").exists());
+}
+
+#[test]
+fn dockerignore_uses_standard_idempotence_conflict_and_force_handling() {
+    let sandbox = Sandbox::new();
+    let args = ["--kind", "docker", "--language", "r"];
+    sandbox.use_container(&args).assert().success();
+    let generated = sandbox.read(".dockerignore");
+    sandbox
+        .use_container(&args)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            ".dockerignore is already up to date",
+        ));
+
+    sandbox.write(".dockerignore", "private-data/\n");
+    sandbox
+        .use_container(&args)
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("skipped .dockerignore"))
+        .stdout(predicate::str::contains("--force"));
+    assert_eq!(sandbox.read(".dockerignore"), "private-data/\n");
+
+    sandbox
+        .use_container(&["--kind", "docker", "--language", "r", "--force"])
+        .assert()
+        .success();
+    assert_eq!(sandbox.read(".dockerignore"), generated);
 }
 
 #[test]
@@ -317,7 +690,7 @@ fn docker_both_languages_dockerfile_uses_current_r_and_uv_managed_python() {
 }
 
 #[test]
-fn apptainer_r_def_uses_registry_hpds_stage_and_current_r() {
+fn apptainer_r_def_uses_verified_release_hpds_stage_and_current_r() {
     let sandbox = Sandbox::new();
     sandbox
         .use_container(&["--kind", "apptainer", "--language", "r"])
@@ -330,6 +703,7 @@ fn apptainer_r_def_uses_registry_hpds_stage_and_current_r() {
     assert_pinned_hpds_apptainer_stage(&text);
     assert_generic_system_dependencies(&text);
     assert_r_system_dependency_guidance(&text);
+    assert_apptainer_restore_disables_cache_symlinks(&text);
     assert!(
         text.contains("From: rocker/r-ver:4.6.1") && text.contains("Stage: final"),
         "resolved R final stage: {text}"
@@ -355,7 +729,7 @@ fn apptainer_r_def_uses_registry_hpds_stage_and_current_r() {
 }
 
 #[test]
-fn apptainer_python_def_uses_registry_hpds_stage_and_uv_managed_python() {
+fn apptainer_python_def_uses_verified_release_hpds_stage_and_uv_managed_python() {
     let sandbox = Sandbox::new();
     sandbox
         .use_container(&["--kind", "apptainer", "--language", "python"])
@@ -395,6 +769,7 @@ fn apptainer_both_languages_def_uses_current_r_and_uv_managed_python() {
     assert_pinned_uv_apptainer_stage(&text);
     assert_generic_system_dependencies(&text);
     assert_r_system_dependency_guidance(&text);
+    assert_apptainer_restore_disables_cache_symlinks(&text);
     assert!(
         text.contains("From: rocker/r-ver:4.6.1"),
         "mixed image starts from the resolved R runtime: {text}"

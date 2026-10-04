@@ -69,6 +69,26 @@ $ hpds use readme
 $ hpds use pipeline --kind targets
 ```
 
+Generate Docker, Apptainer, or both container definitions with the project
+runtime metadata available in the current directory:
+
+```console
+$ hpds use container --kind docker --language r
+$ hpds use container --kind both --language both --r-version 4.4.3
+```
+
+For R projects, `--r-version` takes precedence over `R.Version` in
+`renv.lock`. When neither is available, hpds resolves the current R release.
+For Python projects, an existing `.python-version` is copied before the first
+locked `uv sync`; projects without that optional file continue to use their
+`pyproject.toml` and `uv.lock` metadata. Regenerate the container files if you
+add or remove `.python-version` later. Docker generation also creates a
+`.dockerignore` that excludes host environments and caches while retaining
+project source, lockfiles, `.Rprofile`, and vendored files under `renv/`.
+During a container build, the generated files download the matching hpds
+release for Linux amd64 or arm64 and verify its published SHA256 checksum
+before installing it.
+
 Formatting and linting the code you write there is [togi](https://github.com/StanfordHPDS/togi)'s job (`togi format`, `togi lint`); install it with `hpds install togi`.
 
 ### Slides, posters, and dissertations
@@ -170,6 +190,22 @@ typos
 ```
 
 CI also runs `cargo test --features online-tests` in a separate job that is allowed to fail; those tests exercise the network and real tool downloads and are not required.
+
+Container runtime validation is explicit because it downloads base images and
+package runtimes. Build hpds, start Docker, and run:
+
+```sh
+cargo build --locked
+python3 tests/container-runtime/run.py
+```
+
+The harness exits with an error when Docker or its daemon is unavailable. It
+builds and runs R, Python, and mixed fixtures, then removes the temporary image
+tags it created. Each fixture also checks the installed hpds release. On Linux
+with Apptainer installed, pass `--engine all` to validate both generated
+formats, as the native Linux CI job does. Where unprivileged Apptainer builds
+are unavailable, add `--apptainer-build-as-root`; runtime checks still execute
+as the calling user with a fresh home directory.
 
 ## License
 

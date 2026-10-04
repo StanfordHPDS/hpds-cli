@@ -1,7 +1,27 @@
-# hpds is a distroless source stage pinned by the template renderer.
+# Download the hpds release that generated this definition and verify its
+# published checksum before copying it into the final image.
 Bootstrap: docker
-From: ghcr.io/stanfordhpds/hpds-cli:{{hpds_version}}
+From: debian:trixie-slim
 Stage: hpds
+
+%post
+    apt-get update
+    apt-get install -y --no-install-recommends ca-certificates curl
+    rm -rf /var/lib/apt/lists/*
+
+    case "$(uname -m)" in
+        x86_64) target=x86_64 ;;
+        aarch64) target=aarch64 ;;
+        *) echo "unsupported architecture '$(uname -m)'; hpds supports x86_64 and aarch64" >&2; exit 1 ;;
+    esac
+    asset="hpds-${target}-unknown-linux-musl.tar.gz"
+    release="https://github.com/StanfordHPDS/hpds-cli/releases/download/v{{hpds_version}}/$asset"
+    cd /tmp
+    curl --fail --location --retry 3 --output "$asset" "$release"
+    curl --fail --location --retry 3 --output "$asset.sha256" "$release.sha256"
+    sha256sum --check "$asset.sha256"
+    tar -xzf "$asset"
+    install -m 0755 "hpds-${target}-unknown-linux-musl/hpds" /hpds
 
 Bootstrap: docker
 From: rocker/r-ver:{{r_version}}
@@ -15,10 +35,11 @@ Stage: final
     .Rprofile /project/.Rprofile
     renv/activate.R /project/renv/activate.R
     renv/settings.json /project/renv/settings.json
+{{renv_cellar_apptainer_file}}
 
 %post
     # R packages may need project-specific system libraries. Before building, run
-    # renv::sysreqs(distro = "ubuntu:24.04", report = TRUE, collapse = TRUE), then
+    # renv::sysreqs(report = TRUE, collapse = TRUE) inside this base image, then
     # add the reported apt packages below so they are present before renv::restore():
     # https://rstudio.github.io/renv/articles/docker.html#system-dependencies
     apt-get update
@@ -29,15 +50,17 @@ Stage: final
     rm -rf /var/lib/apt/lists/*
 
     export RENV_PATHS_LIBRARY=/project/R-renv-library
+    export RENV_CONFIG_CACHE_SYMLINKS=FALSE
     cd /project
     R -s -e 'renv::restore()'
-    library_path="$(R -s -e 'cat(renv::paths$library())')"
+    library_path="$(R -s -e 'cat(renv::paths$library())' | tail -n 1)"
     ln -s "$library_path" /project/R-library
 
 %environment
     export RENV_PATHS_LIBRARY=/project/R-renv-library
     export R_LIBS_SITE=/project/R-library
     export RENV_CONFIG_AUTOLOADER_ENABLED=FALSE
+    export RENV_CONFIG_CACHE_SYMLINKS=FALSE
 
 %runscript
     exec R "$@"

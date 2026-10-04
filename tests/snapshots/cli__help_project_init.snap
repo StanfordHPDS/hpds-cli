@@ -42,6 +42,9 @@ Options:
       --use <COMPONENTS>
           Components to apply (comma-separated): pipeline, readme, container, slurm, gha. Attach a variant with `:` -- pipeline:make|targets|both, container:docker|apptainer|both, gha:pr-template+lint+audit-bot. Without a variant, --yes defaults pipeline to make, container to docker, and gha to every workflow, and reports each defaulted kind so the choice is never silent
 
+      --r-version <VERSION>
+          R version for an R container. Overrides renv.lock; valid only when the selected components include a container and the language uses R
+
       --author <AUTHOR>
           Primary author (GitHub username) for hpds.toml [default: the login gh is authenticated as, else empty]
 

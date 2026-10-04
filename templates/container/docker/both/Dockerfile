@@ -2,13 +2,28 @@
 
 # Start from the resolved R release. uv provisions the Python version declared
 # by the project, avoiding an R-by-Python base-image matrix.
-FROM ghcr.io/stanfordhpds/hpds-cli:{{hpds_version}} AS hpds
+FROM debian:trixie-slim AS hpds
+ARG TARGETARCH
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates curl \
+    && case "$TARGETARCH" in \
+        amd64) target=x86_64 ;; \
+        arm64) target=aarch64 ;; \
+        *) echo "unsupported TARGETARCH '$TARGETARCH'; hpds supports amd64 and arm64" >&2; exit 1 ;; \
+    esac \
+    && asset="hpds-${target}-unknown-linux-musl.tar.gz" \
+    && release="https://github.com/StanfordHPDS/hpds-cli/releases/download/v{{hpds_version}}/$asset" \
+    && curl --fail --location --retry 3 --output "$asset" "$release" \
+    && curl --fail --location --retry 3 --output "$asset.sha256" "$release.sha256" \
+    && sha256sum --check "$asset.sha256" \
+    && tar -xzf "$asset" \
+    && install -m 0755 "hpds-${target}-unknown-linux-musl/hpds" /hpds
 FROM rocker/r-ver:{{r_version}}
 
 LABEL org.opencontainers.image.title="{{project}}"
 
 # R packages may need project-specific system libraries. Before building, run
-# renv::sysreqs(distro = "ubuntu:24.04", report = TRUE, collapse = TRUE), then
+# renv::sysreqs(report = TRUE, collapse = TRUE) inside this base image, then
 # add the reported apt packages below so they are present before renv::restore():
 # https://rstudio.github.io/renv/articles/docker.html#system-dependencies
 RUN apt-get update \
@@ -34,10 +49,11 @@ ENV RENV_PATHS_CACHE=/project/.cache/renv \
 RUN mkdir -p renv
 COPY renv.lock .Rprofile ./
 COPY renv/activate.R renv/settings.json renv/
+{{renv_cellar_docker_copy}}
 RUN --mount=type=cache,target=/project/.cache/renv \
     R -s -e 'renv::restore()'
 
-COPY pyproject.toml uv.lock ./
+COPY pyproject.toml uv.lock{{python_version_docker_source}} ./
 RUN --mount=type=cache,target=/project/.cache/uv \
     uv sync --locked --no-install-project
 

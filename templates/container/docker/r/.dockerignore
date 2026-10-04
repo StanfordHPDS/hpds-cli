@@ -1,0 +1,9 @@
+# Host-created environments and caches must not replace restored image state.
+.venv
+renv/library
+R-renv-library
+R-library
+.cache
+**/__pycache__
+.pytest_cache
+.Rproj.user
