@@ -12,6 +12,7 @@
 //! to [`COMPONENTS`].
 
 pub mod container;
+pub mod devcontainer;
 pub mod fetched;
 pub mod gha;
 pub mod hpds_toml;
@@ -64,6 +65,7 @@ pub struct Component {
 /// All registered components, in listing order.
 pub static COMPONENTS: &[Component] = &[
     container::COMPONENT,
+    devcontainer::COMPONENT,
     gha::COMPONENT,
     hpds_toml::COMPONENT,
     pipeline::COMPONENT,
@@ -163,6 +165,7 @@ mod tests {
             "readme",
             "slurm",
             "container",
+            "devcontainer",
             "gha",
             "slides",
             "poster",

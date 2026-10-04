@@ -63,7 +63,7 @@ pub enum Command {
     /// Set up a new or existing project interactively
     ///
     /// Walks through the project name, language(s), and components (pipeline,
-    /// readme, container, slurm, gha), then writes hpds.toml with the
+    /// readme, container, devcontainer, slurm, gha), then writes hpds.toml with the
     /// [project] metadata and optionally initializes git and creates the
     /// GitHub repo. Pass --yes to accept every default without prompting.
     /// Formatting and linting the scaffolded project is the separate togi
@@ -77,8 +77,8 @@ pub enum Command {
     Project(project::ProjectArgs),
     /// Apply a template component to the current project
     ///
-    /// Applies a lab template: container, gha, hpds.toml, pipeline, poster,
-    /// readme, slides, slurm, or thesis. Omit the component to list what is
+    /// Applies a lab template: container, devcontainer, gha, hpds.toml, pipeline,
+    /// poster, readme, slides, slurm, or thesis. Omit the component to list what is
     /// available. Embedded templates leave existing files untouched unless
     /// --force is given. The slides, poster, and thesis templates require
     /// network access and create repository-named subdirectories; existing

@@ -167,6 +167,15 @@ fn assert_pinned_hpds_docker_stage(text: &str) {
     );
 }
 
+fn assert_dev_stage_supports_editors(text: &str) {
+    assert!(
+        text.contains("FROM hpds-project AS hpds-dev")
+            && text.contains("apt-get install -y --no-install-recommends curl openssh-client wget")
+            && text.contains("CMD [\"sleep\", \"infinity\"]"),
+        "development stage has editor prerequisites and stays running: {text}"
+    );
+}
+
 fn assert_pinned_hpds_apptainer_stage(text: &str) {
     assert!(
         text.contains("From: debian:trixie-slim") && text.contains("Stage: hpds"),
@@ -611,6 +620,7 @@ fn docker_r_dockerfile_pins_hpds_and_current_r_and_restores_renv() {
 
     let text = sandbox.read("Dockerfile");
     assert_pinned_hpds_docker_stage(&text);
+    assert_dev_stage_supports_editors(&text);
     assert_generic_system_dependencies(&text);
     assert_r_system_dependency_guidance(&text);
     assert!(
@@ -630,8 +640,10 @@ fn docker_r_dockerfile_pins_hpds_and_current_r_and_restores_renv() {
         );
     }
     assert!(
-        text.contains("RENV_CONFIG_CACHE_SYMLINKS=FALSE") && text.contains("/project/.cache/renv"),
-        "renv cache is safe and project-rooted: {text}"
+        text.contains("RENV_CONFIG_CACHE_SYMLINKS=FALSE")
+            && text.contains("RENV_PATHS_LIBRARY=/opt/renv/library")
+            && text.contains("RENV_PATHS_CACHE=/opt/renv/cache"),
+        "renv library and cache stay outside the mounted project: {text}"
     );
     assert!(
         text.contains(&sandbox.project_name()),
@@ -650,6 +662,7 @@ fn docker_python_dockerfile_pins_hpds_and_lets_uv_provision_python() {
 
     let text = sandbox.read("Dockerfile");
     assert_pinned_hpds_docker_stage(&text);
+    assert_dev_stage_supports_editors(&text);
     assert_pinned_uv_docker_source(&text);
     assert_generic_system_dependencies(&text);
     assert!(
@@ -657,8 +670,10 @@ fn docker_python_dockerfile_pins_hpds_and_lets_uv_provision_python() {
         "Python is provisioned by uv rather than a versioned Python base: {text}"
     );
     assert!(
-        text.contains("UV_PROJECT_ENVIRONMENT=/project/.venv"),
-        "uv environment lives under /project: {text}"
+        text.contains("UV_PROJECT_ENVIRONMENT=/opt/venv")
+            && text.contains("UV_PYTHON_INSTALL_DIR=/opt/python")
+            && text.contains("UV_CACHE_DIR=/opt/uv-cache"),
+        "uv environment and managed interpreter stay outside the mounted project: {text}"
     );
     assert!(
         text.contains("uv sync --locked --no-install-project"),
@@ -677,6 +692,7 @@ fn docker_both_languages_dockerfile_uses_current_r_and_uv_managed_python() {
 
     let text = sandbox.read("Dockerfile");
     assert_pinned_hpds_docker_stage(&text);
+    assert_dev_stage_supports_editors(&text);
     assert_pinned_uv_docker_source(&text);
     assert_generic_system_dependencies(&text);
     assert_r_system_dependency_guidance(&text);

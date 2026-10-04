@@ -89,6 +89,35 @@ During a container build, the generated files download the matching hpds
 release for Linux amd64 or arm64 and verify its published SHA256 checksum
 before installing it.
 
+To use the same locked environment in Visual Studio Code or Positron, first
+generate a Dockerfile and then add the opt-in Dev Container configuration:
+
+```console
+$ hpds use container --kind docker --language both
+$ hpds use devcontainer
+```
+
+In either editor, run `Dev Containers: Reopen in Container` from the Command
+Palette. After changing the configuration, run `Dev Containers: Rebuild
+Container`. To open the production analysis image interactively outside an editor, use
+`docker build --target hpds-analysis -t my-project-analysis .` and then
+`docker run --rm -it my-project-analysis`.
+
+`hpds use devcontainer` runs offline. It checks for the generated `hpds-dev` target
+and creates `.devcontainer/devcontainer.json` plus setup guidance in
+`.devcontainer/README.md`; it does not build or start a container. The editor
+workspace is mounted under `/workspaces/<checkout-folder>`, while Python, R,
+and their caches remain under `/opt` so the source mount cannot hide them.
+Existing customized Dockerfiles are validated and left untouched. Projects
+with older Dockerfiles must regenerate or manually adopt the `hpds-project`,
+`hpds-dev`, and final `hpds-analysis` stage contract first.
+
+The generated configuration uses the checkout folder literally because
+Positron does not substitute variables in build arguments. Regenerate it with
+`hpds use devcontainer --force` after renaming the checkout. On Linux, set its
+literal `HPDS_UID` and `HPDS_GID` arguments from `id -u` and `id -g`, then
+rebuild. Windows Dev Container use has not yet been validated.
+
 Formatting and linting the code you write there is [togi](https://github.com/StanfordHPDS/togi)'s job (`togi format`, `togi lint`); install it with `hpds install togi`.
 
 ### Slides, posters, and dissertations
@@ -201,11 +230,14 @@ python3 tests/container-runtime/run.py
 
 The harness exits with an error when Docker or its daemon is unavailable. It
 builds and runs R, Python, and mixed fixtures, then removes the temporary image
-tags it created. Each fixture also checks the installed hpds release. On Linux
-with Apptainer installed, pass `--engine all` to validate both generated
-formats, as the native Linux CI job does. Where unprivileged Apptainer builds
-are unavailable, add `--apptainer-build-as-root`; runtime checks still execute
-as the calling user with a fresh home directory.
+tags it created. Each fixture also checks the installed hpds release. Native
+Linux CI exercises Docker with a non-default host UID and validates bind-mount,
+environment, source-edit, lock-rebuild, and analysis-target behavior. With
+Apptainer installed, pass `--engine all` to validate both generated formats,
+as that CI job does. Where unprivileged Apptainer builds are unavailable, add
+`--apptainer-build-as-root`; runtime checks still execute as the calling user
+with a fresh home directory. Real Visual Studio Code and Positron launches are
+validated separately on macOS because they require the desktop applications.
 
 ## License
 

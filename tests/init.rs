@@ -142,6 +142,29 @@ fn init_rejects_malformed_r_versions_before_writing_any_component() {
     }
 }
 
+#[test]
+fn init_force_replaces_an_incompatible_dockerfile_before_adding_devcontainer() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    fs::write(tmp.path().join("Dockerfile"), "FROM debian\n").unwrap();
+    hpds()
+        .args([
+            "init",
+            "--yes",
+            "--force",
+            "--author",
+            "malcolm",
+            "--language",
+            "python",
+            "--use",
+            "container:docker,devcontainer",
+        ])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+    assert!(read(&tmp, "Dockerfile").contains("FROM hpds-project AS hpds-dev"));
+    assert!(tmp.path().join(".devcontainer/devcontainer.json").exists());
+}
+
 // --- --yes produces a complete project ---------------------------------------
 
 #[test]
@@ -721,6 +744,181 @@ fn init_yes_unknown_container_variant_fails_before_any_write_with_init_syntax() 
                 .and(predicate::str::contains("hint:")),
         );
     assert!(!tmp.path().join("hpds.toml").exists());
+}
+
+#[test]
+fn init_accepts_devcontainer_only_when_explicitly_selected() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    fs::write(
+        tmp.path().join("Dockerfile"),
+        "FROM debian AS hpds-project\nFROM hpds-project AS hpds-dev\nFROM hpds-project AS hpds-analysis\nCMD [\"bash\"]\n",
+    )
+    .unwrap();
+    hpds()
+        .args([
+            "init",
+            "--yes",
+            "--force",
+            "--author",
+            "malcolm",
+            "--use",
+            "devcontainer",
+        ])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+    assert!(tmp.path().join(".devcontainer/devcontainer.json").exists());
+}
+
+#[test]
+fn init_applies_container_before_devcontainer_regardless_of_argument_order() {
+    for selection in [
+        "devcontainer,container:docker",
+        "container:docker,devcontainer",
+    ] {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        hpds()
+            .args([
+                "init",
+                "--yes",
+                "--author",
+                "malcolm",
+                "--language",
+                "python",
+                "--use",
+                selection,
+            ])
+            .current_dir(tmp.path())
+            .assert()
+            .success();
+        assert!(tmp.path().join("Dockerfile").exists());
+        assert!(tmp.path().join(".devcontainer/devcontainer.json").exists());
+    }
+}
+
+#[test]
+fn init_preflights_an_existing_incompatible_dockerfile_before_any_write() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    fs::write(tmp.path().join("Dockerfile"), "FROM debian\n").unwrap();
+    fs::write(tmp.path().join("hpds.toml"), "sentinel\n").unwrap();
+    hpds()
+        .args([
+            "init",
+            "--yes",
+            "--author",
+            "malcolm",
+            "--language",
+            "python",
+            "--use",
+            "pipeline:make,container:docker,devcontainer",
+        ])
+        .current_dir(tmp.path())
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("Dockerfile").and(predicate::str::contains("hpds-dev")));
+    assert_eq!(read(&tmp, "Dockerfile"), "FROM debian\n");
+    assert_eq!(read(&tmp, "hpds.toml"), "sentinel\n");
+    for path in ["Makefile", ".dockerignore", ".devcontainer"] {
+        assert!(!tmp.path().join(path).exists(), "preflight wrote {path}");
+    }
+}
+
+#[test]
+fn init_preserves_an_existing_compatible_customized_dockerfile() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let dockerfile = "FROM debian AS hpds-project\nFROM hpds-project AS hpds-dev\nRUN printf 'custom editor setup\\n' > /customized\nFROM hpds-project AS hpds-analysis\nCMD [\"bash\"]\n";
+    fs::write(tmp.path().join("Dockerfile"), dockerfile).unwrap();
+    hpds()
+        .args([
+            "init",
+            "--yes",
+            "--force",
+            "--author",
+            "malcolm",
+            "--use",
+            "devcontainer",
+        ])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+    assert_eq!(read(&tmp, "Dockerfile"), dockerfile);
+    assert!(tmp.path().join(".devcontainer/devcontainer.json").exists());
+}
+
+#[test]
+fn init_preflights_competing_devcontainer_config_before_any_write() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    fs::write(tmp.path().join(".devcontainer.json"), "{}\n").unwrap();
+    hpds()
+        .args([
+            "init",
+            "--yes",
+            "--force",
+            "--author",
+            "malcolm",
+            "--language",
+            "python",
+            "--use",
+            "pipeline:make,container:docker,devcontainer",
+        ])
+        .current_dir(tmp.path())
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(".devcontainer.json"));
+    assert_eq!(read(&tmp, ".devcontainer.json"), "{}\n");
+    for path in [
+        "hpds.toml",
+        "Makefile",
+        "Dockerfile",
+        ".dockerignore",
+        ".devcontainer",
+    ] {
+        assert!(!tmp.path().join(path).exists(), "preflight wrote {path}");
+    }
+}
+
+#[test]
+fn init_preflights_an_unrepresentable_checkout_name_before_any_write() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let project = tmp.path().join("comma,folder");
+    fs::create_dir(&project).unwrap();
+    hpds()
+        .args([
+            "init",
+            "--yes",
+            "--author",
+            "malcolm",
+            "--language",
+            "python",
+            "--use",
+            "container:docker,devcontainer",
+        ])
+        .current_dir(&project)
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("folder name"));
+    assert!(!project.join("hpds.toml").exists());
+    assert!(!project.join("Dockerfile").exists());
+    assert!(!project.join(".devcontainer").exists());
+}
+
+#[test]
+fn init_defaults_still_exclude_devcontainer() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    hpds()
+        .args([
+            "init",
+            "--yes",
+            "--author",
+            "malcolm",
+            "--language",
+            "python",
+        ])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+    assert!(!tmp.path().join(".devcontainer").exists());
+    assert!(!tmp.path().join("Dockerfile").exists());
 }
 
 #[test]
