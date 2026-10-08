@@ -139,19 +139,22 @@ mod tests {
     }
 
     #[test]
-    fn mail_flags_are_present_but_commented_out() {
+    fn mail_notifications_are_opt_in_for_the_submitters_sunet_address() {
         let (tmp, _) = run_in("r");
         let text = script(&tmp);
-        for flag in ["--mail-type", "--mail-user"] {
-            let line = text
-                .lines()
-                .find(|l| l.contains(flag))
-                .unwrap_or_else(|| panic!("{flag} line present"));
-            assert!(
-                line.trim_start().starts_with("##SBATCH"),
-                "{flag} is commented out: {line}"
-            );
-        }
+        assert!(
+            text.lines()
+                .any(|line| line == "##SBATCH --mail-type=END,FAIL"),
+            "mail on END/FAIL is present and commented out: {text}"
+        );
+        assert!(
+            !text.contains("--mail-user"),
+            "the submitter's SUNet address is the default: {text}"
+        );
+        assert!(
+            text.contains("the submitter's SUNet address"),
+            "the opt-in comment explains the mail recipient: {text}"
+        );
     }
 
     #[test]
