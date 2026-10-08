@@ -66,6 +66,34 @@ fn server_plan_keeps_rstudio_discovery_offline() {
 }
 
 #[test]
+fn server_plan_covers_complete_provisioning_without_legacy_extras() {
+    let output = plan_output(&["setup", "--plan", "--profile", "server"]);
+    for required in [
+        "Docker Engine",
+        "docker-compose-plugin",
+        "stable Rust",
+        "RStudio preferences",
+        "code-server@<user>",
+        "quarto.path",
+    ] {
+        assert!(output.contains(required), "missing {required}: {output}");
+    }
+    let lowercase = output.to_ascii_lowercase();
+    for omitted in [
+        "miniconda",
+        "conda",
+        "apt upgrade",
+        "dist-upgrade",
+        "reboot",
+    ] {
+        assert!(
+            !lowercase.contains(omitted),
+            "unexpected {omitted}: {output}"
+        );
+    }
+}
+
+#[test]
 fn dev_setup_without_a_terminal_and_without_yes_refuses_with_guidance() {
     hpds()
         .args(["setup"])

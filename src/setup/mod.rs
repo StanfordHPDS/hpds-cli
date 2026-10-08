@@ -18,6 +18,8 @@ use anyhow::anyhow;
 use crate::install::{self, InstallCtx};
 use crate::ui::{self, HintExt};
 
+mod server;
+
 /// Which bundle of steps `hpds setup` runs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Profile {
@@ -590,6 +592,48 @@ mod tests {
             .find(|step| step.title == "RStudio Server")
             .expect("RStudio Server step");
         assert!(matches!(step.actions, [Action::Install("rstudio-server")]));
+    }
+
+    #[test]
+    fn server_profile_includes_complete_machine_provisioning() {
+        let text = plan(Profile::Server);
+        for required in [
+            "Docker Engine",
+            "download.docker.com/linux/ubuntu",
+            "docker-ce",
+            "docker-ce-cli",
+            "containerd.io",
+            "docker-buildx-plugin",
+            "docker-compose-plugin",
+            "docker group",
+            "stable Rust",
+            "rustup",
+            "RStudio preferences",
+            "insert_native_pipe_operator=true",
+            "save_workspace=never",
+            "load_workspace=never",
+            "rainbow_parentheses=true",
+            "rainbow_fenced_divs=true",
+            "code-server@<user>",
+            "enable --now",
+            "quarto.path",
+            ".local/bin/quarto",
+        ] {
+            assert!(text.contains(required), "missing {required}:\n{text}");
+        }
+        let lowercase = text.to_ascii_lowercase();
+        for omitted in [
+            "miniconda",
+            "conda",
+            "apt upgrade",
+            "dist-upgrade",
+            "reboot",
+        ] {
+            assert!(
+                !lowercase.contains(omitted),
+                "unexpected {omitted}:\n{text}"
+            );
+        }
     }
 
     // --- checklist gating ---------------------------------------------------
