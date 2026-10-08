@@ -166,7 +166,20 @@ $ hpds setup --plan
 $ hpds setup --profile dev
 ```
 
-The `server` profile provisions a full lab server (Linux only); `dev` (the default) installs the toolchain on your own machine.
+The supported way to provision a lab server is:
+
+```console
+$ hpds setup --profile server --yes
+```
+
+The Linux-only server profile installs the official Docker Engine packages,
+stable Rust, R, Python, Quarto, TinyTeX, RStudio Server, code-server, and the
+lab command-line tools. It adds the invoking user to the Docker group, merges
+the managed RStudio and code-server preferences, and enables that user's
+code-server service. Log in again after the run before using Docker without
+`sudo`. The profile does not install Miniconda, perform a blanket system
+upgrade, or reboot the server. `dev` (the default) installs the toolchain on
+your own machine.
 
 ### Audit a repo
 

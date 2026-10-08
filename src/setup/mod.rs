@@ -18,7 +18,7 @@ use anyhow::anyhow;
 use crate::install::{self, InstallCtx};
 use crate::ui::{self, HintExt};
 
-mod server;
+pub(crate) mod server;
 
 /// Which bundle of steps `hpds setup` runs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -56,6 +56,8 @@ enum Action {
     GitSetup,
     /// Run one external command through the runner seam.
     Run(Cmd),
+    /// Reconcile one typed server-host concern without shell evaluation.
+    Server(server::ServerAction),
 }
 
 /// A planned external command: announced, logged at `-v`, and executed
@@ -80,6 +82,7 @@ pub struct SetupDeps<'a> {
             &str,
         )
             -> Result<&'static dyn install::Installer, install::registry::RegistryError>,
+    pub(crate) server_host: &'a dyn server::ServerHost,
 }
 
 /// How one executed step ended.
@@ -135,6 +138,9 @@ const APT_SYSTEM_LIBRARIES: &[&str] = &[
     "install",
     "-y",
     "build-essential",
+    "ca-certificates",
+    "curl",
+    "gnupg",
     "gdebi-core",
     "libcurl4-openssl-dev",
     "libfontconfig1-dev",
@@ -174,18 +180,18 @@ const SERVER_STEPS: &[Step] = &[
         ],
     },
     Step {
+        title: "Docker Engine",
+        actions: &[Action::Server(server::ServerAction::Docker)],
+    },
+    Step {
+        title: "stable Rust",
+        actions: &[Action::Server(server::ServerAction::Rust)],
+    },
+    Step {
         title: "R + CRAN/PPM repositories",
         actions: &[
             Action::Install("r"),
-            Action::Run(Cmd {
-                what: "pointing R at Posit Package Manager for CRAN packages",
-                program: "sh",
-                args: &[
-                    "-c",
-                    "echo 'options(repos = c(P3M = \"https://packagemanager.posit.co/cran/__linux__/noble/latest\", CRAN = \"https://cloud.r-project.org\"))' >> /etc/R/Rprofile.site",
-                ],
-                sudo: true,
-            }),
+            Action::Server(server::ServerAction::RProfile),
         ],
     },
     Step {
@@ -221,22 +227,20 @@ const SERVER_STEPS: &[Step] = &[
         actions: &[Action::Install("rstudio-server")],
     },
     Step {
+        title: "RStudio preferences",
+        actions: &[Action::Server(server::ServerAction::RstudioPreferences)],
+    },
+    Step {
         title: "code-server + extensions",
         actions: &[
-            Action::Run(Cmd {
-                what: "installing code-server",
-                // The install script is code-server's supported path; it
-                // detects the distro and picks the right package.
-                program: "sh",
-                args: &["-c", "curl -fsSL https://code-server.dev/install.sh | sh"],
-                sudo: true,
-            }),
+            Action::Server(server::ServerAction::InstallCodeServer),
             Action::Run(Cmd {
                 what: "installing the Python extension",
                 program: "code-server",
                 args: &["--install-extension", "ms-python.python"],
                 sudo: false,
             }),
+            Action::Server(server::ServerAction::CodeServer),
             Action::Run(Cmd {
                 what: "installing the Jupyter extension",
                 program: "code-server",
@@ -272,13 +276,13 @@ const SERVER_STEPS: &[Step] = &[
             Action::Run(Cmd {
                 what: "installing ruff as a uv tool",
                 program: "uv",
-                args: &["tool", "install", "ruff"],
+                args: &["tool", "install", "--upgrade", "ruff"],
                 sudo: false,
             }),
             Action::Run(Cmd {
                 what: "installing sqlfluff as a uv tool",
                 program: "uv",
-                args: &["tool", "install", "sqlfluff"],
+                args: &["tool", "install", "--upgrade", "sqlfluff"],
                 sudo: false,
             }),
             Action::Run(Cmd {
@@ -348,6 +352,7 @@ fn describe(action: &Action) -> String {
                 line
             }
         }
+        Action::Server(action) => server::describe(action).to_string(),
     }
 }
 
@@ -414,6 +419,9 @@ fn run_actions(step: &Step, deps: &SetupDeps) -> anyhow::Result<()> {
                 } else {
                     deps.install.run_step(cmd.what, cmd.program, cmd.args)?;
                 }
+            }
+            Action::Server(action) => {
+                server::run(action, deps.server_host, deps.install.runner)?;
             }
         }
     }
@@ -509,6 +517,39 @@ mod tests {
     use crate::tools::Os;
     use crate::ui::render_error;
 
+    struct NoServerHost;
+    impl server::ServerHost for NoServerHost {
+        fn current_user(&self) -> anyhow::Result<String> {
+            Ok("analyst".to_string())
+        }
+        fn home_dir(&self, _user: &str) -> anyhow::Result<std::path::PathBuf> {
+            Ok("/home/analyst".into())
+        }
+        fn read(&self, path: &Path) -> anyhow::Result<Option<Vec<u8>>> {
+            if path == Path::new("/etc/os-release") {
+                Ok(Some(b"ID=ubuntu\nVERSION_CODENAME=noble\n".to_vec()))
+            } else {
+                Ok(None)
+            }
+        }
+        fn exists(&self, path: &Path) -> bool {
+            path == Path::new("/home/analyst/.local/bin/quarto")
+        }
+        fn write_atomic(&self, _path: &Path, _bytes: &[u8], _mode: u32) -> anyhow::Result<()> {
+            Ok(())
+        }
+        fn acquire_verified_rustup_init(&self) -> anyhow::Result<std::path::PathBuf> {
+            Ok("/verified-download/rustup-init".into())
+        }
+        fn acquire_docker_key(
+            &self,
+            _runner: &dyn crate::install::CommandRunner,
+        ) -> anyhow::Result<Vec<u8>> {
+            Ok(b"-----BEGIN PGP PUBLIC KEY BLOCK-----\nfixture\n-----END PGP PUBLIC KEY BLOCK-----\n".to_vec())
+        }
+    }
+    static NO_SERVER_HOST: NoServerHost = NoServerHost;
+
     /// `SetupDeps` on `os` whose git-setup seam records itself in the
     /// runner's call log, so step ordering is visible in one place.
     fn deps_recording_git<'a>(
@@ -533,6 +574,7 @@ mod tests {
             },
             git_setup,
             installer_lookup: &registry::find,
+            server_host: &NO_SERVER_HOST,
         }
     }
 
@@ -809,15 +851,12 @@ mod tests {
         // Every registry tool probes as installed (no-op installs) so the
         // run exercises exactly the server profile's own command plans.
         let runner = runner_with_everything_installed()
+            .on_path("code-server")
             .on_path("duckdb")
             .with_output("duckdb --version", &probe_fixture("duckdb.txt"))
             .with_output("sudo apt-get update", "")
             .with_output(
                 &format!("sudo apt-get {}", APT_SYSTEM_LIBRARIES.join(" ")),
-                "",
-            )
-            .with_output(
-                "sudo sh -c echo 'options(repos = c(P3M = \"https://packagemanager.posit.co/cran/__linux__/noble/latest\", CRAN = \"https://cloud.r-project.org\"))' >> /etc/R/Rprofile.site",
                 "",
             )
             .with_output("sudo apt-get install -y python3 python3-pip python3-venv", "")
@@ -827,17 +866,21 @@ mod tests {
             )
             .on_path("rstudio-server")
             .with_output("rstudio-server version", "2026.09.0+174")
-            .with_output(
-                "sudo sh -c curl -fsSL https://code-server.dev/install.sh | sh",
-                "",
-            )
             .with_output("code-server --install-extension ms-python.python", "")
             .with_output("code-server --install-extension ms-toolsai.jupyter", "")
             .with_output("code-server --install-extension quarto.quarto", "")
             .with_output("code-server --install-extension charliermarsh.ruff", "")
-            .with_output("uv tool install ruff", "")
-            .with_output("uv tool install sqlfluff", "")
+            .with_output("uv tool install --upgrade ruff", "")
+            .with_output("uv tool install --upgrade sqlfluff", "")
             .with_output("uv tool update-shell", "");
+        let runner = runner
+            .with_output("sudo systemctl enable --now code-server@analyst", "")
+            .with_output("dpkg --print-architecture", "amd64")
+            .with_output("sudo install -m 0755 -d /etc/apt/keyrings", "")
+            .with_output("sudo apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin", "")
+            .with_output("id -nG analyst", "analyst sudo")
+            .with_output("sudo usermod -aG docker analyst", "")
+            .with_output("/verified-download/rustup-init -y --profile default --default-toolchain stable", "");
         let git_setup = || {
             runner.calls.borrow_mut().push("hpds git setup".to_string());
             Ok(())
@@ -857,7 +900,8 @@ mod tests {
         let dir = tempfile::tempdir().expect("create temp dir");
         let log_path = dir.path().join("hpds-setup.log");
 
-        run_server(&deps, true, false, &log_path).expect("all steps succeed");
+        finish(&execute(steps(Profile::Server), &deps), Some(&log_path))
+            .expect("all steps succeed");
 
         let calls = runner.calls.borrow();
         // System steps ran as the planned commands, under sudo where
@@ -873,7 +917,9 @@ mod tests {
             "{calls:?}"
         );
         assert!(
-            calls.iter().any(|c| c == "uv tool install sqlfluff"),
+            calls
+                .iter()
+                .any(|c| c == "uv tool install --upgrade sqlfluff"),
             "{calls:?}"
         );
         assert_eq!(calls.last().map(String::as_str), Some("hpds git setup"));
