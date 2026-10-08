@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import os
 from pathlib import Path
+import re
 import shlex
 import shutil
 import subprocess
@@ -52,6 +53,39 @@ def materialize_cellar(project: Path) -> None:
     cellar.mkdir(parents=True, exist_ok=True)
     with tarfile.open(cellar / "vendored_1.0.0.tar.gz", "w:gz") as archive:
         archive.add(source, arcname="vendored")
+
+
+def stable_version(value: str) -> str:
+    if re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", value) is None:
+        raise argparse.ArgumentTypeError("version must have the form X.Y.Z")
+    return value
+
+
+def select_published_hpds(
+    project: Path,
+    generated_version: str,
+    published_version: str,
+    filenames: list[str],
+) -> None:
+    generated_ref = f"/releases/download/v{generated_version}/"
+    published_ref = f"/releases/download/v{published_version}/"
+    for filename in filenames:
+        path = project / filename
+        text = path.read_text()
+        if text.count(generated_ref) != 1:
+            raise RuntimeError(
+                f"{filename} did not contain exactly one generated hpds release reference"
+            )
+        text = text.replace(generated_ref, published_ref)
+        if filename == "container.def":
+            generated_label = f"    HPDS {generated_version}\n"
+            published_label = f"    HPDS {published_version}\n"
+            if text.count(generated_label) != 1:
+                raise RuntimeError(
+                    "container.def did not contain exactly one generated hpds label"
+                )
+            text = text.replace(generated_label, published_label)
+        path.write_text(text)
 
 
 def check_command(
@@ -267,6 +301,14 @@ def main() -> int:
         action="store_true",
         help="run only apptainer build through sudo; runtime checks remain unprivileged",
     )
+    parser.add_argument(
+        "--published-hpds-version",
+        type=stable_version,
+        help=(
+            "published hpds version to install inside generated containers; "
+            "use this while validating an unreleased package version"
+        ),
+    )
     args = parser.parse_args()
 
     docker = shutil.which("docker") if args.engine in {"docker", "all"} else None
@@ -277,9 +319,12 @@ def main() -> int:
         parser.error("apptainer is required for the selected engine; install it and retry")
     if not args.hpds.is_file():
         parser.error(f"hpds binary not found at {args.hpds}; build it first")
-    expected_hpds_version = subprocess.check_output(
+    generated_hpds_version = subprocess.check_output(
         [str(args.hpds.resolve()), "--version"], text=True
     ).strip()
+    generated_version = generated_hpds_version.removeprefix("hpds ")
+    installed_version = args.published_hpds_version or generated_version
+    expected_hpds_version = f"hpds {installed_version}"
 
     if docker is not None:
         run([docker, "info"])
@@ -314,6 +359,18 @@ def main() -> int:
                     cwd=project,
                     env=generation_env,
                 )
+                if args.published_hpds_version is not None:
+                    generated_files = []
+                    if docker is not None:
+                        generated_files.append("Dockerfile")
+                    if apptainer is not None:
+                        generated_files.append("container.def")
+                    select_published_hpds(
+                        project,
+                        generated_version,
+                        installed_version,
+                        generated_files,
+                    )
                 if docker is not None:
                     tag = f"hpds-container-runtime-{run_id}-{name}"
                     tags.append(tag)

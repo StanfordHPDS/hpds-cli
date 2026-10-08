@@ -223,16 +223,39 @@ fn ci_runs_the_explicit_container_runtime_harness_on_linux() {
     let commands: Vec<_> = steps.iter().flat_map(step_commands).collect();
     assert!(
         commands.iter().any(|command| {
-            command
-                == &[
-                    "python3",
-                    "tests/container-runtime/run.py",
-                    "--engine",
-                    "all",
-                    "--apptainer-build-as-root",
-                ]
+            command.len() >= 4 && command[0..4] == ["python3", "-m", "unittest", "discover"]
         }),
-        "container-runtime job invokes the real harness: {commands:?}"
+        "container-runtime job runs the offline harness tests: {commands:?}"
+    );
+    assert!(
+        commands.iter().any(|command| {
+            let prefix = [
+                "python3",
+                "tests/container-runtime/run.py",
+                "--engine",
+                "all",
+                "--apptainer-build-as-root",
+            ];
+            command.len() >= prefix.len()
+                && command
+                    .iter()
+                    .zip(prefix)
+                    .all(|(actual, expected)| actual == expected)
+                && command.windows(2).any(|pair| {
+                    pair[0] == "--published-hpds-version"
+                        && pair[1].contains("PUBLISHED_HPDS_VERSION")
+                })
+        }),
+        "container-runtime job invokes the real harness with a published hpds release: {commands:?}"
+    );
+    assert!(
+        commands.iter().any(|command| {
+            command.iter().any(|token| token == "api")
+                && command
+                    .iter()
+                    .any(|token| token.contains("/releases/latest"))
+        }),
+        "container-runtime job resolves the latest published hpds release: {commands:?}"
     );
     assert!(
         commands.iter().any(|command| {
