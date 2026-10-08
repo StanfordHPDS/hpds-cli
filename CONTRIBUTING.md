@@ -48,7 +48,7 @@ Work through these files:
 1. **Installer**: create `src/install/installers/<tool>.rs` with a struct implementing the `Installer` trait: `detect` probes for an existing install through the runner seam, `plan` names the exact steps a run would take, and `install` performs them.
    Model it on `src/install/installers/gh.rs`: pick a per-OS strategy (package manager when present, release binary otherwise) and never touch the network or the machine directly; go through the `CommandRunner` and `ReleaseFetcher` seams so every strategy is assertable offline.
 
-2. **Release spec**: when the tool ships prebuilt GitHub release binaries, add a default version constant to `src/tools/versions.rs` and a `release_spec()` returning a `ToolSpec` (repo plus asset/checksum filename patterns) in your installer file.
+2. **Release spec**: when the tool ships prebuilt GitHub release binaries, add a default version constant to `src/tools/versions.rs` and a `release_spec()` returning a `ToolSpec` (repo plus asset/checksum filename patterns) in your installer file. Togi is intentionally different: an unpinned install resolves its latest stable GitHub release at runtime.
    The shared downloader handles fetching, checksum verification, and atomic installs.
 
 3. **Registry line**: register the installer in `INSTALLERS` (and its name in `KNOWN_TOOLS`) in `src/install/registry.rs`; that is the single place tools are wired in to `hpds install <tool>`.

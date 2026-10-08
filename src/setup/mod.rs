@@ -622,11 +622,12 @@ mod tests {
     #[test]
     fn dev_profile_runs_every_step_in_order() {
         let runner = runner_with_everything_installed();
+        let fetcher = FakeFetcher::default().with_latest("0.1.0");
         let git_setup = || {
             runner.calls.borrow_mut().push("hpds git setup".to_string());
             Ok(())
         };
-        let deps = deps_recording_git(Os::Mac, true, &runner, &PanicFetcher, &git_setup);
+        let deps = deps_recording_git(Os::Mac, true, &runner, &fetcher, &git_setup);
 
         run_dev(&deps, true, false).expect("every step no-ops successfully");
 
@@ -645,6 +646,11 @@ mod tests {
                 "hpds git setup",
             ]
         );
+        assert_eq!(
+            *fetcher.latest_calls.borrow(),
+            vec!["togi"],
+            "setup resolves togi latest once during execution"
+        );
     }
 
     #[test]
@@ -652,7 +658,7 @@ mod tests {
         // gh is missing and its installer cannot complete (the fake
         // fetcher "downloads" a binary that never lands on PATH), so the
         // gh step fails; every later step must still run.
-        let fetcher = FakeFetcher::default();
+        let fetcher = FakeFetcher::default().with_latest("0.1.0");
         let git_ran = Cell::new(false);
         let git_setup = || {
             git_ran.set(true);

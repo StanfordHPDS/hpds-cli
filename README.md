@@ -118,7 +118,7 @@ Positron does not substitute variables in build arguments. Regenerate it with
 literal `HPDS_UID` and `HPDS_GID` arguments from `id -u` and `id -g`, then
 rebuild. Windows Dev Container use has not yet been validated.
 
-Formatting and linting the code you write there is [togi](https://github.com/StanfordHPDS/togi)'s job (`togi format`, `togi lint`); install it with `hpds install togi`.
+Formatting and linting the code you write there is [togi](https://github.com/StanfordHPDS/togi)'s job (`togi format`, `togi lint`). `hpds install togi` installs the latest stable release by default; run it again to update the installed entry point. Use `--version X.Y.Z` when you need an exact entry-point release. Project-level togi version locks and dispatch are planned upstream and are not interpreted by hpds.
 
 ### Slides, posters, and dissertations
 

@@ -92,7 +92,6 @@ fn install_is_a_no_op_when_the_tool_is_already_on_path() {
         ),
         ("duckdb", "duckdb", "v1.5.4 (Variegata) 08e34c447b", "1.5.4"),
         ("r", "R", "R version 4.6.0 (2026-04-24)", "4.6.0"),
-        ("togi", "togi", "togi 0.1.0", "0.1.0"),
     ];
     for (_, exe, version_output, _) in fake_tools {
         let path = bin.path().join(exe);
@@ -129,6 +128,19 @@ fn install_is_a_no_op_when_the_tool_is_already_on_path() {
                     .and(predicate::str::contains(version)),
             );
     }
+
+    let togi = bin.path().join("togi");
+    write_executable_shim(&togi, "#!/bin/sh\necho 'togi 0.1.0'\n");
+    hpds()
+        .args(["install", "togi", "--version", "0.1.0"])
+        .env("PATH", bin.path())
+        .assert()
+        .success()
+        .stdout(
+            predicate::str::contains("already installed")
+                .and(predicate::str::contains("togi"))
+                .and(predicate::str::contains("0.1.0")),
+        );
 }
 
 #[test]
@@ -196,15 +208,15 @@ fn install_without_yes_non_interactively_refuses_before_running_anything() {
 /// releases), not just that "a release binary" will be downloaded. The
 /// non-interactive refusal path prints the plan without running anything.
 #[test]
-fn install_togi_plan_names_the_source_release_repo() {
+fn install_pinned_togi_plan_names_the_source_release_repo() {
     let empty = tempfile::tempdir().expect("tempdir");
     hpds()
-        .args(["install", "togi"])
+        .args(["install", "togi", "--version", "0.1.1"])
         .env("PATH", empty.path())
         .assert()
         .failure()
         .stdout(
-            predicate::str::contains("installing togi will:")
+            predicate::str::contains("installing togi 0.1.1 will:")
                 .and(predicate::str::contains("github.com/StanfordHPDS/togi")),
         )
         .stderr(predicate::str::contains("--yes"));

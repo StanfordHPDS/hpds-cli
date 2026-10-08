@@ -12,9 +12,7 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v4
 
-      # Installs the latest published togi release. Until togi's first
-      # tag is published this step fails, because no release exists
-      # yet; that is expected and documents itself.
+      # Installs the latest published togi release.
       - name: Install togi
         run: curl --proto '=https' --tlsv1.2 -LsSf https://github.com/StanfordHPDS/togi/releases/latest/download/togi-installer.sh | sh
 

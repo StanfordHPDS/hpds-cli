@@ -76,6 +76,17 @@ pub trait Installer {
     fn supports_pin(&self) -> bool {
         false
     }
+
+    /// Resolve the concrete version this run should install. Installers
+    /// without dynamic targets simply preserve an explicit pin.
+    fn resolve_target(&self, ctx: &InstallCtx) -> anyhow::Result<Option<String>> {
+        Ok(ctx.pin.clone())
+    }
+
+    /// Whether post-install detection must exactly match the resolved target.
+    fn verifies_target(&self) -> bool {
+        false
+    }
 }
 
 /// The shared install flow: idempotence check, plan, confirm, install,
@@ -95,11 +106,22 @@ fn run_installer_with(
     confirm: &dyn Fn(&str) -> anyhow::Result<bool>,
 ) -> anyhow::Result<()> {
     let name = installer.name();
-    if let Some(found) = installer.detect(ctx) {
-        match ctx.pin.as_deref() {
-            Some(pin) if pin != found => {
+    let target = installer.resolve_target(ctx)?;
+    let resolved_ctx = InstallCtx {
+        os: ctx.os,
+        yes: ctx.yes,
+        verbose: ctx.verbose,
+        pin: target.clone(),
+        plan_approved: ctx.plan_approved,
+        sudo_approved: Cell::new(ctx.sudo_approved.get()),
+        runner: ctx.runner,
+        fetcher: ctx.fetcher,
+    };
+    if let Some(found) = installer.detect(&resolved_ctx) {
+        match target.as_deref() {
+            Some(version) if version != found => {
                 ui::println(&format!(
-                    "{name} {found} is installed; replacing it with {pin}"
+                    "{name} {found} is installed; replacing it with {version}"
                 ));
             }
             _ => {
@@ -109,24 +131,40 @@ fn run_installer_with(
         }
     }
 
-    match ctx.pin.as_deref() {
+    match target.as_deref() {
         Some(pin) => ui::println(&format!("installing {name} {pin} will:")),
         None => ui::println(&format!("installing {name} will:")),
     }
-    for line in installer.plan(ctx) {
+    for line in installer.plan(&resolved_ctx) {
         ui::println(&format!("  {line}"));
     }
-    if approve_install(name, ctx.yes, ctx.plan_approved, interactive, confirm)?
-        == InstallApproval::ConfirmedNow
+    if approve_install(
+        name,
+        resolved_ctx.yes,
+        resolved_ctx.plan_approved,
+        interactive,
+        confirm,
+    )? == InstallApproval::ConfirmedNow
     {
         // The plan the user just approved listed any sudo commands, so
         // that one answer covers them: sudo steps must not ask again.
-        ctx.sudo_approved.set(true);
+        resolved_ctx.sudo_approved.set(true);
     }
-    installer.install(ctx)?;
+    installer.install(&resolved_ctx)?;
 
-    match installer.detect(ctx) {
+    match installer.detect(&resolved_ctx) {
         Some(version) => {
+            if installer.verifies_target()
+                && let Some(target) = target.as_deref()
+                && version != target
+            {
+                return Err(anyhow!(
+                    "installed {name} {target}, but `{name} --version` still reports {version}"
+                ))
+                .hint(format!(
+                    "another `{name}` may appear earlier on PATH; open a new shell, check the executable PATH order, and retry"
+                ));
+            }
             ui::success(&format!("{name} {version} installed"));
             Ok(())
         }
