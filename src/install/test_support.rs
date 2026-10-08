@@ -97,9 +97,33 @@ pub struct TreeFetchCall {
 pub struct FakeFetcher {
     pub calls: RefCell<Vec<FetchCall>>,
     pub tree_calls: RefCell<Vec<TreeFetchCall>>,
+    pub latest_calls: RefCell<Vec<String>>,
+    latest: RefCell<Option<anyhow::Result<String>>>,
+}
+
+impl FakeFetcher {
+    pub fn with_latest(self, version: &str) -> Self {
+        *self.latest.borrow_mut() = Some(Ok(version.to_string()));
+        self
+    }
+
+    pub fn with_latest_error(self, message: &str) -> Self {
+        *self.latest.borrow_mut() = Some(Err(anyhow!(message.to_string())));
+        self
+    }
 }
 
 impl ReleaseFetcher for FakeFetcher {
+    fn latest_version(&self, spec: &ToolSpec) -> anyhow::Result<String> {
+        self.latest_calls.borrow_mut().push(spec.name.to_string());
+        self.latest.borrow_mut().take().unwrap_or_else(|| {
+            Err(anyhow!(
+                "no fake latest release configured for {}",
+                spec.name
+            ))
+        })
+    }
+
     fn fetch_binary(
         &self,
         spec: &ToolSpec,
@@ -135,6 +159,13 @@ impl ReleaseFetcher for FakeFetcher {
 pub struct PanicFetcher;
 
 impl ReleaseFetcher for PanicFetcher {
+    fn latest_version(&self, spec: &ToolSpec) -> anyhow::Result<String> {
+        panic!(
+            "this test must not look up a latest release (asked for {})",
+            spec.name
+        );
+    }
+
     fn fetch_binary(
         &self,
         spec: &ToolSpec,

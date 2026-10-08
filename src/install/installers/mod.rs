@@ -64,14 +64,14 @@ mod online_tests {
     //!
     //! Run with: `cargo test --features online-tests -- --ignored`
     //!
-    //! Every test skips (with a note) when the tool is already installed
-    //! on this machine (these must never reinstall or otherwise touch
-    //! real tools) and otherwise touches only a throwaway directory:
-    //! the release is downloaded into a temp cache, placed into a temp
-    //! bin dir, and probed with `--version` right there.
+    //! Tests for fixed-version tools skip (with a note) when the tool is
+    //! already installed on this machine. The latest-togi test always runs.
+    //! Every download uses a throwaway directory: the release is downloaded
+    //! into a temp cache, placed into a temp bin dir, and probed with
+    //! `--version` right there.
 
     use crate::install::fetch::place;
-    use crate::install::{CommandRunner, SystemRunner};
+    use crate::install::{CacheFetcher, CommandRunner, ReleaseFetcher, SystemRunner};
     use crate::tools::{Downloader, InstallContext, Os, Platform, ToolCache, ToolSpec, versions};
 
     /// Skip guard: `true` (after a note) when `tool` is already on PATH.
@@ -141,6 +141,16 @@ mod online_tests {
         }
         let os = Platform::current().expect("supported platform").os;
         fetch_and_probe(&super::duckdb::release_spec(os), versions::DUCKDB);
+    }
+
+    #[test]
+    #[ignore = "looks up and downloads the latest real togi release from GitHub"]
+    fn latest_togi_release_downloads_and_runs_in_a_temporary_directory() {
+        let spec = super::togi::release_spec();
+        let version = CacheFetcher::new(true)
+            .latest_version(&spec)
+            .expect("resolve latest togi release");
+        fetch_and_probe(&spec, &version);
     }
 
     use crate::install::test_support::PanicFetcher;

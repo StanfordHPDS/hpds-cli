@@ -13,6 +13,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{LazyLock, Mutex};
 
 use anyhow::Context;
+use serde_json::Value;
 
 use crate::tools::{Downloader, InstallContext, Platform, ToolCache, ToolSpec};
 use crate::ui::{self, HintExt};
@@ -20,6 +21,9 @@ use crate::ui::{self, HintExt};
 /// How installers obtain a release binary. Production code uses
 /// [`CacheFetcher`]; tests substitute a recording fake.
 pub trait ReleaseFetcher {
+    /// Resolve the latest stable release version published for `spec`.
+    fn latest_version(&self, spec: &ToolSpec) -> anyhow::Result<String>;
+
     /// Download `spec` at `version` and place its binary into `bin_dir`,
     /// returning the installed path.
     fn fetch_binary(
@@ -56,6 +60,14 @@ impl CacheFetcher {
 }
 
 impl ReleaseFetcher for CacheFetcher {
+    fn latest_version(&self, spec: &ToolSpec) -> anyhow::Result<String> {
+        latest_github_version(
+            &crate::tools::github_agent(),
+            "https://api.github.com",
+            spec,
+        )
+    }
+
     fn fetch_binary(
         &self,
         spec: &ToolSpec,
@@ -98,6 +110,59 @@ impl ReleaseFetcher for CacheFetcher {
         warn_if_off_path(bin_dir);
         Ok(launcher)
     }
+}
+
+fn latest_github_version(
+    agent: &ureq::Agent,
+    base: &str,
+    spec: &ToolSpec,
+) -> anyhow::Result<String> {
+    let url = format!("{base}/repos/{}/releases/latest", spec.repo);
+    let response = agent
+        .get(&url)
+        .header("User-Agent", concat!("hpds/", env!("CARGO_PKG_VERSION")))
+        .header("Accept", "application/vnd.github+json")
+        .header("X-GitHub-Api-Version", "2022-11-28")
+        .call();
+    let mut response = match response {
+        Ok(response) => response,
+        Err(ureq::Error::StatusCode(code)) => {
+            return Err(anyhow::anyhow!(
+                "GitHub returned HTTP {code} while checking the latest {} release",
+                spec.name
+            ))
+            .hint(format!(
+                "retry `hpds install {}` after GitHub is available, or use --version to request an exact release",
+                spec.name
+            ));
+        }
+        Err(err) => {
+            return Err(anyhow::Error::new(err))
+                .with_context(|| format!("could not reach GitHub at `{url}`"))
+                .hint(format!(
+                    "check your connection (or HTTPS_PROXY), then retry `hpds install {}` or use --version",
+                    spec.name
+                ));
+        }
+    };
+    let body = response
+        .body_mut()
+        .read_to_string()
+        .with_context(|| format!("could not read GitHub's response from `{url}`"))
+        .hint(format!("retry `hpds install {}`", spec.name))?;
+    parse_latest_version(&body, spec.name)
+}
+
+fn parse_latest_version(body: &str, name: &str) -> anyhow::Result<String> {
+    let value: Value = serde_json::from_str(body)
+        .context("GitHub's release response was not valid JSON")
+        .hint(format!("retry `hpds install {name}`"))?;
+    let tag = value
+        .get("tag_name")
+        .and_then(Value::as_str)
+        .ok_or_else(|| anyhow::anyhow!("GitHub's release response had no `tag_name`"))
+        .hint(format!("retry `hpds install {name}`"))?;
+    Ok(tag.strip_prefix('v').unwrap_or(tag).to_string())
 }
 
 /// Copy a cached tool binary into `bin_dir` (created as needed), returning
@@ -635,5 +700,72 @@ mod tests {
         assert!(dir_on_path(bin, Some(on)));
         assert!(!dir_on_path(bin, Some(off)));
         assert!(!dir_on_path(bin, None));
+    }
+
+    #[test]
+    fn parses_latest_release_fixture_as_a_bare_version() {
+        let body = include_str!("../../tests/fixtures/tool-output/gh/togi-release-latest.json");
+        assert_eq!(
+            parse_latest_version(body, "togi").expect("parse latest release"),
+            "0.1.1"
+        );
+    }
+
+    #[test]
+    fn latest_release_lookup_uses_the_github_endpoint_and_fixture_response() {
+        use std::collections::HashMap;
+
+        use crate::tools::test_support::FixtureServer;
+
+        let path = "/repos/StanfordHPDS/togi/releases/latest";
+        let server = FixtureServer::serve(HashMap::from([(
+            path.to_string(),
+            include_bytes!("../../tests/fixtures/tool-output/gh/togi-release-latest.json").to_vec(),
+        )]));
+
+        let version = latest_github_version(
+            &crate::tools::github_agent(),
+            &server.base_url,
+            &crate::install::installers::togi::release_spec(),
+        )
+        .expect("resolve fixture release");
+
+        assert_eq!(version, "0.1.1");
+        assert_eq!(server.hits(), vec![path]);
+    }
+
+    #[test]
+    fn latest_release_http_failure_is_actionable() {
+        use std::collections::HashMap;
+
+        use crate::tools::test_support::FixtureServer;
+
+        let path = "/repos/StanfordHPDS/togi/releases/latest";
+        let server = FixtureServer::serve_responses(HashMap::from([(
+            path.to_string(),
+            (503, b"unavailable".to_vec()),
+        )]));
+
+        let err = latest_github_version(
+            &crate::tools::github_agent(),
+            &server.base_url,
+            &crate::install::installers::togi::release_spec(),
+        )
+        .expect_err("an unavailable release endpoint must fail");
+        let rendered = crate::ui::render_error(&err, false);
+
+        assert!(rendered.contains("HTTP 503"), "{rendered}");
+        assert!(rendered.contains("--version"), "{rendered}");
+        assert_eq!(server.hits(), vec![path]);
+    }
+
+    #[test]
+    fn malformed_latest_release_metadata_is_actionable() {
+        for body in ["not json", r#"{"name":"togi"}"#] {
+            let err = parse_latest_version(body, "togi").expect_err("metadata must fail");
+            let rendered = crate::ui::render_error(&err, false);
+            assert!(rendered.contains("hint:"), "{rendered}");
+            assert!(rendered.contains("hpds install togi"), "{rendered}");
+        }
     }
 }
