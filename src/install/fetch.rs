@@ -768,4 +768,266 @@ mod tests {
             assert!(rendered.contains("hpds install togi"), "{rendered}");
         }
     }
+
+    #[test]
+    fn recorded_latest_release_fixtures_use_strict_stable_tags() {
+        for (name, body, expected) in [
+            (
+                "uv",
+                include_str!("../../tests/fixtures/releases/uv-latest.json"),
+                "0.10.1",
+            ),
+            (
+                "gh",
+                include_str!("../../tests/fixtures/releases/gh-latest.json"),
+                "2.97.1",
+            ),
+            (
+                "duckdb",
+                include_str!("../../tests/fixtures/releases/duckdb-latest.json"),
+                "1.5.5",
+            ),
+            (
+                "quarto",
+                include_str!("../../tests/fixtures/releases/quarto-latest.json"),
+                "1.10.19",
+            ),
+            (
+                "togi",
+                include_str!("../../tests/fixtures/releases/togi-latest.json"),
+                "0.2.0",
+            ),
+        ] {
+            assert_eq!(parse_latest_version(body, name).expect(name), expected);
+        }
+    }
+
+    #[test]
+    fn latest_release_rejects_non_strict_tags_and_unpublished_metadata() {
+        for body in [
+            r#"{"tag_name":"v1.2.3+build.1","draft":false,"prerelease":false,"assets":[]}"#,
+            r#"{"tag_name":"latest","draft":false,"prerelease":false,"assets":[]}"#,
+            r#"{"tag_name":"v1.2.3","draft":false,"prerelease":false,"assets":[]}"#,
+            r#"{"tag_name":"v01.2.3","draft":false,"prerelease":false,"published_at":"2026-01-01T00:00:00Z","assets":[]}"#,
+        ] {
+            let err = parse_latest_version(body, "uv").expect_err("unstable metadata must fail");
+            let rendered = crate::ui::render_error(&err, false);
+            assert!(rendered.contains("hint:"), "{rendered}");
+            assert!(rendered.contains("--version"), "{rendered}");
+        }
+    }
+
+    fn resolve_fixture(body: String, spec: &ToolSpec) -> anyhow::Result<String> {
+        use std::collections::HashMap;
+
+        use crate::tools::test_support::FixtureServer;
+
+        let path = format!("/repos/{}/releases/latest", spec.repo);
+        let server = FixtureServer::serve(HashMap::from([(path, body.into_bytes())]));
+        latest_github_version(&crate::tools::github_agent(), &server.base_url, spec)
+    }
+
+    fn published_body(tag: &str, assets: Vec<Value>) -> String {
+        serde_json::json!({
+            "tag_name": tag,
+            "draft": false,
+            "prerelease": false,
+            "published_at": "2026-09-30T12:00:00Z",
+            "assets": assets,
+        })
+        .to_string()
+    }
+
+    fn asset(name: &str, digest: Option<&str>) -> Value {
+        serde_json::json!({
+            "name": name,
+            "browser_download_url": format!("https://example.test/{name}"),
+            "digest": digest,
+        })
+    }
+
+    fn complete_togi_body(draft: bool, prerelease: bool) -> String {
+        let spec = crate::install::installers::togi::release_spec();
+        let platform = Platform::current().expect("supported platform");
+        let archive = spec.asset_name(platform, "1.2.3");
+        let checksum = spec
+            .checksum_asset_name(platform, "1.2.3")
+            .expect("checksum");
+        let mut value: Value = serde_json::from_str(&published_body(
+            "v1.2.3",
+            vec![asset(&archive, None), asset(&checksum, None)],
+        ))
+        .expect("valid metadata");
+        value["draft"] = Value::Bool(draft);
+        value["prerelease"] = Value::Bool(prerelease);
+        value.to_string()
+    }
+
+    #[test]
+    fn latest_release_rejects_an_otherwise_valid_draft() {
+        let err = parse_latest_version(&complete_togi_body(true, false), "togi")
+            .expect_err("draft must fail");
+        assert!(crate::ui::render_error(&err, false).contains("draft"));
+    }
+
+    #[test]
+    fn latest_release_rejects_an_otherwise_valid_prerelease() {
+        let err = parse_latest_version(&complete_togi_body(false, true), "togi")
+            .expect_err("prerelease must fail");
+        assert!(crate::ui::render_error(&err, false).contains("prerelease"));
+    }
+
+    #[test]
+    fn latest_lookup_rejects_a_missing_platform_archive() {
+        let spec = crate::install::installers::togi::release_spec();
+        let platform = Platform::current().expect("supported platform");
+        let checksum = spec
+            .checksum_asset_name(platform, "9.9.9")
+            .expect("checksum");
+        let err = resolve_fixture(
+            published_body("v9.9.9", vec![asset(&checksum, None)]),
+            &spec,
+        )
+        .expect_err("the exact archive is mandatory");
+        let rendered = crate::ui::render_error(&err, false);
+        assert!(rendered.contains("archive"), "{rendered}");
+        assert!(rendered.contains("--version"), "{rendered}");
+    }
+
+    #[test]
+    fn latest_lookup_rejects_a_missing_declared_checksum_asset() {
+        let spec = crate::install::installers::togi::release_spec();
+        let platform = Platform::current().expect("supported platform");
+        let archive = spec.asset_name(platform, "9.9.9");
+        let err = resolve_fixture(published_body("v9.9.9", vec![asset(&archive, None)]), &spec)
+            .expect_err("the declared checksum asset is mandatory");
+        let rendered = crate::ui::render_error(&err, false);
+        assert!(rendered.contains("checksum"), "{rendered}");
+        assert!(rendered.contains("--version"), "{rendered}");
+    }
+
+    #[test]
+    fn duckdb_latest_requires_a_well_formed_github_sha256_digest() {
+        let spec = ToolSpec {
+            name: "duckdb",
+            default_version: "1.5.4",
+            repo: "duckdb/duckdb",
+            asset_pattern: match Platform::current().expect("supported platform").os {
+                crate::tools::Os::Mac => "duckdb_cli-osx-universal.zip",
+                crate::tools::Os::Linux => "duckdb_cli-linux-{alt-arch}.zip",
+                crate::tools::Os::Windows => "duckdb_cli-windows-{alt-arch}.zip",
+            },
+            checksum_pattern: None,
+        };
+        let archive = spec.asset_name(Platform::current().expect("supported platform"), "1.5.5");
+        for digest in [None, Some("sha256:not-hex")] {
+            let err = resolve_fixture(
+                published_body("v1.5.5", vec![asset(&archive, digest)]),
+                &spec,
+            )
+            .expect_err("DuckDB requires GitHub's archive digest");
+            let rendered = crate::ui::render_error(&err, false);
+            assert!(rendered.contains("digest"), "{rendered}");
+            assert!(rendered.contains("--version"), "{rendered}");
+        }
+    }
+
+    #[test]
+    fn duckdb_fixture_records_githubs_archive_digest() {
+        let value: Value = serde_json::from_str(include_str!(
+            "../../tests/fixtures/releases/duckdb-latest.json"
+        ))
+        .expect("fixture JSON");
+        let digest = value["assets"][0]["digest"].as_str().expect("asset digest");
+        assert!(digest.starts_with("sha256:"), "{digest}");
+        assert_eq!(digest.len(), "sha256:".len() + 64);
+    }
+
+    fn fetch_duckdb_with_digest(
+        digest_for: impl FnOnce(&[u8]) -> String,
+    ) -> (anyhow::Result<PathBuf>, tempfile::TempDir, ToolCache) {
+        use std::collections::HashMap;
+
+        use crate::tools::test_support::{FixtureServer, zip_with};
+        use crate::tools::{Arch, Os};
+
+        let spec = ToolSpec {
+            name: "duckdb",
+            default_version: "1.5.4",
+            repo: "duckdb/duckdb",
+            asset_pattern: "duckdb_cli-linux-{alt-arch}.zip",
+            checksum_pattern: None,
+        };
+        let platform = Platform {
+            os: Os::Linux,
+            arch: Arch::X86_64,
+        };
+        let archive_name = spec.asset_name(platform, "1.5.5");
+        let archive = zip_with("duckdb", b"fake duckdb");
+        let digest = digest_for(&archive);
+        let archive_server =
+            FixtureServer::serve(HashMap::from([(format!("/{archive_name}"), archive)]));
+        let metadata = serde_json::json!({
+            "tag_name": "v1.5.5",
+            "draft": false,
+            "prerelease": false,
+            "published_at": "2026-09-30T12:00:00Z",
+            "assets": [{
+                "name": archive_name,
+                "browser_download_url": format!("{}/{archive_name}", archive_server.base_url),
+                "digest": digest,
+            }],
+        })
+        .to_string();
+        let metadata_path = "/repos/duckdb/duckdb/releases/latest";
+        let metadata_server = FixtureServer::serve(HashMap::from([(
+            metadata_path.to_string(),
+            metadata.into_bytes(),
+        )]));
+        let dir = tempfile::tempdir().expect("tempdir");
+        let cache = ToolCache::at(dir.path());
+        let result = CacheFetcher::fetch_latest_binary_at(
+            false,
+            cache.clone(),
+            platform,
+            &metadata_server.base_url,
+            &spec,
+            &dir.path().join("bin"),
+        );
+        (result, dir, cache)
+    }
+
+    #[test]
+    fn incorrect_duckdb_github_digest_prevents_cache_publication() {
+        let wrong_digest = format!("sha256:{}", "0".repeat(64));
+        let (result, _dir, cache) = fetch_duckdb_with_digest(|_| wrong_digest);
+        let err = result.expect_err("an incorrect GitHub digest must fail");
+        let rendered = crate::ui::render_error(&err, false);
+
+        assert!(rendered.contains("digest"), "{rendered}");
+        assert!(rendered.contains("does not match"), "{rendered}");
+        assert!(!cache.tool_dir("duckdb", "1.5.5").exists());
+        assert!(!cache.manifest_path("duckdb", "1.5.5").exists());
+    }
+
+    #[test]
+    fn matching_duckdb_github_digest_publishes_binary_and_manifest() {
+        use crate::tools::test_support::sha256_hex_of;
+
+        let (result, _dir, cache) =
+            fetch_duckdb_with_digest(|archive| format!("sha256:{}", sha256_hex_of(archive)));
+        let binary = result.expect("matching GitHub digest must install");
+
+        assert!(binary.is_file(), "{}", binary.display());
+        let manifest_path = cache.manifest_path("duckdb", "1.5.5");
+        let manifest: Value = serde_json::from_str(
+            &std::fs::read_to_string(&manifest_path).expect("published manifest"),
+        )
+        .expect("manifest JSON");
+        assert!(
+            manifest["checksum"]
+                .as_str()
+                .is_some_and(|value| value.len() == 64)
+        );
+    }
 }

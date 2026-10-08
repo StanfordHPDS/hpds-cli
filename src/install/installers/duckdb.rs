@@ -111,19 +111,6 @@ mod tests {
     }
 
     #[test]
-    fn duckdb_mac_prefers_brew_when_present() {
-        let runner = FakeRunner::default()
-            .on_path("brew")
-            .with_output("brew install duckdb", "");
-        let fetcher = FakeFetcher::default();
-        DuckDb
-            .install(&ctx_on(Os::Mac, &runner, &fetcher))
-            .expect("brew install must succeed");
-        assert_eq!(*runner.calls.borrow(), vec!["brew install duckdb"]);
-        assert!(fetcher.calls.borrow().is_empty());
-    }
-
-    #[test]
     fn duckdb_mac_without_brew_fetches_the_universal_binary() {
         let runner = FakeRunner::default();
         let fetcher = FakeFetcher::default();
@@ -149,21 +136,6 @@ mod tests {
     }
 
     #[test]
-    fn duckdb_windows_uses_winget_when_present() {
-        let runner = FakeRunner::default()
-            .on_path("winget")
-            .with_output("winget install --id DuckDB.cli --exact", "");
-        let fetcher = FakeFetcher::default();
-        DuckDb
-            .install(&ctx_on(Os::Windows, &runner, &fetcher))
-            .expect("winget install must succeed");
-        assert_eq!(
-            *runner.calls.borrow(),
-            vec!["winget install --id DuckDB.cli --exact"]
-        );
-    }
-
-    #[test]
     fn duckdb_windows_without_winget_fetches_the_release_binary() {
         let runner = FakeRunner::default();
         let fetcher = FakeFetcher::default();
@@ -184,37 +156,6 @@ mod tests {
         DuckDb.install(&ctx).expect("pinned fetch must succeed");
         assert!(runner.calls.borrow().is_empty());
         assert_eq!(fetcher.calls.borrow()[0].version, "1.5.0");
-    }
-
-    #[test]
-    fn duckdb_plan_mirrors_the_strategy_selection() {
-        let fetcher = FakeFetcher::default();
-
-        let with_brew = FakeRunner::default().on_path("brew");
-        assert_eq!(
-            DuckDb.plan(&ctx_on(Os::Mac, &with_brew, &fetcher)),
-            vec!["brew install duckdb".to_string()]
-        );
-
-        let bare = FakeRunner::default();
-        let plan = DuckDb.plan(&ctx_on(Os::Mac, &bare, &fetcher));
-        assert_eq!(plan.len(), 1);
-        assert!(plan[0].contains("download"), "{plan:?}");
-        assert!(plan[0].contains(versions::DUCKDB), "{plan:?}");
-        assert!(
-            plan[0].contains("github.com/duckdb/duckdb"),
-            "the plan must name where the binary comes from: {plan:?}"
-        );
-
-        let pinned = InstallCtx {
-            pin: Some("1.5.0".to_string()),
-            ..ctx_on(Os::Mac, &with_brew, &fetcher)
-        };
-        let plan = DuckDb.plan(&pinned);
-        assert!(
-            plan[0].contains("1.5.0"),
-            "a pin must take the release path: {plan:?}"
-        );
     }
 
     #[test]

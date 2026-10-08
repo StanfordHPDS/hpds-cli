@@ -57,6 +57,220 @@ fn fetch_to_user_bin(ctx: &InstallCtx, spec: &ToolSpec, version: &str) -> anyhow
     Ok(installed)
 }
 
+#[cfg(test)]
+mod runtime_release_tests {
+    use super::{
+        duckdb::{self, DuckDb},
+        gh::{self, Gh},
+        quarto::{self, Quarto},
+        togi::{self, Togi},
+        uv::{self, Uv},
+    };
+    use crate::install::test_support::{FakeFetcher, FakeRunner, ctx_on};
+    use crate::install::{InstallCtx, Installer, run_installer};
+    use crate::tools::{Arch, Os, Platform};
+
+    fn fetched_versions(fetcher: &FakeFetcher) -> Vec<String> {
+        fetcher
+            .calls
+            .borrow()
+            .iter()
+            .map(|call| call.version.clone())
+            .chain(
+                fetcher
+                    .tree_calls
+                    .borrow()
+                    .iter()
+                    .map(|call| call.version.clone()),
+            )
+            .collect()
+    }
+
+    #[test]
+    fn recorded_releases_contain_the_exact_linux_amd64_assets() {
+        let platform = Platform {
+            os: Os::Linux,
+            arch: Arch::X86_64,
+        };
+        for (body, spec, version) in [
+            (
+                include_str!("../../../tests/fixtures/releases/uv-latest.json"),
+                uv::release_spec(),
+                "0.10.1",
+            ),
+            (
+                include_str!("../../../tests/fixtures/releases/gh-latest.json"),
+                gh::release_spec(Os::Linux),
+                "2.97.1",
+            ),
+            (
+                include_str!("../../../tests/fixtures/releases/duckdb-latest.json"),
+                duckdb::release_spec(Os::Linux),
+                "1.5.5",
+            ),
+            (
+                include_str!("../../../tests/fixtures/releases/quarto-latest.json"),
+                quarto::release_spec(Os::Linux),
+                "1.10.19",
+            ),
+            (
+                include_str!("../../../tests/fixtures/releases/togi-latest.json"),
+                togi::release_spec(),
+                "0.2.0",
+            ),
+        ] {
+            let value: serde_json::Value = serde_json::from_str(body).expect("fixture JSON");
+            let names: Vec<&str> = value["assets"]
+                .as_array()
+                .expect("assets")
+                .iter()
+                .map(|asset| asset["name"].as_str().expect("asset name"))
+                .collect();
+            assert!(names.contains(&spec.asset_name(platform, version).as_str()));
+            if let Some(checksum) = spec.checksum_asset_name(platform, version) {
+                assert!(names.contains(&checksum.as_str()));
+            }
+        }
+    }
+
+    #[test]
+    fn unpinned_installers_resolve_latest_and_ignore_package_managers() {
+        for os in [Os::Mac, Os::Linux, Os::Windows] {
+            for (installer, latest) in [
+                (&Uv as &dyn Installer, "0.10.1"),
+                (&Gh, "2.97.1"),
+                (&DuckDb, "1.5.5"),
+                (&Quarto, "1.10.19"),
+                (&Togi, "0.2.0"),
+            ] {
+                let runner = FakeRunner::default()
+                    .on_path("brew")
+                    .on_path("apt-get")
+                    .on_path("winget");
+                let fetcher = FakeFetcher::default().with_latest(latest);
+                let _ = run_installer(installer, &ctx_on(os, &runner, &fetcher));
+                assert_eq!(*fetcher.latest_calls.borrow(), vec![installer.name()]);
+                assert!(
+                    runner.calls.borrow().is_empty(),
+                    "{os:?}/{}",
+                    installer.name()
+                );
+                assert_eq!(
+                    fetched_versions(&fetcher),
+                    vec![latest],
+                    "{os:?}/{}",
+                    installer.name()
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn exact_pins_bypass_latest_lookup_and_use_release_assets() {
+        for os in [Os::Mac, Os::Linux, Os::Windows] {
+            for (installer, pin) in [
+                (&Uv as &dyn Installer, "0.9.5"),
+                (&Gh, "2.96.0"),
+                (&DuckDb, "1.5.4"),
+                (&Quarto, "1.9.36"),
+                (&Togi, "0.1.1"),
+            ] {
+                let runner = FakeRunner::default()
+                    .on_path("brew")
+                    .on_path("apt-get")
+                    .on_path("winget");
+                let fetcher = FakeFetcher::default();
+                let ctx = InstallCtx {
+                    pin: Some(pin.to_string()),
+                    ..ctx_on(os, &runner, &fetcher)
+                };
+                let _ = run_installer(installer, &ctx);
+                assert!(
+                    fetcher.latest_calls.borrow().is_empty(),
+                    "{}",
+                    installer.name()
+                );
+                assert!(
+                    runner.calls.borrow().is_empty(),
+                    "{os:?}/{}",
+                    installer.name()
+                );
+                assert_eq!(
+                    fetched_versions(&fetcher),
+                    vec![pin],
+                    "{os:?}/{}",
+                    installer.name()
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn lookup_failures_stop_every_dynamic_installer_before_download() {
+        for installer in [&Uv as &dyn Installer, &Gh, &DuckDb, &Quarto, &Togi] {
+            let runner = FakeRunner::default();
+            let fetcher = FakeFetcher::default().with_latest_error("release metadata unavailable");
+            let err = run_installer(installer, &ctx_on(Os::Linux, &runner, &fetcher))
+                .expect_err("latest lookup must fail");
+            assert!(err.to_string().contains("metadata unavailable"), "{err:#}");
+            assert!(fetched_versions(&fetcher).is_empty());
+        }
+    }
+
+    #[test]
+    fn installed_older_equal_and_newer_versions_share_update_semantics() {
+        let tools: [(&dyn Installer, &str, &str); 5] = [
+            (&Uv, "uv", "uv {version}"),
+            (&Gh, "gh", "gh version {version}"),
+            (&DuckDb, "duckdb", "v{version}"),
+            (&Quarto, "quarto", "{version}"),
+            (&Togi, "togi", "togi {version}"),
+        ];
+        for (installer, command, template) in tools {
+            for (installed, expected_fetches) in [("1.9.0", 1), ("2.0.0", 0), ("2.1.0", 0)] {
+                let output = template.replace("{version}", installed);
+                let runner = FakeRunner::default()
+                    .on_path(command)
+                    .with_output(&format!("{command} --version"), &output);
+                let fetcher = FakeFetcher::default().with_latest("2.0.0");
+                let _ = run_installer(installer, &ctx_on(Os::Linux, &runner, &fetcher));
+                assert_eq!(*fetcher.latest_calls.borrow(), vec![installer.name()]);
+                assert_eq!(
+                    fetched_versions(&fetcher).len(),
+                    expected_fetches,
+                    "{command} {installed}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn installed_version_newer_than_upstream_is_not_downgraded() {
+        let runner = FakeRunner::default()
+            .on_path("togi")
+            .with_output("togi --version", "togi 0.3.0");
+        let fetcher = FakeFetcher::default().with_latest("0.2.0");
+        run_installer(&Togi, &ctx_on(Os::Linux, &runner, &fetcher))
+            .expect("a newer installed version must be retained");
+        assert!(fetcher.calls.borrow().is_empty());
+    }
+
+    #[test]
+    fn an_explicit_pin_may_deliberately_downgrade() {
+        let runner = FakeRunner::default()
+            .on_path("togi")
+            .with_output("togi --version", "togi 0.3.0");
+        let fetcher = FakeFetcher::default();
+        let ctx = InstallCtx {
+            pin: Some("0.2.0".to_string()),
+            ..ctx_on(Os::Linux, &runner, &fetcher)
+        };
+        let _ = run_installer(&Togi, &ctx);
+        assert!(fetcher.latest_calls.borrow().is_empty());
+        assert_eq!(fetcher.calls.borrow()[0].version, "0.2.0");
+    }
+}
+
 #[cfg(all(test, feature = "online-tests"))]
 mod online_tests {
     //! Real-download checks for the release-binary strategies, on the OS

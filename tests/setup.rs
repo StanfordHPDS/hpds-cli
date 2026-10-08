@@ -40,6 +40,15 @@ fn plan_never_prompts_even_without_a_terminal() {
 }
 
 #[test]
+fn plan_stays_offline_and_describes_runtime_release_selection() {
+    let output = plan_output(&["setup", "--plan"]);
+    for tool in ["quarto", "uv", "gh", "togi"] {
+        assert!(output.contains(tool), "missing {tool}: {output}");
+    }
+    assert!(output.contains("latest stable"), "{output}");
+}
+
+#[test]
 fn dev_setup_without_a_terminal_and_without_yes_refuses_with_guidance() {
     hpds()
         .args(["setup"])

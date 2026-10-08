@@ -85,7 +85,6 @@ impl Installer for Uv {
 mod tests {
     use super::*;
     use crate::install::test_support::{FakeFetcher, FakeRunner, ctx_on, probe_fixture};
-    use crate::ui::render_error;
 
     #[test]
     fn uv_detects_installed_version_from_probe() {
@@ -103,21 +102,6 @@ mod tests {
         let fetcher = FakeFetcher::default();
         let ctx = ctx_on(Os::Linux, &runner, &fetcher);
         assert_eq!(Uv.detect(&ctx), None);
-    }
-
-    #[test]
-    fn uv_mac_prefers_brew_when_present() {
-        let runner = FakeRunner::default()
-            .on_path("brew")
-            .with_output("brew install uv", "");
-        let fetcher = FakeFetcher::default();
-        Uv.install(&ctx_on(Os::Mac, &runner, &fetcher))
-            .expect("brew install must succeed");
-        assert_eq!(*runner.calls.borrow(), vec!["brew install uv"]);
-        assert!(
-            fetcher.calls.borrow().is_empty(),
-            "brew path must not fetch"
-        );
     }
 
     #[test]
@@ -158,43 +142,5 @@ mod tests {
         Uv.install(&ctx).expect("pinned fetch must succeed");
         assert!(runner.calls.borrow().is_empty(), "brew cannot pin versions");
         assert_eq!(fetcher.calls.borrow()[0].version, "0.9.9");
-    }
-
-    #[test]
-    fn uv_plan_mirrors_the_strategy_selection() {
-        let fetcher = FakeFetcher::default();
-
-        let with_brew = FakeRunner::default().on_path("brew");
-        assert_eq!(
-            Uv.plan(&ctx_on(Os::Linux, &with_brew, &fetcher)),
-            vec!["brew install uv".to_string()]
-        );
-
-        let bare = FakeRunner::default();
-        let plan = Uv.plan(&ctx_on(Os::Mac, &bare, &fetcher));
-        assert_eq!(plan.len(), 1);
-        assert!(plan[0].contains("download"), "{plan:?}");
-        assert!(plan[0].contains(versions::UV), "{plan:?}");
-        assert!(
-            plan[0].contains("github.com/astral-sh/uv"),
-            "the plan must name where the binary comes from: {plan:?}"
-        );
-
-        let plan = Uv.plan(&ctx_on(Os::Windows, &bare, &fetcher));
-        assert!(plan[0].contains("not supported"), "{plan:?}");
-    }
-
-    #[test]
-    fn uv_windows_errors_cleanly_with_the_official_installer_hint() {
-        let runner = FakeRunner::default();
-        let fetcher = FakeFetcher::default();
-        let err = Uv
-            .install(&ctx_on(Os::Windows, &runner, &fetcher))
-            .expect_err("windows must be a clean unsupported error");
-        let out = render_error(&err, false);
-        assert!(out.contains("not supported on this machine"), "{out}");
-        assert!(out.contains("install.ps1"), "{out}");
-        assert!(fetcher.calls.borrow().is_empty());
-        assert!(runner.calls.borrow().is_empty());
     }
 }

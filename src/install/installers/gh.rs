@@ -190,7 +190,6 @@ mod tests {
     use super::*;
     use crate::install::test_support::{FakeFetcher, FakeRunner, ctx_on, probe_fixture};
     use crate::tools::{Arch, Platform};
-    use crate::ui::render_error;
 
     #[test]
     fn gh_detects_installed_version_from_probe() {
@@ -200,18 +199,6 @@ mod tests {
         let fetcher = FakeFetcher::default();
         let ctx = ctx_on(Os::Mac, &runner, &fetcher);
         assert_eq!(Gh.detect(&ctx).as_deref(), Some("2.95.0"));
-    }
-
-    #[test]
-    fn gh_mac_prefers_brew_when_present() {
-        let runner = FakeRunner::default()
-            .on_path("brew")
-            .with_output("brew install gh", "");
-        let fetcher = FakeFetcher::default();
-        Gh.install(&ctx_on(Os::Mac, &runner, &fetcher))
-            .expect("brew install must succeed");
-        assert_eq!(*runner.calls.borrow(), vec!["brew install gh"]);
-        assert!(fetcher.calls.borrow().is_empty());
     }
 
     #[test]
@@ -226,42 +213,6 @@ mod tests {
     }
 
     #[test]
-    fn gh_linux_with_apt_mirrors_the_official_repo_steps() {
-        let runner = FakeRunner::default()
-            .on_path("apt-get")
-            .with_output("sudo mkdir -p -m 755 /etc/apt/keyrings", "")
-            .with_output(
-                "sudo curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
-                 -o /etc/apt/keyrings/githubcli-archive-keyring.gpg",
-                "",
-            )
-            .with_output(
-                "sudo chmod go+r /etc/apt/keyrings/githubcli-archive-keyring.gpg",
-                "",
-            )
-            .with_output("dpkg --print-architecture", "amd64\n")
-            .with_output(
-                "sudo sh -c echo 'deb [arch=amd64 \
-                 signed-by=/etc/apt/keyrings/githubcli-archive-keyring.gpg] \
-                 https://cli.github.com/packages stable main' \
-                 > /etc/apt/sources.list.d/github-cli.list",
-                "",
-            )
-            .with_output("sudo apt-get update", "")
-            .with_output("sudo apt-get install -y gh", "");
-        let fetcher = FakeFetcher::default();
-        Gh.install(&ctx_on(Os::Linux, &runner, &fetcher))
-            .expect("apt install must succeed");
-        assert!(fetcher.calls.borrow().is_empty(), "apt path must not fetch");
-        let calls = runner.calls.borrow();
-        assert_eq!(calls.len(), 7, "{calls:#?}");
-        assert!(calls[0].starts_with("sudo mkdir"), "{calls:#?}");
-        assert!(calls[3].starts_with("dpkg"), "{calls:#?}");
-        assert!(calls[4].contains("arch=amd64"), "{calls:#?}");
-        assert_eq!(calls[6], "sudo apt-get install -y gh");
-    }
-
-    #[test]
     fn gh_linux_without_apt_fetches_the_release_binary() {
         let runner = FakeRunner::default();
         let fetcher = FakeFetcher::default();
@@ -269,40 +220,6 @@ mod tests {
             .expect("fetch must succeed");
         assert!(runner.calls.borrow().is_empty());
         assert_eq!(fetcher.calls.borrow()[0].spec.name, "gh");
-    }
-
-    #[test]
-    fn gh_windows_uses_winget_when_present() {
-        let runner = FakeRunner::default()
-            .on_path("winget")
-            .with_output("winget install --id GitHub.cli --exact", "");
-        let fetcher = FakeFetcher::default();
-        Gh.install(&ctx_on(Os::Windows, &runner, &fetcher))
-            .expect("winget install must succeed");
-        assert_eq!(
-            *runner.calls.borrow(),
-            vec!["winget install --id GitHub.cli --exact"]
-        );
-        assert!(fetcher.calls.borrow().is_empty());
-    }
-
-    #[test]
-    fn gh_windows_winget_pins_with_its_version_flag() {
-        let runner = FakeRunner::default().on_path("winget").with_output(
-            "winget install --id GitHub.cli --exact --version 2.90.0",
-            "",
-        );
-        let fetcher = FakeFetcher::default();
-        let ctx = InstallCtx {
-            pin: Some("2.90.0".to_string()),
-            ..ctx_on(Os::Windows, &runner, &fetcher)
-        };
-        Gh.install(&ctx)
-            .expect("pinned winget install must succeed");
-        assert_eq!(
-            *runner.calls.borrow(),
-            vec!["winget install --id GitHub.cli --exact --version 2.90.0"]
-        );
     }
 
     #[test]
@@ -330,42 +247,6 @@ mod tests {
     }
 
     #[test]
-    fn gh_plan_mirrors_the_strategy_selection() {
-        let fetcher = FakeFetcher::default();
-
-        let with_brew = FakeRunner::default().on_path("brew");
-        assert_eq!(
-            Gh.plan(&ctx_on(Os::Mac, &with_brew, &fetcher)),
-            vec!["brew install gh".to_string()]
-        );
-
-        let bare = FakeRunner::default();
-        let plan = Gh.plan(&ctx_on(Os::Mac, &bare, &fetcher));
-        assert!(plan[0].contains("download"), "{plan:?}");
-        assert!(plan[0].contains(versions::GH), "{plan:?}");
-        assert!(
-            plan[0].contains("github.com/cli/cli"),
-            "the plan must name where the binary comes from: {plan:?}"
-        );
-    }
-
-    #[test]
-    fn gh_plan_on_linux_lists_the_apt_commands() {
-        let runner = FakeRunner::default().on_path("apt-get");
-        let fetcher = FakeFetcher::default();
-        let plan = Gh.plan(&ctx_on(Os::Linux, &runner, &fetcher));
-        assert!(
-            plan.iter().any(|l| l == "sudo apt-get install -y gh"),
-            "{plan:?}"
-        );
-        assert!(
-            plan.iter().filter(|l| l.contains("sudo")).count() >= 4,
-            "every privileged apt step must be visible: {plan:?}"
-        );
-        assert!(runner.calls.borrow().is_empty(), "planning must not run");
-    }
-
-    #[test]
     fn gh_release_assets_resolve_to_the_published_names() {
         let arm = |os| Platform {
             os,
@@ -385,29 +266,5 @@ mod tests {
                 "{os:?}"
             );
         }
-    }
-
-    #[test]
-    fn gh_linux_apt_with_a_broken_dpkg_errors_with_guidance() {
-        let runner = FakeRunner::default()
-            .on_path("apt-get")
-            .with_output("sudo mkdir -p -m 755 /etc/apt/keyrings", "")
-            .with_output(
-                "sudo curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
-                 -o /etc/apt/keyrings/githubcli-archive-keyring.gpg",
-                "",
-            )
-            .with_output(
-                "sudo chmod go+r /etc/apt/keyrings/githubcli-archive-keyring.gpg",
-                "",
-            )
-            .with_output("dpkg --print-architecture", "  ");
-        let fetcher = FakeFetcher::default();
-        let err = Gh
-            .install(&ctx_on(Os::Linux, &runner, &fetcher))
-            .expect_err("empty dpkg arch must fail");
-        let out = render_error(&err, false);
-        assert!(out.contains("dpkg"), "{out}");
-        assert!(out.contains("hint:"), "{out}");
     }
 }

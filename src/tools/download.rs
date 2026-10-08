@@ -811,7 +811,7 @@ mod tests {
     }
 
     #[test]
-    fn checksum_mismatch_fails_and_leaves_nothing_installed() {
+    fn resolved_release_checksum_mismatch_prevents_cache_publication() {
         let archive = targz_with("tool", FAKE_BINARY);
         let wrong = format!(
             "{}  tool-1.2.3-x86_64-unknown-linux-gnu.tar.gz\n",
@@ -832,6 +832,12 @@ mod tests {
         assert!(
             !ToolCache::at(dir.path()).tool_dir("tool", "1.2.3").exists(),
             "a failed install must leave no tool directory behind"
+        );
+        assert!(
+            !ToolCache::at(dir.path())
+                .manifest_path("tool", "1.2.3")
+                .exists(),
+            "a failed verification must not publish a manifest"
         );
     }
 

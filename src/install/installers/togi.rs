@@ -251,7 +251,15 @@ mod tests {
 
     #[test]
     fn malformed_remote_or_explicit_versions_never_reach_the_downloader() {
-        for (pin, latest) in [(None, Some("../0.1.1")), (Some("../0.1.1"), None)] {
+        for (pin, latest) in [
+            (None, Some("../0.1.1")),
+            (Some("../0.1.1"), None),
+            (None, Some("1.2.3-rc.1")),
+            (None, Some("1.2.3+build.1")),
+            (None, Some("01.2.3")),
+            (None, Some("1.02.3")),
+            (None, Some("1.2.03")),
+        ] {
             let runner = FakeRunner::default();
             let fetcher = match latest {
                 Some(version) => FakeFetcher::default().with_latest(version),

@@ -164,42 +164,6 @@ mod tests {
     }
 
     #[test]
-    fn quarto_windows_uses_winget_when_present() {
-        let runner = FakeRunner::default()
-            .on_path("winget")
-            .with_output("winget install --id Posit.Quarto --exact", "");
-        let fetcher = FakeFetcher::default();
-        Quarto
-            .install(&ctx_on(Os::Windows, &runner, &fetcher))
-            .expect("winget install must succeed");
-        assert_eq!(
-            *runner.calls.borrow(),
-            vec!["winget install --id Posit.Quarto --exact"]
-        );
-        assert!(fetcher.tree_calls.borrow().is_empty());
-    }
-
-    #[test]
-    fn quarto_windows_winget_pins_with_its_version_flag() {
-        let runner = FakeRunner::default().on_path("winget").with_output(
-            "winget install --id Posit.Quarto --exact --version 1.8.27",
-            "",
-        );
-        let fetcher = FakeFetcher::default();
-        let ctx = InstallCtx {
-            pin: Some("1.8.27".to_string()),
-            ..ctx_on(Os::Windows, &runner, &fetcher)
-        };
-        Quarto
-            .install(&ctx)
-            .expect("pinned winget install must succeed");
-        assert_eq!(
-            *runner.calls.borrow(),
-            vec!["winget install --id Posit.Quarto --exact --version 1.8.27"]
-        );
-    }
-
-    #[test]
     fn quarto_windows_without_winget_fetches_the_release_tree() {
         let runner = FakeRunner::default();
         let fetcher = FakeFetcher::default();
@@ -246,26 +210,5 @@ mod tests {
     #[test]
     fn quarto_supports_version_pins() {
         assert!(Quarto.supports_pin());
-    }
-
-    #[test]
-    fn quarto_plan_mirrors_the_strategy_selection() {
-        let fetcher = FakeFetcher::default();
-        let bare = FakeRunner::default();
-
-        let plan = Quarto.plan(&ctx_on(Os::Linux, &bare, &fetcher));
-        assert_eq!(plan.len(), 1);
-        assert!(plan[0].contains("download quarto"), "{plan:?}");
-        assert!(plan[0].contains(versions::QUARTO), "{plan:?}");
-        assert!(
-            plan[0].contains("github.com/quarto-dev/quarto-cli"),
-            "the plan must name where the release comes from: {plan:?}"
-        );
-
-        let with_winget = FakeRunner::default().on_path("winget");
-        assert_eq!(
-            Quarto.plan(&ctx_on(Os::Windows, &with_winget, &fetcher)),
-            vec!["winget install --id Posit.Quarto --exact".to_string()]
-        );
     }
 }
