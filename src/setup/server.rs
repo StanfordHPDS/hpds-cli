@@ -95,6 +95,14 @@ fn unique_suffix() -> u128 {
         .as_nanos()
 }
 
+fn server_path(parent: &Path, child: &str) -> Result<PathBuf> {
+    let parent = parent
+        .to_str()
+        .context("managed server path is not UTF-8")?
+        .trim_end_matches('/');
+    Ok(PathBuf::from(format!("{parent}/{child}")))
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum DockerState {
     Probe,
@@ -183,7 +191,7 @@ impl ServerHost for SystemServerHost<'_> {
                 .and_then(|v| v.to_str())
                 .context("destination filename is not UTF-8")?;
             let unique = format!(".{name}.hpds-{}-{}", std::process::id(), unique_suffix());
-            let publish = parent.join(unique);
+            let publish = server_path(parent, &unique)?;
             let publish_text = publish.to_str().context("publish path is not UTF-8")?;
             let mode = format!("{mode:04o}");
             let install = run_checked(
@@ -633,7 +641,7 @@ pub(crate) fn merge_rstudio_preferences(host: &dyn ServerHost) -> Result<()> {
 pub(crate) fn merge_code_server_settings(host: &dyn ServerHost, user: &str) -> Result<()> {
     validate_user(user)?;
     let home = host.home_dir(user)?;
-    let quarto = home.join(".local/bin/quarto");
+    let quarto = server_path(&home, ".local/bin/quarto")?;
     if !host.exists(&quarto) {
         return Err(anyhow!(
             "managed Quarto launcher `{}` is missing",
@@ -643,7 +651,7 @@ pub(crate) fn merge_code_server_settings(host: &dyn ServerHost, user: &str) -> R
     }
     merge_json(
         host,
-        &home.join(".local/share/code-server/User/settings.json"),
+        &server_path(&home, ".local/share/code-server/User/settings.json")?,
         &[("quarto.path", json!(quarto))],
         0o644,
     )
