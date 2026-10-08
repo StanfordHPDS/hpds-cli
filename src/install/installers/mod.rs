@@ -9,6 +9,7 @@ pub mod gh;
 pub mod quarto;
 pub mod r;
 pub mod rig;
+pub mod rstudio_server;
 pub mod tinytex;
 pub mod togi;
 pub mod uv;

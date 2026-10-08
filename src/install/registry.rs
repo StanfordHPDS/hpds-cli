@@ -100,6 +100,7 @@ mod tests {
 
     #[test]
     fn every_known_tool_resolves_to_its_installer() {
+        assert!(KNOWN_TOOLS.contains(&"rstudio-server"));
         for tool in KNOWN_TOOLS {
             let installer = find(tool).unwrap_or_else(|e| panic!("{tool}: {e}"));
             assert_eq!(installer.name(), tool);

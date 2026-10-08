@@ -49,6 +49,23 @@ fn plan_stays_offline_and_describes_runtime_release_selection() {
 }
 
 #[test]
+fn server_plan_keeps_rstudio_discovery_offline() {
+    let output = plan_output(&["setup", "--plan", "--profile", "server"]);
+    assert!(output.contains("hpds install rstudio-server"), "{output}");
+    assert!(output.contains("latest stable"), "{output}");
+    assert!(!output.contains("rstudio.org/download"), "{output}");
+    assert!(
+        !output.contains("s3.amazonaws.com/rstudio-server"),
+        "{output}"
+    );
+    assert!(!output.contains("2025.05.1-513"), "{output}");
+    assert!(
+        !output.contains("/tmp/rstudio-server-amd64.deb"),
+        "{output}"
+    );
+}
+
+#[test]
 fn dev_setup_without_a_terminal_and_without_yes_refuses_with_guidance() {
     hpds()
         .args(["setup"])

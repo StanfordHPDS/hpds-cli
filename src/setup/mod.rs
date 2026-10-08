@@ -591,6 +591,15 @@ mod tests {
         }
     }
 
+    #[test]
+    fn server_uses_the_registered_rstudio_server_installer() {
+        let step = steps(Profile::Server)
+            .iter()
+            .find(|step| step.title == "RStudio Server")
+            .expect("RStudio Server step");
+        assert!(matches!(step.actions, [Action::Install("rstudio-server")]));
+    }
+
     // --- checklist gating ---------------------------------------------------
 
     #[test]
