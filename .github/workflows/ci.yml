@@ -78,8 +78,27 @@ jobs:
           sudo apt-get install -y apptainer
       - name: Build hpds
         run: cargo build --locked
+      - name: Test container harness
+        env:
+          PYTHONDONTWRITEBYTECODE: "1"
+        run: python3 -m unittest discover -s tests/container-runtime -p 'test_*.py'
+      - name: Resolve published hpds version
+        id: published-hpds
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag=$(gh api repos/${{ github.repository }}/releases/latest --jq .tag_name)
+          version=${tag#v}
+          if [[ $tag != v$version || ! $version =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "latest release tag must have the form vX.Y.Z: $tag" >&2
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
       - name: Validate generated containers
-        run: >-
-          python3 tests/container-runtime/run.py
-          --engine all
-          --apptainer-build-as-root
+        env:
+          PUBLISHED_HPDS_VERSION: ${{ steps.published-hpds.outputs.version }}
+        run: |
+          python3 tests/container-runtime/run.py \
+            --engine all \
+            --apptainer-build-as-root \
+            --published-hpds-version "$PUBLISHED_HPDS_VERSION"
