@@ -8,7 +8,7 @@
 //! (prompted unless `--yes`), and inherit `-v` command logging for free.
 
 mod fetch;
-mod installers;
+pub(crate) mod installers;
 pub mod registry;
 mod runner;
 #[cfg(test)]
@@ -184,12 +184,15 @@ fn run_installer_with(
 }
 
 fn compare_stable_versions(left: &str, right: &str) -> Option<Ordering> {
-    fn parts(version: &str) -> Option<[u64; 3]> {
-        let mut values = version.strip_prefix('v').unwrap_or(version).split('.');
+    fn parts(version: &str) -> Option<[u64; 4]> {
+        let version = version.strip_prefix('v').unwrap_or(version);
+        let (base, build) = version.split_once('+').unwrap_or((version, "0"));
+        let mut values = base.split('.');
         let result = [
             values.next()?.parse().ok()?,
             values.next()?.parse().ok()?,
             values.next()?.parse().ok()?,
+            build.parse().ok()?,
         ];
         values.next().is_none().then_some(result)
     }

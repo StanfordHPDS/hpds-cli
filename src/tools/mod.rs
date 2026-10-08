@@ -17,6 +17,7 @@ pub use cache::ToolCache;
 pub(crate) use download::ReleaseSource;
 pub(crate) use download::extract_binary;
 pub(crate) use download::github_agent;
+pub(crate) use download::no_redirect_agent;
 pub use download::{Downloader, InstallContext};
 #[cfg(test)]
 pub(crate) use manifest::Manifest;

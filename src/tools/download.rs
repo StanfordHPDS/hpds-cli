@@ -590,18 +590,31 @@ pub(crate) fn github_agent() -> ureq::Agent {
     agent_with_proxy(ureq::Proxy::try_from_env())
 }
 
+/// HTTP agent with the release-download proxy and timeout policy, but no
+/// redirect following. Callers inspect and validate redirect targets before
+/// making another request.
+pub(crate) fn no_redirect_agent() -> ureq::Agent {
+    configured_agent(ureq::Proxy::try_from_env(), true)
+}
+
 /// The agent [`github_agent`] builds, with an explicit proxy (tests pass
 /// one directly instead of mutating process-global env vars).
 fn agent_with_proxy(proxy: Option<ureq::Proxy>) -> ureq::Agent {
-    ureq::Agent::config_builder()
+    configured_agent(proxy, false)
+}
+
+fn configured_agent(proxy: Option<ureq::Proxy>, disable_redirects: bool) -> ureq::Agent {
+    let mut config = ureq::Agent::config_builder()
         .proxy(proxy)
         .timeout_connect(Some(Duration::from_secs(20)))
         .timeout_recv_response(Some(Duration::from_secs(30)))
         // Generous total-body budget: release archives are a few MB, so
         // this only trips on a transfer that has effectively stalled.
-        .timeout_recv_body(Some(Duration::from_secs(600)))
-        .build()
-        .into()
+        .timeout_recv_body(Some(Duration::from_secs(600)));
+    if disable_redirects {
+        config = config.max_redirects(0).http_status_as_error(false);
+    }
+    config.build().into()
 }
 
 /// Stream a response body into `dest`, drawing a progress bar and hashing

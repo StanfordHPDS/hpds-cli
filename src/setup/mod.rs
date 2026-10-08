@@ -15,7 +15,7 @@ use std::path::Path;
 
 use anyhow::anyhow;
 
-use crate::install::{self, InstallCtx, registry};
+use crate::install::{self, InstallCtx};
 use crate::ui::{self, HintExt};
 
 /// Which bundle of steps `hpds setup` runs.
@@ -73,6 +73,11 @@ struct Cmd {
 pub struct SetupDeps<'a> {
     pub install: InstallCtx<'a>,
     pub git_setup: &'a dyn Fn() -> anyhow::Result<()>,
+    pub(crate) installer_lookup:
+        &'a dyn Fn(
+            &str,
+        )
+            -> Result<&'static dyn install::Installer, install::registry::RegistryError>,
 }
 
 /// How one executed step ended.
@@ -144,13 +149,6 @@ const APT_SYSTEM_LIBRARIES: &[&str] = &[
     "zlib1g-dev",
 ];
 
-/// Where the RStudio Server deb is downloaded before installation.
-const RSTUDIO_DEB: &str = "/tmp/rstudio-server-amd64.deb";
-
-/// The pinned RStudio Server release the server profile installs.
-const RSTUDIO_URL: &str =
-    "https://download2.rstudio.org/server/jammy/amd64/rstudio-server-2025.05.1-513-amd64.deb";
-
 /// The lab-server bundle (Linux only): system libraries, R/Python wired
 /// to Posit Package Manager, the IDE servers, and the same toolchain the
 /// dev profile installs. Every external command is a static plan run
@@ -218,20 +216,7 @@ const SERVER_STEPS: &[Step] = &[
     },
     Step {
         title: "RStudio Server",
-        actions: &[
-            Action::Run(Cmd {
-                what: "downloading RStudio Server",
-                program: "curl",
-                args: &["-fsSL", "-o", RSTUDIO_DEB, RSTUDIO_URL],
-                sudo: false,
-            }),
-            Action::Run(Cmd {
-                what: "installing RStudio Server",
-                program: "gdebi",
-                args: &["-n", RSTUDIO_DEB],
-                sudo: true,
-            }),
-        ],
+        actions: &[Action::Install("rstudio-server")],
     },
     Step {
         title: "code-server + extensions",
@@ -343,7 +328,12 @@ pub fn plan(profile: Profile) -> String {
 /// One plan line for an action: the command a user could run themselves.
 fn describe(action: &Action) -> String {
     match action {
-        Action::Install(tool) if matches!(*tool, "uv" | "gh" | "duckdb" | "quarto" | "togi") => {
+        Action::Install(tool)
+            if matches!(
+                *tool,
+                "uv" | "gh" | "duckdb" | "quarto" | "togi" | "rstudio-server"
+            ) =>
+        {
             format!("hpds install {tool} (latest stable)")
         }
         Action::Install(tool) => format!("hpds install {tool}"),
@@ -411,7 +401,7 @@ fn run_actions(step: &Step, deps: &SetupDeps) -> anyhow::Result<()> {
     for action in step.actions {
         match action {
             Action::Install(tool) => {
-                let installer = registry::find(tool)?;
+                let installer = (deps.installer_lookup)(tool)?;
                 install::run_installer(installer, &deps.install)?;
             }
             Action::GitSetup => (deps.git_setup)()?,
@@ -512,6 +502,7 @@ mod tests {
 
     use super::*;
     use crate::install::ReleaseFetcher;
+    use crate::install::registry;
     use crate::install::test_support::{FakeFetcher, FakeRunner, PanicFetcher, probe_fixture};
     use crate::tools::Os;
     use crate::ui::render_error;
@@ -539,6 +530,7 @@ mod tests {
                 fetcher,
             },
             git_setup,
+            installer_lookup: &registry::find,
         }
     }
 
@@ -738,6 +730,38 @@ mod tests {
 
     #[test]
     fn server_with_yes_runs_the_command_plans_through_the_runner_and_logs() {
+        use std::path::Path;
+
+        use crate::install::installers::rstudio_server::{
+            DownloadedPackage, RstudioBackend, RstudioRelease, RstudioServer,
+        };
+
+        struct InstalledRstudio;
+        impl RstudioBackend for InstalledRstudio {
+            fn detect(&self, _ctx: &InstallCtx<'_>) -> Option<String> {
+                Some("2026.09.0+174".to_string())
+            }
+            fn latest(&self) -> anyhow::Result<RstudioRelease> {
+                Ok(RstudioRelease {
+                    version: "2026.09.0+174".to_string(),
+                    filename: "rstudio-server-2026.09.0-174-amd64.deb".to_string(),
+                    url: "https://s3.amazonaws.com/rstudio-server/server/jammy/amd64/rstudio-server-2026.09.0-174-amd64.deb".to_string(),
+                })
+            }
+            fn exact(&self, _version: &str) -> anyhow::Result<RstudioRelease> {
+                unreachable!("the installed version is current")
+            }
+            fn download(&self, _release: &RstudioRelease) -> anyhow::Result<DownloadedPackage> {
+                unreachable!("the installed version is current")
+            }
+            fn inspect(&self, _ctx: &InstallCtx<'_>, _package: &Path) -> anyhow::Result<String> {
+                unreachable!("the installed version is current")
+            }
+            fn install(&self, _ctx: &InstallCtx<'_>, _package: &Path) -> anyhow::Result<()> {
+                unreachable!("the installed version is current")
+            }
+        }
+
         // Every registry tool probes as installed (no-op installs) so the
         // run exercises exactly the server profile's own command plans.
         let runner = runner_with_everything_installed()
@@ -757,8 +781,8 @@ mod tests {
                 "sudo sh -c printf '[global]\\nindex-url = https://packagemanager.posit.co/pypi/latest/simple\\n' > /etc/pip.conf",
                 "",
             )
-            .with_output(&format!("curl -fsSL -o {RSTUDIO_DEB} {RSTUDIO_URL}"), "")
-            .with_output(&format!("sudo gdebi -n {RSTUDIO_DEB}"), "")
+            .on_path("rstudio-server")
+            .with_output("rstudio-server version", "2026.09.0+174")
             .with_output(
                 "sudo sh -c curl -fsSL https://code-server.dev/install.sh | sh",
                 "",
@@ -775,7 +799,17 @@ mod tests {
             Ok(())
         };
         let fetcher = FakeFetcher::default().with_latest("0.1.0");
-        let deps = deps_recording_git(Os::Linux, true, &runner, &fetcher, &git_setup);
+        let backend = Box::leak(Box::new(InstalledRstudio));
+        let rstudio = Box::leak(Box::new(RstudioServer::with_backend(backend)));
+        let lookup = |tool: &str| {
+            if tool == "rstudio-server" {
+                Ok(rstudio as &'static dyn install::Installer)
+            } else {
+                registry::find(tool)
+            }
+        };
+        let mut deps = deps_recording_git(Os::Linux, true, &runner, &fetcher, &git_setup);
+        deps.installer_lookup = &lookup;
         let dir = tempfile::tempdir().expect("create temp dir");
         let log_path = dir.path().join("hpds-setup.log");
 

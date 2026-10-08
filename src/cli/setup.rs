@@ -96,6 +96,7 @@ pub fn run(args: SetupArgs, global: &GlobalArgs) -> anyhow::Result<()> {
             fetcher: &fetcher,
         },
         git_setup: &git_setup,
+        installer_lookup: &crate::install::registry::find,
     };
     let interactive = std::io::stdin().is_terminal();
 
