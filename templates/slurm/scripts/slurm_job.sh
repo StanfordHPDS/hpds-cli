@@ -16,8 +16,8 @@
 #SBATCH --cpus-per-task=4
 #SBATCH --mem=8G
 # Uncomment (single #) to get mail when the job ends or fails:
+# Messages go to the submitter's SUNet address.
 ##SBATCH --mail-type=END,FAIL
-##SBATCH --mail-user=your-sunet@stanford.edu
 
 set -euo pipefail
 
