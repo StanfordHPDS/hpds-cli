@@ -1,18 +1,13 @@
 //! Installer for the quarto CLI.
 //!
-//! macOS and Linux: the GitHub release tarball, extracted whole under the
-//! per-user `~/.local/opt` with a launcher in `~/.local/bin`: no sudo,
-//! unlike the system-wide pkg//opt paths. Windows: winget when present
-//! (which runs the official MSI), else the release zip into the same
-//! per-user layout. quarto is a directory tree (`bin/` + `share/`), so the
-//! release path goes through the fetcher's whole-tree install.
+//! Every OS downloads the latest stable upstream archive and extracts it under
+//! the per-user `~/.local/opt`, with a launcher in `~/.local/bin`. Quarto is a
+//! directory tree (`bin/` plus `share/`), so it uses the whole-tree release path.
 
 use crate::install::fetch::{user_bin_dir, user_opt_dir};
 use crate::install::{InstallCtx, Installer};
-use crate::tools::{Os, ToolSpec, versions};
+use crate::tools::{Os, ToolSpec};
 use crate::ui;
-
-use super::on_path;
 
 pub struct Quarto;
 
@@ -22,7 +17,7 @@ pub struct Quarto;
 pub(super) fn release_spec(os: Os) -> ToolSpec {
     ToolSpec {
         name: "quarto",
-        default_version: versions::QUARTO,
+        default_version: "latest",
         repo: "quarto-dev/quarto-cli",
         asset_pattern: match os {
             Os::Mac => "quarto-{version}-macos.tar.gz",
@@ -46,47 +41,23 @@ impl Installer for Quarto {
         true
     }
 
+    fn resolve_target(&self, ctx: &InstallCtx) -> anyhow::Result<Option<String>> {
+        super::resolve_release_target(ctx, &release_spec(ctx.os))
+    }
+
+    fn verifies_target(&self) -> bool {
+        true
+    }
+
     fn plan(&self, ctx: &InstallCtx) -> Vec<String> {
-        let version = ctx
-            .pin
-            .clone()
-            .unwrap_or_else(|| versions::QUARTO.to_string());
-        match ctx.os {
-            Os::Mac | Os::Linux => vec![tree_plan(&version)],
-            Os::Windows => {
-                if on_path(ctx, "winget") {
-                    let mut line = "winget install --id Posit.Quarto --exact".to_string();
-                    if let Some(pin) = ctx.pin.as_deref() {
-                        line.push_str(&format!(" --version {pin}"));
-                    }
-                    vec![line]
-                } else {
-                    vec![tree_plan(&version)]
-                }
-            }
-        }
+        vec![tree_plan(ctx.pin.as_deref().unwrap_or("latest stable"))]
     }
 
     fn install(&self, ctx: &InstallCtx) -> anyhow::Result<()> {
-        let version = ctx
-            .pin
-            .clone()
-            .unwrap_or_else(|| versions::QUARTO.to_string());
-        match ctx.os {
-            Os::Mac | Os::Linux => fetch_tree_to_user_dirs(ctx, &version)?,
-            Os::Windows => {
-                if on_path(ctx, "winget") {
-                    let mut args = vec!["install", "--id", "Posit.Quarto", "--exact"];
-                    if let Some(pin) = ctx.pin.as_deref() {
-                        args.extend(["--version", pin]);
-                    }
-                    ctx.run_step("installing quarto with winget", "winget", &args)?;
-                } else {
-                    fetch_tree_to_user_dirs(ctx, &version)?;
-                }
-            }
-        }
-        Ok(())
+        let version = ctx.pin.as_deref().ok_or_else(|| {
+            anyhow::anyhow!("the Quarto release version was not resolved before installation")
+        })?;
+        fetch_tree_to_user_dirs(ctx, version)
     }
 }
 
@@ -143,13 +114,16 @@ mod tests {
             let runner = FakeRunner::default().on_path("brew").on_path("apt-get");
             let fetcher = FakeFetcher::default();
             Quarto
-                .install(&ctx_on(os, &runner, &fetcher))
+                .install(&InstallCtx {
+                    pin: Some("1.9.36".to_string()),
+                    ..ctx_on(os, &runner, &fetcher)
+                })
                 .expect("tree fetch must succeed");
             assert!(runner.calls.borrow().is_empty(), "{os:?}");
             let calls = fetcher.tree_calls.borrow();
             assert_eq!(calls.len(), 1, "{os:?}");
             assert_eq!(calls[0].spec.name, "quarto", "{os:?}");
-            assert_eq!(calls[0].version, versions::QUARTO, "{os:?}");
+            assert_eq!(calls[0].version, "1.9.36", "{os:?}");
             assert!(
                 calls[0].opt_dir.ends_with(Path::new(".local").join("opt")),
                 "{os:?}: {:?}",
@@ -168,7 +142,10 @@ mod tests {
         let runner = FakeRunner::default();
         let fetcher = FakeFetcher::default();
         Quarto
-            .install(&ctx_on(Os::Windows, &runner, &fetcher))
+            .install(&InstallCtx {
+                pin: Some("1.9.36".to_string()),
+                ..ctx_on(Os::Windows, &runner, &fetcher)
+            })
             .expect("tree fetch must succeed");
         assert_eq!(fetcher.tree_calls.borrow()[0].spec.name, "quarto");
     }

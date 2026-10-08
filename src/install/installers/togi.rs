@@ -6,7 +6,6 @@
 
 use crate::install::{InstallCtx, Installer};
 use crate::tools::ToolSpec;
-use crate::ui::HintExt;
 
 use super::{fetch_plan, fetch_to_user_bin};
 
@@ -53,34 +52,11 @@ impl Installer for Togi {
     }
 
     fn resolve_target(&self, ctx: &InstallCtx) -> anyhow::Result<Option<String>> {
-        let requested = match ctx.pin.as_deref() {
-            Some(pin) => pin.to_string(),
-            None => ctx.fetcher.latest_version(&release_spec())?,
-        };
-        let version = requested
-            .strip_prefix('v')
-            .unwrap_or(&requested)
-            .to_string();
-        validate_version(&version)?;
-        Ok(Some(version))
+        super::resolve_release_target(ctx, &release_spec())
     }
 
     fn verifies_target(&self) -> bool {
         true
-    }
-}
-
-fn validate_version(version: &str) -> anyhow::Result<()> {
-    let valid = !version.is_empty()
-        && version.split('.').count() == 3
-        && version
-            .split('.')
-            .all(|part| !part.is_empty() && part.bytes().all(|byte| byte.is_ascii_digit()));
-    if valid {
-        Ok(())
-    } else {
-        Err(anyhow::anyhow!("invalid togi release version `{version}`"))
-            .hint("use a bare stable version such as `0.1.1`")
     }
 }
 

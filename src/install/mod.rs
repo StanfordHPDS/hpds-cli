@@ -15,6 +15,7 @@ mod runner;
 pub(crate) mod test_support;
 
 use std::cell::Cell;
+use std::cmp::Ordering;
 use std::io::IsTerminal;
 
 use anyhow::anyhow;
@@ -106,6 +107,7 @@ fn run_installer_with(
     confirm: &dyn Fn(&str) -> anyhow::Result<bool>,
 ) -> anyhow::Result<()> {
     let name = installer.name();
+    let explicitly_requested = ctx.pin.is_some();
     let target = installer.resolve_target(ctx)?;
     let resolved_ctx = InstallCtx {
         os: ctx.os,
@@ -119,7 +121,11 @@ fn run_installer_with(
     };
     if let Some(found) = installer.detect(&resolved_ctx) {
         match target.as_deref() {
-            Some(version) if version != found => {
+            Some(version)
+                if version != found
+                    && (explicitly_requested
+                        || compare_stable_versions(&found, version) != Some(Ordering::Greater)) =>
+            {
                 ui::println(&format!(
                     "{name} {found} is installed; replacing it with {version}"
                 ));
@@ -175,6 +181,19 @@ fn run_installer_with(
             "open a new shell so PATH changes take effect, then check `hpds install` output above",
         ),
     }
+}
+
+fn compare_stable_versions(left: &str, right: &str) -> Option<Ordering> {
+    fn parts(version: &str) -> Option<[u64; 3]> {
+        let mut values = version.strip_prefix('v').unwrap_or(version).split('.');
+        let result = [
+            values.next()?.parse().ok()?,
+            values.next()?.parse().ok()?,
+            values.next()?.parse().ok()?,
+        ];
+        values.next().is_none().then_some(result)
+    }
+    Some(parts(left)?.cmp(&parts(right)?))
 }
 
 impl InstallCtx<'_> {

@@ -16,10 +16,37 @@ pub mod uv;
 use std::path::PathBuf;
 
 use crate::tools::ToolSpec;
-use crate::ui;
+use crate::ui::{self, HintExt};
 
 use super::InstallCtx;
 use super::fetch::{user_bin_dir, warn_if_off_path};
+
+fn resolve_release_target(ctx: &InstallCtx, spec: &ToolSpec) -> anyhow::Result<Option<String>> {
+    let requested = match ctx.pin.as_deref() {
+        Some(version) => version.to_string(),
+        None => ctx.fetcher.latest_version(spec)?,
+    };
+    let version = requested.strip_prefix('v').unwrap_or(&requested);
+    validate_release_version(version, spec.name)?;
+    Ok(Some(version.to_string()))
+}
+
+fn validate_release_version(version: &str, tool: &str) -> anyhow::Result<()> {
+    let valid = version.split('.').count() == 3
+        && version.split('.').all(|part| {
+            !part.is_empty()
+                && part.bytes().all(|byte| byte.is_ascii_digit())
+                && (part == "0" || !part.starts_with('0'))
+        });
+    if valid {
+        Ok(())
+    } else {
+        Err(anyhow::anyhow!(
+            "invalid {tool} release version `{version}`"
+        ))
+        .hint("use an exact stable version such as `1.2.3`")
+    }
+}
 
 /// Whether `program` is on `PATH`, probed through the runner seam.
 fn on_path(ctx: &InstallCtx, program: &str) -> bool {
@@ -344,7 +371,7 @@ mod online_tests {
             return;
         }
         let os = Platform::current().expect("supported platform").os;
-        fetch_and_probe(&super::gh::release_spec(os), versions::GH);
+        fetch_and_probe(&super::gh::release_spec(os), "2.96.0");
     }
 
     #[test]
@@ -354,7 +381,7 @@ mod online_tests {
             return;
         }
         let os = Platform::current().expect("supported platform").os;
-        fetch_and_probe(&super::duckdb::release_spec(os), versions::DUCKDB);
+        fetch_and_probe(&super::duckdb::release_spec(os), "1.5.4");
     }
 
     #[test]

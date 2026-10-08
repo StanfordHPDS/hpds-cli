@@ -343,6 +343,9 @@ pub fn plan(profile: Profile) -> String {
 /// One plan line for an action: the command a user could run themselves.
 fn describe(action: &Action) -> String {
     match action {
+        Action::Install(tool) if matches!(*tool, "uv" | "gh" | "duckdb" | "quarto" | "togi") => {
+            format!("hpds install {tool} (latest stable)")
+        }
         Action::Install(tool) => format!("hpds install {tool}"),
         Action::GitSetup => "hpds git setup".to_string(),
         Action::Run(cmd) => {
@@ -648,8 +651,8 @@ mod tests {
         );
         assert_eq!(
             *fetcher.latest_calls.borrow(),
-            vec!["togi"],
-            "setup resolves togi latest once during execution"
+            vec!["quarto", "uv", "gh", "togi"],
+            "setup resolves each dynamic tool once during execution"
         );
     }
 
@@ -762,7 +765,8 @@ mod tests {
             runner.calls.borrow_mut().push("hpds git setup".to_string());
             Ok(())
         };
-        let deps = deps_recording_git(Os::Linux, true, &runner, &PanicFetcher, &git_setup);
+        let fetcher = FakeFetcher::default().with_latest("0.1.0");
+        let deps = deps_recording_git(Os::Linux, true, &runner, &fetcher, &git_setup);
         let dir = tempfile::tempdir().expect("create temp dir");
         let log_path = dir.path().join("hpds-setup.log");
 

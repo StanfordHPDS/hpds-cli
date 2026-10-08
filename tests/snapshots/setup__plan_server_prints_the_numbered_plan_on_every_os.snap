@@ -13,7 +13,7 @@ hpds setup --profile server runs these 12 steps:
        sudo apt-get install -y python3 python3-pip python3-venv
        sudo sh -c printf '[global]\nindex-url = https://packagemanager.posit.co/pypi/latest/simple\n' > /etc/pip.conf
   4. quarto
-       hpds install quarto
+       hpds install quarto (latest stable)
   5. tinytex
        hpds install tinytex
   6. RStudio Server
@@ -26,11 +26,11 @@ hpds setup --profile server runs these 12 steps:
        code-server --install-extension quarto.quarto
        code-server --install-extension charliermarsh.ruff
   8. gh
-       hpds install gh
+       hpds install gh (latest stable)
   9. duckdb
-       hpds install duckdb
+       hpds install duckdb (latest stable)
  10. uv + ruff + sqlfluff
-       hpds install uv
+       hpds install uv (latest stable)
        uv tool install ruff
        uv tool install sqlfluff
        uv tool update-shell

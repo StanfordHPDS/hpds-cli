@@ -116,12 +116,14 @@ impl FakeFetcher {
 impl ReleaseFetcher for FakeFetcher {
     fn latest_version(&self, spec: &ToolSpec) -> anyhow::Result<String> {
         self.latest_calls.borrow_mut().push(spec.name.to_string());
-        self.latest.borrow_mut().take().unwrap_or_else(|| {
-            Err(anyhow!(
+        match self.latest.borrow().as_ref() {
+            Some(Ok(version)) => Ok(version.clone()),
+            Some(Err(error)) => Err(anyhow!(error.to_string())),
+            None => Err(anyhow!(
                 "no fake latest release configured for {}",
                 spec.name
-            ))
-        })
+            )),
+        }
     }
 
     fn fetch_binary(

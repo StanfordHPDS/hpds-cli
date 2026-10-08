@@ -1,18 +1,13 @@
 //! Installer for `uv`.
 //!
-//! macOS/Linux: Homebrew when present (and no pin); otherwise the release
-//! binary is downloaded (checksum-verified, through the shared tool
-//! cache) and placed in `~/.local/bin`, the same steps the official
-//! installer script performs, run natively. Windows: not implemented;
-//! errors cleanly with the official installer command.
-
-use anyhow::anyhow;
+//! Every OS downloads the latest stable upstream release binary into the shared
+//! verified cache and places it in the user bin directory. Exact pins use the
+//! same direct release path without looking up the latest release.
 
 use crate::install::{InstallCtx, Installer};
-use crate::tools::{Os, ToolSpec, versions};
-use crate::ui::HintExt;
+use crate::tools::ToolSpec;
 
-use super::{fetch_plan, fetch_to_user_bin, on_path};
+use super::{fetch_plan, fetch_to_user_bin};
 
 pub struct Uv;
 
@@ -21,7 +16,7 @@ pub struct Uv;
 pub(super) fn release_spec() -> ToolSpec {
     ToolSpec {
         name: "uv",
-        default_version: versions::UV,
+        default_version: "latest",
         repo: "astral-sh/uv",
         asset_pattern: "uv-{arch}-{os}.{ext}",
         checksum_pattern: Some("uv-{arch}-{os}.{ext}.sha256"),
@@ -41,43 +36,27 @@ impl Installer for Uv {
         true
     }
 
+    fn resolve_target(&self, ctx: &InstallCtx) -> anyhow::Result<Option<String>> {
+        super::resolve_release_target(ctx, &release_spec())
+    }
+
+    fn verifies_target(&self) -> bool {
+        true
+    }
+
     fn plan(&self, ctx: &InstallCtx) -> Vec<String> {
-        match ctx.os {
-            Os::Mac | Os::Linux => {
-                if ctx.pin.is_none() && on_path(ctx, "brew") {
-                    vec!["brew install uv".to_string()]
-                } else {
-                    let version = ctx.pin.clone().unwrap_or_else(|| versions::UV.to_string());
-                    vec![fetch_plan(&release_spec(), &version)]
-                }
-            }
-            Os::Windows => vec![
-                "nothing: uv on Windows is not supported yet, so only the official \
-                 installer command is printed"
-                    .to_string(),
-            ],
-        }
+        vec![fetch_plan(
+            &release_spec(),
+            ctx.pin.as_deref().unwrap_or("latest stable"),
+        )]
     }
 
     fn install(&self, ctx: &InstallCtx) -> anyhow::Result<()> {
-        match ctx.os {
-            Os::Mac | Os::Linux => {
-                if ctx.pin.is_none() && on_path(ctx, "brew") {
-                    ctx.run_step("installing uv with Homebrew", "brew", &["install", "uv"])?;
-                } else {
-                    let version = ctx.pin.clone().unwrap_or_else(|| versions::UV.to_string());
-                    fetch_to_user_bin(ctx, &release_spec(), &version)?;
-                }
-                Ok(())
-            }
-            Os::Windows => Err(anyhow!(
-                "installing uv on Windows is not supported on this machine yet"
-            ))
-            .hint(
-                "run the official installer instead: powershell -ExecutionPolicy ByPass -c \
-                 \"irm https://astral.sh/uv/install.ps1 | iex\"",
-            ),
-        }
+        let version = ctx.pin.as_deref().ok_or_else(|| {
+            anyhow::anyhow!("the uv release version was not resolved before installation")
+        })?;
+        fetch_to_user_bin(ctx, &release_spec(), version)?;
+        Ok(())
     }
 }
 
@@ -85,6 +64,7 @@ impl Installer for Uv {
 mod tests {
     use super::*;
     use crate::install::test_support::{FakeFetcher, FakeRunner, ctx_on, probe_fixture};
+    use crate::tools::{Os, versions};
 
     #[test]
     fn uv_detects_installed_version_from_probe() {
@@ -108,8 +88,11 @@ mod tests {
     fn uv_mac_without_brew_fetches_the_release_binary() {
         let runner = FakeRunner::default();
         let fetcher = FakeFetcher::default();
-        Uv.install(&ctx_on(Os::Mac, &runner, &fetcher))
-            .expect("fetch must succeed");
+        Uv.install(&InstallCtx {
+            pin: Some(versions::UV.to_string()),
+            ..ctx_on(Os::Mac, &runner, &fetcher)
+        })
+        .expect("fetch must succeed");
         assert!(runner.calls.borrow().is_empty(), "no package manager runs");
         let calls = fetcher.calls.borrow();
         assert_eq!(calls.len(), 1);
@@ -126,8 +109,11 @@ mod tests {
     fn uv_linux_without_brew_fetches_the_release_binary() {
         let runner = FakeRunner::default();
         let fetcher = FakeFetcher::default();
-        Uv.install(&ctx_on(Os::Linux, &runner, &fetcher))
-            .expect("fetch must succeed");
+        Uv.install(&InstallCtx {
+            pin: Some(versions::UV.to_string()),
+            ..ctx_on(Os::Linux, &runner, &fetcher)
+        })
+        .expect("fetch must succeed");
         assert_eq!(fetcher.calls.borrow()[0].spec.name, "uv");
     }
 
