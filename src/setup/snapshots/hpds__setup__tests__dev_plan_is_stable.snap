@@ -6,16 +6,16 @@ hpds setup --profile dev runs these 8 steps:
   1. r
        hpds install r
   2. quarto
-       hpds install quarto
+       hpds install quarto (latest stable)
   3. uv
-       hpds install uv
+       hpds install uv (latest stable)
   4. gh
-       hpds install gh
+       hpds install gh (latest stable)
   5. rig
        hpds install rig
   6. tinytex
        hpds install tinytex
   7. togi
-       hpds install togi
+       hpds install togi (latest stable)
   8. git setup
        hpds git setup

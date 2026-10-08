@@ -108,7 +108,35 @@ pub struct Downloader {
     agent: ureq::Agent,
 }
 
+pub(crate) struct ReleaseSource<'a> {
+    pub tag: &'a str,
+    pub archive_url: &'a str,
+    pub checksum_url: Option<&'a str>,
+    pub digest: Option<&'a str>,
+}
+
 impl Downloader {
+    pub(crate) fn verified_cached(
+        &self,
+        spec: &ToolSpec,
+        version: &str,
+        archive_url: &str,
+    ) -> Option<PathBuf> {
+        let binary = self.cache.binary_path(spec.name, version, self.platform);
+        self.is_installed(
+            spec.name,
+            version,
+            &binary,
+            None,
+            Some(&ReleaseSource {
+                tag: "cached",
+                archive_url,
+                checksum_url: None,
+                digest: None,
+            }),
+        )
+        .then_some(binary)
+    }
     /// A downloader fetching from GitHub for `platform` into `cache`,
     /// honoring the internal `HPDS_RELEASE_BASE_URL` override (used by
     /// tests to point installs at a local fixture server, mirroring
@@ -147,8 +175,32 @@ impl Downloader {
         version: &str,
         ctx: &InstallContext,
     ) -> anyhow::Result<PathBuf> {
+        self.ensure_installed_inner(spec, version, ctx, None, None)
+    }
+
+    pub(crate) fn ensure_release_installed(
+        &self,
+        spec: &ToolSpec,
+        version: &str,
+        source: &ReleaseSource<'_>,
+        ctx: &InstallContext,
+    ) -> anyhow::Result<PathBuf> {
+        let expected = source
+            .digest
+            .and_then(|value| value.strip_prefix("sha256:"));
+        self.ensure_installed_inner(spec, version, ctx, expected, Some(source))
+    }
+
+    fn ensure_installed_inner(
+        &self,
+        spec: &ToolSpec,
+        version: &str,
+        ctx: &InstallContext,
+        expected_digest: Option<&str>,
+        source: Option<&ReleaseSource<'_>>,
+    ) -> anyhow::Result<PathBuf> {
         let binary = self.cache.binary_path(spec.name, version, self.platform);
-        if self.is_installed(spec.name, version, &binary) {
+        if self.is_installed(spec.name, version, &binary, expected_digest, source) {
             return Ok(binary);
         }
 
@@ -159,7 +211,7 @@ impl Downloader {
         let _guard = lock.exclusive()?;
 
         // Another process may have finished the install while we waited.
-        if self.is_installed(spec.name, version, &binary) {
+        if self.is_installed(spec.name, version, &binary, expected_digest, source) {
             return Ok(binary);
         }
 
@@ -176,7 +228,15 @@ impl Downloader {
                 .hint("remove the directory by hand, then retry")?;
         }
 
-        self.install(spec, version, ctx, &name_dir, &tool_dir)?;
+        self.install(
+            spec,
+            version,
+            ctx,
+            &name_dir,
+            &tool_dir,
+            expected_digest,
+            source,
+        )?;
         Ok(binary)
     }
 
@@ -200,15 +260,57 @@ impl Downloader {
         Ok(archive_path)
     }
 
+    pub(crate) fn fetch_release_archive(
+        &self,
+        spec: &ToolSpec,
+        version: &str,
+        source: &ReleaseSource<'_>,
+        ctx: &InstallContext,
+        dest_dir: &Path,
+    ) -> anyhow::Result<PathBuf> {
+        let asset = spec.asset_name(self.platform, version);
+        let archive_path = dest_dir.join(&asset);
+        let actual = self.download_url(source.archive_url, &archive_path, ctx)?;
+        self.verify_release_source(source, &asset, &actual, ctx)?;
+        Ok(archive_path)
+    }
+
     /// Whether `binary` (plus its manifest) is already installed. The
     /// manifest is written last, inside the same atomic rename, so its
     /// presence means the install completed.
-    fn is_installed(&self, name: &str, version: &str, binary: &Path) -> bool {
-        binary.is_file() && self.cache.manifest_path(name, version).is_file()
+    fn is_installed(
+        &self,
+        name: &str,
+        version: &str,
+        binary: &Path,
+        expected_digest: Option<&str>,
+        source: Option<&ReleaseSource<'_>>,
+    ) -> bool {
+        if !binary.is_file() {
+            return false;
+        }
+        let Ok(manifest) = Manifest::load(&self.cache.manifest_path(name, version)) else {
+            return false;
+        };
+        manifest.version == version
+            && source.is_none_or(|_| {
+                manifest
+                    .checksum
+                    .as_deref()
+                    .is_some_and(|value| !value.is_empty())
+            })
+            && source.is_none_or(|expected| manifest.source_url == expected.archive_url)
+            && expected_digest.is_none_or(|expected| {
+                manifest
+                    .checksum
+                    .as_deref()
+                    .is_some_and(|actual| actual.eq_ignore_ascii_case(expected))
+            })
     }
 
     /// Download, verify, extract, and atomically move one tool version
     /// into place. Caller holds the tool lock.
+    #[allow(clippy::too_many_arguments)] // internal plumbing below ensure_installed
     fn install(
         &self,
         spec: &ToolSpec,
@@ -216,6 +318,8 @@ impl Downloader {
         ctx: &InstallContext,
         name_dir: &Path,
         tool_dir: &Path,
+        expected_digest: Option<&str>,
+        source: Option<&ReleaseSource<'_>>,
     ) -> anyhow::Result<()> {
         let asset = spec.asset_name(self.platform, version);
 
@@ -234,10 +338,38 @@ impl Downloader {
 
         let archive_path = staging.path().join(&asset);
         let message = fetch_message(ctx.label, spec.name, version, ctx.verbose);
-        let (url, tag, actual_sha256) =
-            self.download_archive(spec, version, &asset, &archive_path, &message, ctx)?;
+        let (url, actual_sha256, tag) = if let Some(source) = source {
+            (
+                source.archive_url.to_string(),
+                self.download_url(source.archive_url, &archive_path, ctx)?,
+                None,
+            )
+        } else {
+            let (url, tag, digest) =
+                self.download_archive(spec, version, &asset, &archive_path, &message, ctx)?;
+            (url, digest, Some(tag))
+        };
 
-        let checksum = self.verify_checksum(spec, version, &tag, &asset, &actual_sha256, ctx)?;
+        let checksum = if let Some(source) = source {
+            self.verify_release_source(source, &asset, &actual_sha256, ctx)?
+        } else if let Some(expected) = expected_digest {
+            if !expected.eq_ignore_ascii_case(&actual_sha256) {
+                return Err(anyhow::anyhow!(
+                    "GitHub asset digest does not match `{asset}`: expected {expected}, got {actual_sha256}"
+                ))
+                .hint(format!("the download was corrupted in transit; rerun `{}`", ctx.command));
+            }
+            Some(expected.to_ascii_lowercase())
+        } else {
+            self.verify_checksum(
+                spec,
+                version,
+                tag.as_deref().unwrap(),
+                &asset,
+                &actual_sha256,
+                ctx,
+            )?
+        };
 
         let install_dir = staging.path().join("install");
         fs::create_dir(&install_dir).context("could not create the install staging directory")?;
@@ -269,6 +401,57 @@ impl Downloader {
                  the download cache, then retry",
             )?;
         Ok(())
+    }
+
+    fn download_url(&self, url: &str, dest: &Path, ctx: &InstallContext) -> anyhow::Result<String> {
+        let mut response = self
+            .agent
+            .get(url)
+            .call()
+            .with_context(|| format!("could not download `{url}`"))
+            .hint(format!("check your connection and rerun `{}`", ctx.command))?;
+        stream_to_file(&mut response, dest, "downloading release")
+            .with_context(|| format!("download of `{url}` was interrupted"))
+    }
+
+    fn verify_release_source(
+        &self,
+        source: &ReleaseSource<'_>,
+        asset: &str,
+        actual: &str,
+        ctx: &InstallContext,
+    ) -> anyhow::Result<Option<String>> {
+        let expected = if let Some(digest) = source.digest {
+            digest.strip_prefix("sha256:").unwrap_or(digest).to_string()
+        } else {
+            let url = source.checksum_url.ok_or_else(|| {
+                anyhow::anyhow!(
+                    "release `{}` metadata has no checksum URL for `{asset}`",
+                    source.tag
+                )
+            })?;
+            let mut response = self
+                .agent
+                .get(url)
+                .call()
+                .with_context(|| format!("could not download checksum `{url}`"))
+                .hint(format!(
+                    "rerun `{}` after the release checksum is available",
+                    ctx.command
+                ))?;
+            let text = response
+                .body_mut()
+                .read_to_string()
+                .context("could not read release checksum")?;
+            parse_checksum(&text, asset)
+                .ok_or_else(|| anyhow::anyhow!("published checksum for `{asset}` is malformed"))?
+        };
+        if !expected.eq_ignore_ascii_case(actual) {
+            return Err(anyhow::anyhow!(
+                "GitHub asset digest does not match `{asset}`: expected {expected}, got {actual}"
+            ));
+        }
+        Ok(Some(expected.to_ascii_lowercase()))
     }
 
     /// Fetch the release archive to `dest`, probing the bare tag and then
@@ -407,18 +590,31 @@ pub(crate) fn github_agent() -> ureq::Agent {
     agent_with_proxy(ureq::Proxy::try_from_env())
 }
 
+/// HTTP agent with the release-download proxy and timeout policy, but no
+/// redirect following. Callers inspect and validate redirect targets before
+/// making another request.
+pub(crate) fn no_redirect_agent() -> ureq::Agent {
+    configured_agent(ureq::Proxy::try_from_env(), true)
+}
+
 /// The agent [`github_agent`] builds, with an explicit proxy (tests pass
 /// one directly instead of mutating process-global env vars).
 fn agent_with_proxy(proxy: Option<ureq::Proxy>) -> ureq::Agent {
-    ureq::Agent::config_builder()
+    configured_agent(proxy, false)
+}
+
+fn configured_agent(proxy: Option<ureq::Proxy>, disable_redirects: bool) -> ureq::Agent {
+    let mut config = ureq::Agent::config_builder()
         .proxy(proxy)
         .timeout_connect(Some(Duration::from_secs(20)))
         .timeout_recv_response(Some(Duration::from_secs(30)))
         // Generous total-body budget: release archives are a few MB, so
         // this only trips on a transfer that has effectively stalled.
-        .timeout_recv_body(Some(Duration::from_secs(600)))
-        .build()
-        .into()
+        .timeout_recv_body(Some(Duration::from_secs(600)));
+    if disable_redirects {
+        config = config.max_redirects(0).http_status_as_error(false);
+    }
+    config.build().into()
 }
 
 /// Stream a response body into `dest`, drawing a progress bar and hashing
@@ -684,6 +880,71 @@ mod tests {
         );
     }
 
+    #[test]
+    fn metadata_bound_install_fetches_only_the_selected_asset_urls() {
+        let archive = targz_with("tool-1.2.3/tool", FAKE_BINARY);
+        let selected_archive = format!(
+            "/example/tool/releases/download/v1.2.3/{}",
+            spec().asset_name(linux(), "1.2.3")
+        );
+        let selected_checksum = format!("{selected_archive}.sha256");
+        let checksum = format!(
+            "{}  {}\n",
+            sha256_hex_of(&archive),
+            spec().asset_name(linux(), "1.2.3")
+        );
+        let server = FixtureServer::serve(HashMap::from([
+            (selected_archive.clone(), archive),
+            (selected_checksum.clone(), checksum.into_bytes()),
+            (ARCHIVE_PATH.to_string(), b"wrong release".to_vec()),
+        ]));
+        let dir = tempfile::tempdir().expect("tempdir");
+        let downloader = downloader_at(&server, dir.path(), linux());
+        let archive_url = format!("{}{selected_archive}", server.base_url);
+        let checksum_url = format!("{}{selected_checksum}", server.base_url);
+        let source = ReleaseSource {
+            tag: "v1.2.3",
+            archive_url: &archive_url,
+            checksum_url: Some(&checksum_url),
+            digest: None,
+        };
+
+        downloader
+            .ensure_release_installed(&spec(), "1.2.3", &source, &ctx())
+            .expect("metadata-selected release installs");
+
+        assert_eq!(server.hits(), vec![selected_archive, selected_checksum]);
+    }
+
+    #[test]
+    fn verified_release_does_not_reuse_a_checksumless_manifest() {
+        let archive = targz_with("tool-1.2.3/tool", FAKE_BINARY);
+        let server = FixtureServer::serve(release_routes(&archive));
+        let dir = tempfile::tempdir().expect("tempdir");
+        let cache = ToolCache::at(dir.path());
+        let binary = cache.binary_path("tool", "1.2.3", linux());
+        fs::create_dir_all(binary.parent().expect("parent")).expect("cache dir");
+        fs::write(&binary, FAKE_BINARY).expect("cached binary");
+        Manifest::new("1.2.3".to_string(), "old".to_string(), None)
+            .save(&cache.manifest_path("tool", "1.2.3"))
+            .expect("manifest");
+        let downloader = downloader_at(&server, dir.path(), linux());
+        let archive_url = format!("{}{ARCHIVE_PATH}", server.base_url);
+        let checksum_url = format!("{}{CHECKSUM_PATH}", server.base_url);
+        let source = ReleaseSource {
+            tag: "1.2.3",
+            archive_url: &archive_url,
+            checksum_url: Some(&checksum_url),
+            digest: None,
+        };
+
+        downloader
+            .ensure_release_installed(&spec(), "1.2.3", &source, &ctx())
+            .expect("checksumless cache is replaced");
+
+        assert_eq!(server.hits(), vec![ARCHIVE_PATH, CHECKSUM_PATH]);
+    }
+
     #[cfg(unix)]
     #[test]
     fn installed_binary_is_executable() {
@@ -811,7 +1072,7 @@ mod tests {
     }
 
     #[test]
-    fn checksum_mismatch_fails_and_leaves_nothing_installed() {
+    fn resolved_release_checksum_mismatch_prevents_cache_publication() {
         let archive = targz_with("tool", FAKE_BINARY);
         let wrong = format!(
             "{}  tool-1.2.3-x86_64-unknown-linux-gnu.tar.gz\n",
@@ -832,6 +1093,12 @@ mod tests {
         assert!(
             !ToolCache::at(dir.path()).tool_dir("tool", "1.2.3").exists(),
             "a failed install must leave no tool directory behind"
+        );
+        assert!(
+            !ToolCache::at(dir.path())
+                .manifest_path("tool", "1.2.3")
+                .exists(),
+            "a failed verification must not publish a manifest"
         );
     }
 

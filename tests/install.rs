@@ -117,16 +117,16 @@ fn install_is_a_no_op_when_the_tool_is_already_on_path() {
         .map(|(tool, _, _, version)| (tool, version))
         .chain([("quarto", "1.9.36"), ("tinytex", "2026.07")]);
     for (tool, version) in no_ops {
-        hpds()
-            .args(["install", tool])
-            .env("PATH", bin.path())
-            .assert()
-            .success()
-            .stdout(
-                predicate::str::contains("already installed")
-                    .and(predicate::str::contains(tool))
-                    .and(predicate::str::contains(version)),
-            );
+        let mut command = hpds();
+        command.args(["install", tool]);
+        if matches!(tool, "uv" | "gh" | "duckdb" | "quarto") {
+            command.args(["--version", version]);
+        }
+        command.env("PATH", bin.path()).assert().success().stdout(
+            predicate::str::contains("already installed")
+                .and(predicate::str::contains(tool))
+                .and(predicate::str::contains(version)),
+        );
     }
 
     let togi = bin.path().join("togi");
@@ -191,13 +191,13 @@ fn install_without_yes_non_interactively_refuses_before_running_anything() {
     write_executable_shim(&brew, format!("#!/bin/sh\ntouch {}\n", marker.display()));
 
     hpds()
-        .args(["install", "uv"])
+        .args(["install", "uv", "--version", "0.9.5"])
         .env("PATH", format!("{}:/usr/bin:/bin", bin.path().display()))
         .assert()
         .failure()
         .stdout(
-            predicate::str::contains("installing uv will:")
-                .and(predicate::str::contains("brew install uv")),
+            predicate::str::contains("installing uv 0.9.5 will:")
+                .and(predicate::str::contains("github.com/astral-sh/uv")),
         )
         .stderr(predicate::str::contains("--yes"));
 
@@ -220,33 +220,4 @@ fn install_pinned_togi_plan_names_the_source_release_repo() {
                 .and(predicate::str::contains("github.com/StanfordHPDS/togi")),
         )
         .stderr(predicate::str::contains("--yes"));
-}
-
-/// --yes prints the plan and runs the strategy without prompting; the
-/// fake brew "installs" a uv shim so post-install verification passes.
-#[cfg(unix)]
-#[test]
-fn install_with_yes_prints_the_plan_and_runs_the_strategy() {
-    let bin = tempfile::tempdir().expect("tempdir");
-    let brew = bin.path().join("brew");
-    write_executable_shim(
-        &brew,
-        format!(
-            "#!/bin/sh\n\
-             printf '#!/bin/sh\\necho uv 0.9.0\\n' > {dir}/uv\n\
-             chmod +x {dir}/uv\n",
-            dir = bin.path().display()
-        ),
-    );
-
-    hpds()
-        .args(["install", "uv", "--yes"])
-        .env("PATH", format!("{}:/usr/bin:/bin", bin.path().display()))
-        .assert()
-        .success()
-        .stdout(
-            predicate::str::contains("installing uv will:")
-                .and(predicate::str::contains("brew install uv"))
-                .and(predicate::str::contains("uv 0.9.0 installed")),
-        );
 }

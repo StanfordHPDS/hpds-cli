@@ -40,6 +40,60 @@ fn plan_never_prompts_even_without_a_terminal() {
 }
 
 #[test]
+fn plan_stays_offline_and_describes_runtime_release_selection() {
+    let output = plan_output(&["setup", "--plan"]);
+    for tool in ["quarto", "uv", "gh", "togi"] {
+        assert!(output.contains(tool), "missing {tool}: {output}");
+    }
+    assert!(output.contains("latest stable"), "{output}");
+}
+
+#[test]
+fn server_plan_keeps_rstudio_discovery_offline() {
+    let output = plan_output(&["setup", "--plan", "--profile", "server"]);
+    assert!(output.contains("hpds install rstudio-server"), "{output}");
+    assert!(output.contains("latest stable"), "{output}");
+    assert!(!output.contains("rstudio.org/download"), "{output}");
+    assert!(
+        !output.contains("s3.amazonaws.com/rstudio-server"),
+        "{output}"
+    );
+    assert!(!output.contains("2025.05.1-513"), "{output}");
+    assert!(
+        !output.contains("/tmp/rstudio-server-amd64.deb"),
+        "{output}"
+    );
+}
+
+#[test]
+fn server_plan_covers_complete_provisioning_without_legacy_extras() {
+    let output = plan_output(&["setup", "--plan", "--profile", "server"]);
+    for required in [
+        "Docker Engine",
+        "docker-compose-plugin",
+        "stable Rust",
+        "RStudio preferences",
+        "code-server@<user>",
+        "quarto.path",
+    ] {
+        assert!(output.contains(required), "missing {required}: {output}");
+    }
+    let lowercase = output.to_ascii_lowercase();
+    for omitted in [
+        "miniconda",
+        "conda",
+        "apt upgrade",
+        "dist-upgrade",
+        "reboot",
+    ] {
+        assert!(
+            !lowercase.contains(omitted),
+            "unexpected {omitted}: {output}"
+        );
+    }
+}
+
+#[test]
 fn dev_setup_without_a_terminal_and_without_yes_refuses_with_guidance() {
     hpds()
         .args(["setup"])

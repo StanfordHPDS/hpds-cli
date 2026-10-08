@@ -6,7 +6,7 @@
 //! [`ReleaseFetcher`] seam keeps that network step fakeable, so strategy
 //! selection is unit-testable offline.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::ffi::OsString;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -15,7 +15,7 @@ use std::sync::{LazyLock, Mutex};
 use anyhow::Context;
 use serde_json::Value;
 
-use crate::tools::{Downloader, InstallContext, Platform, ToolCache, ToolSpec};
+use crate::tools::{Downloader, InstallContext, Platform, ReleaseSource, ToolCache, ToolSpec};
 use crate::ui::{self, HintExt};
 
 /// How installers obtain a release binary. Production code uses
@@ -51,21 +51,66 @@ pub trait ReleaseFetcher {
 /// atomic), then copies the cached binary into `bin_dir`.
 pub struct CacheFetcher {
     verbose: bool,
+    injected: Option<(ToolCache, Platform, String)>,
+    resolved: Mutex<HashMap<String, ResolvedRelease>>,
+}
+
+#[derive(Clone)]
+struct ResolvedRelease {
+    version: String,
+    tag: String,
+    archive_url: String,
+    checksum_url: Option<String>,
+    digest: Option<String>,
 }
 
 impl CacheFetcher {
     pub fn new(verbose: bool) -> CacheFetcher {
-        CacheFetcher { verbose }
+        CacheFetcher {
+            verbose,
+            injected: None,
+            resolved: Mutex::new(HashMap::new()),
+        }
+    }
+
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub fn fetch_latest_binary_at(
+        verbose: bool,
+        cache: ToolCache,
+        platform: Platform,
+        api_base: &str,
+        spec: &ToolSpec,
+        bin_dir: &Path,
+    ) -> anyhow::Result<PathBuf> {
+        let fetcher = CacheFetcher {
+            verbose,
+            injected: Some((cache, platform, api_base.to_string())),
+            resolved: Mutex::new(HashMap::new()),
+        };
+        let version = fetcher.latest_version(spec)?;
+        fetcher.fetch_binary(spec, &version, bin_dir)
     }
 }
 
 impl ReleaseFetcher for CacheFetcher {
     fn latest_version(&self, spec: &ToolSpec) -> anyhow::Result<String> {
-        latest_github_version(
-            &crate::tools::github_agent(),
-            "https://api.github.com",
-            spec,
-        )
+        let platform = self
+            .injected
+            .as_ref()
+            .map(|value| value.1)
+            .unwrap_or(Platform::current()?);
+        let base = self
+            .injected
+            .as_ref()
+            .map(|value| value.2.as_str())
+            .unwrap_or("https://api.github.com");
+        let resolved = latest_github_release(&crate::tools::github_agent(), base, spec, platform)?;
+        let version = resolved.version.clone();
+        self.resolved
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .insert(spec.name.to_string(), resolved);
+        Ok(version)
     }
 
     fn fetch_binary(
@@ -74,14 +119,48 @@ impl ReleaseFetcher for CacheFetcher {
         version: &str,
         bin_dir: &Path,
     ) -> anyhow::Result<PathBuf> {
-        let cache = ToolCache::from_env()?;
-        let platform = Platform::current()?;
+        let (cache, platform) = match &self.injected {
+            Some((cache, platform, _)) => (cache.clone(), *platform),
+            None => (ToolCache::from_env()?, Platform::current()?),
+        };
         let ctx = InstallContext {
             label: spec.name,
             command: "hpds install",
             verbose: self.verbose,
         };
-        let cached = Downloader::new(cache, platform).ensure_installed(spec, version, &ctx)?;
+        let downloader = Downloader::new(cache, platform);
+        let mut resolved = self
+            .resolved
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .get(spec.name)
+            .cloned();
+        let canonical_url = canonical_archive_url(spec, platform, version);
+        if resolved.is_none()
+            && let Some(cached) = downloader.verified_cached(spec, version, &canonical_url)
+        {
+            return place(&cached, bin_dir);
+        }
+        if resolved.is_none() {
+            let api_base = self
+                .injected
+                .as_ref()
+                .map(|value| value.2.as_str())
+                .unwrap_or("https://api.github.com");
+            resolved = Some(exact_github_release(
+                &crate::tools::github_agent(),
+                api_base,
+                spec,
+                platform,
+                version,
+            )?);
+        }
+        let cached = match resolved.as_ref() {
+            Some(release) => {
+                downloader.ensure_release_installed(spec, version, &release.source(), &ctx)?
+            }
+            None => downloader.ensure_installed(spec, version, &ctx)?,
+        };
         place(&cached, bin_dir)
     }
 
@@ -92,8 +171,10 @@ impl ReleaseFetcher for CacheFetcher {
         opt_dir: &Path,
         bin_dir: &Path,
     ) -> anyhow::Result<PathBuf> {
-        let cache = ToolCache::from_env()?;
-        let platform = Platform::current()?;
+        let (cache, platform) = match &self.injected {
+            Some((cache, platform, _)) => (cache.clone(), *platform),
+            None => (ToolCache::from_env()?, Platform::current()?),
+        };
         let ctx = InstallContext {
             label: spec.name,
             command: "hpds install",
@@ -102,8 +183,37 @@ impl ReleaseFetcher for CacheFetcher {
         let staging = tempfile::tempdir()
             .context("could not create a temporary download directory")
             .hint("check that your temp directory is writable")?;
-        let archive =
-            Downloader::new(cache, platform).fetch_archive(spec, version, &ctx, staging.path())?;
+        let mut release = self
+            .resolved
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .get(spec.name)
+            .cloned();
+        if release.is_none() {
+            let api_base = self
+                .injected
+                .as_ref()
+                .map(|value| value.2.as_str())
+                .unwrap_or("https://api.github.com");
+            release = Some(exact_github_release(
+                &crate::tools::github_agent(),
+                api_base,
+                spec,
+                platform,
+                version,
+            )?);
+        }
+        let downloader = Downloader::new(cache, platform);
+        let archive = match release.as_ref() {
+            Some(release) => downloader.fetch_release_archive(
+                spec,
+                version,
+                &release.source(),
+                &ctx,
+                staging.path(),
+            )?,
+            None => downloader.fetch_archive(spec, version, &ctx, staging.path())?,
+        };
         let binary_name = platform.binary_name(spec.name);
         let root = install_tree(&archive, spec.name, version, &binary_name, opt_dir)?;
         let launcher = place_launcher(&root, spec.name, &binary_name, bin_dir)?;
@@ -112,14 +222,83 @@ impl ReleaseFetcher for CacheFetcher {
     }
 }
 
+impl ResolvedRelease {
+    fn source(&self) -> ReleaseSource<'_> {
+        ReleaseSource {
+            tag: &self.tag,
+            archive_url: &self.archive_url,
+            checksum_url: self.checksum_url.as_deref(),
+            digest: self.digest.as_deref(),
+        }
+    }
+}
+
+#[cfg(test)]
 fn latest_github_version(
     agent: &ureq::Agent,
     base: &str,
     spec: &ToolSpec,
 ) -> anyhow::Result<String> {
+    Ok(latest_github_release(agent, base, spec, Platform::current()?)?.version)
+}
+
+fn latest_github_release(
+    agent: &ureq::Agent,
+    base: &str,
+    spec: &ToolSpec,
+    platform: Platform,
+) -> anyhow::Result<ResolvedRelease> {
     let url = format!("{base}/repos/{}/releases/latest", spec.repo);
+    github_release_at(agent, &url, spec, platform, "latest")
+}
+
+fn exact_github_release(
+    agent: &ureq::Agent,
+    base: &str,
+    spec: &ToolSpec,
+    platform: Platform,
+    version: &str,
+) -> anyhow::Result<ResolvedRelease> {
+    let tag = canonical_tag(spec, version);
+    let url = format!("{base}/repos/{}/releases/tags/{tag}", spec.repo);
+    let release = github_release_at(agent, &url, spec, platform, version)?;
+    if release.version != version {
+        return Err(anyhow::anyhow!(
+            "GitHub returned {} metadata while installing {} {version}",
+            release.version,
+            spec.name
+        ))
+        .hint("retry the exact install after GitHub release metadata is corrected");
+    }
+    Ok(release)
+}
+
+fn canonical_tag(spec: &ToolSpec, version: &str) -> String {
+    if spec.name == "uv" {
+        version.to_string()
+    } else {
+        format!("v{version}")
+    }
+}
+
+fn canonical_archive_url(spec: &ToolSpec, platform: Platform, version: &str) -> String {
+    let tag = canonical_tag(spec, version);
+    let asset = spec.asset_name(platform, version);
+    format!(
+        "https://github.com/{}/releases/download/{tag}/{asset}",
+        spec.repo
+    )
+}
+
+fn github_release_at(
+    agent: &ureq::Agent,
+    url: &str,
+    spec: &ToolSpec,
+    platform: Platform,
+    requested: &str,
+) -> anyhow::Result<ResolvedRelease> {
     let response = agent
-        .get(&url)
+        .get(url)
         .header("User-Agent", concat!("hpds/", env!("CARGO_PKG_VERSION")))
         .header("Accept", "application/vnd.github+json")
         .header("X-GitHub-Api-Version", "2022-11-28")
@@ -128,8 +307,8 @@ fn latest_github_version(
         Ok(response) => response,
         Err(ureq::Error::StatusCode(code)) => {
             return Err(anyhow::anyhow!(
-                "GitHub returned HTTP {code} while checking the latest {} release",
-                spec.name
+                "GitHub returned HTTP {code} while checking the {requested} {} release",
+                spec.name,
             ))
             .hint(format!(
                 "retry `hpds install {}` after GitHub is available, or use --version to request an exact release",
@@ -150,9 +329,11 @@ fn latest_github_version(
         .read_to_string()
         .with_context(|| format!("could not read GitHub's response from `{url}`"))
         .hint(format!("retry `hpds install {}`", spec.name))?;
-    parse_latest_version(&body, spec.name)
+    let allow_local = url.starts_with("http://127.0.0.1:") || url.starts_with("http://localhost:");
+    parse_latest_release(&body, spec, platform, allow_local)
 }
 
+#[cfg(test)]
 fn parse_latest_version(body: &str, name: &str) -> anyhow::Result<String> {
     let value: Value = serde_json::from_str(body)
         .context("GitHub's release response was not valid JSON")
@@ -162,7 +343,195 @@ fn parse_latest_version(body: &str, name: &str) -> anyhow::Result<String> {
         .and_then(Value::as_str)
         .ok_or_else(|| anyhow::anyhow!("GitHub's release response had no `tag_name`"))
         .hint(format!("retry `hpds install {name}`"))?;
-    Ok(tag.strip_prefix('v').unwrap_or(tag).to_string())
+    let version = strict_version(tag, name)?;
+    if value.get("draft").and_then(Value::as_bool) != Some(false) {
+        return Err(anyhow::anyhow!("GitHub's latest {name} release is a draft"))
+            .hint(format!("retry `hpds install {name}` or use --version"));
+    }
+    if value.get("prerelease").and_then(Value::as_bool) != Some(false) {
+        return Err(anyhow::anyhow!(
+            "GitHub's latest {name} release is a prerelease"
+        ))
+        .hint(format!("retry `hpds install {name}` or use --version"));
+    }
+    if value
+        .get("published_at")
+        .and_then(Value::as_str)
+        .is_none_or(str::is_empty)
+    {
+        return Err(anyhow::anyhow!(
+            "GitHub's latest {name} release is not published"
+        ))
+        .hint(format!("retry `hpds install {name}` or use --version"));
+    }
+    Ok(version)
+}
+
+fn strict_version(tag: &str, name: &str) -> anyhow::Result<String> {
+    let version = tag.strip_prefix('v').unwrap_or(tag);
+    let valid = version.split('.').count() == 3
+        && version.split('.').all(|part| {
+            !part.is_empty()
+                && part.bytes().all(|b| b.is_ascii_digit())
+                && (part == "0" || !part.starts_with('0'))
+        });
+    if valid {
+        Ok(version.to_string())
+    } else {
+        Err(anyhow::anyhow!(
+            "GitHub's latest {name} release has invalid stable tag `{tag}`"
+        ))
+        .hint(format!(
+            "retry `hpds install {name}` or use --version with an exact stable version"
+        ))
+    }
+}
+
+fn parse_latest_release(
+    body: &str,
+    spec: &ToolSpec,
+    platform: Platform,
+    allow_local_urls: bool,
+) -> anyhow::Result<ResolvedRelease> {
+    let value: Value = serde_json::from_str(body)
+        .context("GitHub's release response was not valid JSON")
+        .hint(format!(
+            "retry `hpds install {}` or use --version",
+            spec.name
+        ))?;
+    if value.get("draft").and_then(Value::as_bool) != Some(false) {
+        return Err(anyhow::anyhow!(
+            "GitHub's latest {} release is a draft",
+            spec.name
+        ))
+        .hint("use --version with a published stable release");
+    }
+    if value.get("prerelease").and_then(Value::as_bool) != Some(false) {
+        return Err(anyhow::anyhow!(
+            "GitHub's latest {} release is a prerelease",
+            spec.name
+        ))
+        .hint("use --version with a published stable release");
+    }
+    if value
+        .get("published_at")
+        .and_then(Value::as_str)
+        .is_none_or(str::is_empty)
+    {
+        return Err(anyhow::anyhow!(
+            "GitHub's latest {} release is not published",
+            spec.name
+        ))
+        .hint("retry later or use --version");
+    }
+    let tag = value
+        .get("tag_name")
+        .and_then(Value::as_str)
+        .ok_or_else(|| anyhow::anyhow!("GitHub's release response had no `tag_name`"))?;
+    let version = strict_version(tag, spec.name)?;
+    let assets = value
+        .get("assets")
+        .and_then(Value::as_array)
+        .ok_or_else(|| anyhow::anyhow!("GitHub's latest {} release has no assets", spec.name))?;
+    let archive_name = spec.asset_name(platform, &version);
+    let matching: Vec<_> = assets
+        .iter()
+        .filter(|a| a.get("name").and_then(Value::as_str) == Some(&archive_name))
+        .collect();
+    if matching.len() != 1 {
+        return Err(anyhow::anyhow!(
+            "GitHub's latest {} release must contain exactly one archive asset `{archive_name}`",
+            spec.name
+        ))
+        .hint(format!(
+            "use --version to request another {} release",
+            spec.name
+        ));
+    }
+    let checksum_name = spec.checksum_asset_name(platform, &version);
+    let checksum_asset = checksum_name
+        .as_ref()
+        .map(|checksum| {
+            let matching: Vec<_> = assets
+                .iter()
+                .filter(|asset| asset.get("name").and_then(Value::as_str) == Some(checksum))
+                .collect();
+            if matching.len() != 1 {
+                return Err(anyhow::anyhow!(
+                    "GitHub's latest {} release must contain exactly one checksum asset `{checksum}`",
+                    spec.name
+                ))
+                .hint("use --version to request another release");
+            }
+            Ok(matching[0])
+        })
+        .transpose()?;
+    let archive = matching[0];
+    let archive_url = archive
+        .get("browser_download_url")
+        .and_then(Value::as_str)
+        .ok_or_else(|| anyhow::anyhow!("GitHub's archive asset has no download URL"))?;
+    validate_asset_url(archive_url, spec.repo, tag, &archive_name, allow_local_urls)?;
+    let checksum_url = checksum_asset
+        .map(|asset| {
+            let name = checksum_name.as_deref().expect("checksum asset has a name");
+            let url = asset
+                .get("browser_download_url")
+                .and_then(Value::as_str)
+                .ok_or_else(|| anyhow::anyhow!("GitHub's checksum asset has no download URL"))?;
+            validate_asset_url(url, spec.repo, tag, name, allow_local_urls)?;
+            Ok::<_, anyhow::Error>(url.to_string())
+        })
+        .transpose()?;
+    let digest = archive
+        .get("digest")
+        .and_then(Value::as_str)
+        .map(str::to_string);
+    if spec.name == "duckdb"
+        && digest.as_deref().is_none_or(|d| {
+            d.strip_prefix("sha256:")
+                .is_none_or(|hex| hex.len() != 64 || !hex.bytes().all(|b| b.is_ascii_hexdigit()))
+        })
+    {
+        return Err(anyhow::anyhow!(
+            "GitHub's DuckDB archive asset has a missing or malformed sha256 digest"
+        ))
+        .hint("retry later or use --version");
+    }
+
+    Ok(ResolvedRelease {
+        version,
+        tag: tag.to_string(),
+        archive_url: archive_url.to_string(),
+        checksum_url,
+        digest,
+    })
+}
+
+fn validate_asset_url(
+    url: &str,
+    repo: &str,
+    tag: &str,
+    asset: &str,
+    allow_local: bool,
+) -> anyhow::Result<()> {
+    let expected_path = format!("/{repo}/releases/download/{tag}/{asset}");
+    let valid_github = url == format!("https://github.com{expected_path}");
+    let valid_local = (url.starts_with("http://127.0.0.1:")
+        || url.starts_with("http://localhost:"))
+        && url.ends_with(&expected_path);
+    #[cfg(test)]
+    let valid_fixture = url.starts_with("https://example.test/");
+    #[cfg(not(test))]
+    let valid_fixture = false;
+    if valid_github || (allow_local && valid_local) || valid_fixture {
+        Ok(())
+    } else {
+        Err(anyhow::anyhow!(
+            "GitHub release asset `{asset}` has unexpected download URL `{url}`"
+        ))
+        .hint("retry after the upstream release metadata is corrected")
+    }
 }
 
 /// Copy a cached tool binary into `bin_dir` (created as needed), returning
@@ -735,6 +1104,39 @@ mod tests {
     }
 
     #[test]
+    fn exact_uv_lookup_uses_its_single_bare_canonical_tag() {
+        use crate::tools::test_support::FixtureServer;
+
+        let spec = ToolSpec {
+            name: "uv",
+            default_version: "latest",
+            repo: "astral-sh/uv",
+            asset_pattern: "uv-{arch}-{os}.{ext}",
+            checksum_pattern: Some("uv-{arch}-{os}.{ext}.sha256"),
+        };
+        let path = "/repos/astral-sh/uv/releases/tags/0.10.1";
+        let server = FixtureServer::serve(HashMap::from([(
+            path.to_string(),
+            include_bytes!("../../tests/fixtures/releases/uv-latest.json").to_vec(),
+        )]));
+
+        let release = exact_github_release(
+            &crate::tools::github_agent(),
+            &server.base_url,
+            &spec,
+            Platform {
+                os: crate::tools::Os::Linux,
+                arch: crate::tools::Arch::X86_64,
+            },
+            "0.10.1",
+        )
+        .expect("resolve the exact uv release");
+
+        assert_eq!(release.version, "0.10.1");
+        assert_eq!(server.hits(), vec![path]);
+    }
+
+    #[test]
     fn latest_release_http_failure_is_actionable() {
         use std::collections::HashMap;
 
@@ -767,5 +1169,368 @@ mod tests {
             assert!(rendered.contains("hint:"), "{rendered}");
             assert!(rendered.contains("hpds install togi"), "{rendered}");
         }
+    }
+
+    #[test]
+    fn recorded_latest_release_fixtures_use_strict_stable_tags() {
+        for (name, body, expected) in [
+            (
+                "uv",
+                include_str!("../../tests/fixtures/releases/uv-latest.json"),
+                "0.10.1",
+            ),
+            (
+                "gh",
+                include_str!("../../tests/fixtures/releases/gh-latest.json"),
+                "2.97.1",
+            ),
+            (
+                "duckdb",
+                include_str!("../../tests/fixtures/releases/duckdb-latest.json"),
+                "1.5.5",
+            ),
+            (
+                "quarto",
+                include_str!("../../tests/fixtures/releases/quarto-latest.json"),
+                "1.10.19",
+            ),
+            (
+                "togi",
+                include_str!("../../tests/fixtures/releases/togi-latest.json"),
+                "0.2.0",
+            ),
+        ] {
+            assert_eq!(parse_latest_version(body, name).expect(name), expected);
+        }
+    }
+
+    #[test]
+    fn latest_release_rejects_non_strict_tags_and_unpublished_metadata() {
+        for body in [
+            r#"{"tag_name":"v1.2.3+build.1","draft":false,"prerelease":false,"assets":[]}"#,
+            r#"{"tag_name":"latest","draft":false,"prerelease":false,"assets":[]}"#,
+            r#"{"tag_name":"v1.2.3","draft":false,"prerelease":false,"assets":[]}"#,
+            r#"{"tag_name":"v01.2.3","draft":false,"prerelease":false,"published_at":"2026-01-01T00:00:00Z","assets":[]}"#,
+        ] {
+            let err = parse_latest_version(body, "uv").expect_err("unstable metadata must fail");
+            let rendered = crate::ui::render_error(&err, false);
+            assert!(rendered.contains("hint:"), "{rendered}");
+            assert!(rendered.contains("--version"), "{rendered}");
+        }
+    }
+
+    fn resolve_fixture(body: String, spec: &ToolSpec) -> anyhow::Result<String> {
+        use std::collections::HashMap;
+
+        use crate::tools::test_support::FixtureServer;
+
+        let path = format!("/repos/{}/releases/latest", spec.repo);
+        let server = FixtureServer::serve(HashMap::from([(path, body.into_bytes())]));
+        latest_github_version(&crate::tools::github_agent(), &server.base_url, spec)
+    }
+
+    fn published_body(tag: &str, assets: Vec<Value>) -> String {
+        serde_json::json!({
+            "tag_name": tag,
+            "draft": false,
+            "prerelease": false,
+            "published_at": "2026-09-30T12:00:00Z",
+            "assets": assets,
+        })
+        .to_string()
+    }
+
+    fn asset(name: &str, digest: Option<&str>) -> Value {
+        serde_json::json!({
+            "name": name,
+            "browser_download_url": format!("https://example.test/{name}"),
+            "digest": digest,
+        })
+    }
+
+    fn complete_togi_body(draft: bool, prerelease: bool) -> String {
+        let spec = crate::install::installers::togi::release_spec();
+        let platform = Platform::current().expect("supported platform");
+        let archive = spec.asset_name(platform, "1.2.3");
+        let checksum = spec
+            .checksum_asset_name(platform, "1.2.3")
+            .expect("checksum");
+        let mut value: Value = serde_json::from_str(&published_body(
+            "v1.2.3",
+            vec![asset(&archive, None), asset(&checksum, None)],
+        ))
+        .expect("valid metadata");
+        value["draft"] = Value::Bool(draft);
+        value["prerelease"] = Value::Bool(prerelease);
+        value.to_string()
+    }
+
+    #[test]
+    fn latest_release_rejects_an_otherwise_valid_draft() {
+        let err = parse_latest_version(&complete_togi_body(true, false), "togi")
+            .expect_err("draft must fail");
+        assert!(crate::ui::render_error(&err, false).contains("draft"));
+    }
+
+    #[test]
+    fn latest_release_rejects_an_otherwise_valid_prerelease() {
+        let err = parse_latest_version(&complete_togi_body(false, true), "togi")
+            .expect_err("prerelease must fail");
+        assert!(crate::ui::render_error(&err, false).contains("prerelease"));
+    }
+
+    #[test]
+    fn latest_lookup_rejects_a_missing_platform_archive() {
+        let spec = crate::install::installers::togi::release_spec();
+        let platform = Platform::current().expect("supported platform");
+        let checksum = spec
+            .checksum_asset_name(platform, "9.9.9")
+            .expect("checksum");
+        let err = resolve_fixture(
+            published_body("v9.9.9", vec![asset(&checksum, None)]),
+            &spec,
+        )
+        .expect_err("the exact archive is mandatory");
+        let rendered = crate::ui::render_error(&err, false);
+        assert!(rendered.contains("archive"), "{rendered}");
+        assert!(rendered.contains("--version"), "{rendered}");
+    }
+
+    #[test]
+    fn latest_lookup_rejects_a_missing_declared_checksum_asset() {
+        let spec = crate::install::installers::togi::release_spec();
+        let platform = Platform::current().expect("supported platform");
+        let archive = spec.asset_name(platform, "9.9.9");
+        let err = resolve_fixture(published_body("v9.9.9", vec![asset(&archive, None)]), &spec)
+            .expect_err("the declared checksum asset is mandatory");
+        let rendered = crate::ui::render_error(&err, false);
+        assert!(rendered.contains("checksum"), "{rendered}");
+        assert!(rendered.contains("--version"), "{rendered}");
+    }
+
+    #[test]
+    fn duckdb_latest_requires_a_well_formed_github_sha256_digest() {
+        let spec = ToolSpec {
+            name: "duckdb",
+            default_version: "1.5.4",
+            repo: "duckdb/duckdb",
+            asset_pattern: match Platform::current().expect("supported platform").os {
+                crate::tools::Os::Mac => "duckdb_cli-osx-universal.zip",
+                crate::tools::Os::Linux => "duckdb_cli-linux-{alt-arch}.zip",
+                crate::tools::Os::Windows => "duckdb_cli-windows-{alt-arch}.zip",
+            },
+            checksum_pattern: None,
+        };
+        let archive = spec.asset_name(Platform::current().expect("supported platform"), "1.5.5");
+        for digest in [None, Some("sha256:not-hex")] {
+            let err = resolve_fixture(
+                published_body("v1.5.5", vec![asset(&archive, digest)]),
+                &spec,
+            )
+            .expect_err("DuckDB requires GitHub's archive digest");
+            let rendered = crate::ui::render_error(&err, false);
+            assert!(rendered.contains("digest"), "{rendered}");
+            assert!(rendered.contains("--version"), "{rendered}");
+        }
+    }
+
+    #[test]
+    fn duckdb_fixture_records_githubs_archive_digest() {
+        let value: Value = serde_json::from_str(include_str!(
+            "../../tests/fixtures/releases/duckdb-latest.json"
+        ))
+        .expect("fixture JSON");
+        let digest = value["assets"][0]["digest"].as_str().expect("asset digest");
+        assert!(digest.starts_with("sha256:"), "{digest}");
+        assert_eq!(digest.len(), "sha256:".len() + 64);
+    }
+
+    fn fetch_duckdb_with_digest(
+        digest_for: impl FnOnce(&[u8]) -> String,
+    ) -> (anyhow::Result<PathBuf>, tempfile::TempDir, ToolCache) {
+        use std::collections::HashMap;
+
+        use crate::tools::test_support::{FixtureServer, zip_with};
+        use crate::tools::{Arch, Os};
+
+        let spec = ToolSpec {
+            name: "duckdb",
+            default_version: "1.5.4",
+            repo: "duckdb/duckdb",
+            asset_pattern: "duckdb_cli-linux-{alt-arch}.zip",
+            checksum_pattern: None,
+        };
+        let platform = Platform {
+            os: Os::Linux,
+            arch: Arch::X86_64,
+        };
+        let archive_name = spec.asset_name(platform, "1.5.5");
+        let archive = zip_with("duckdb", b"fake duckdb");
+        let digest = digest_for(&archive);
+        let archive_path = format!("/duckdb/duckdb/releases/download/v1.5.5/{archive_name}");
+        let archive_server = FixtureServer::serve(HashMap::from([(archive_path.clone(), archive)]));
+        let metadata = serde_json::json!({
+            "tag_name": "v1.5.5",
+            "draft": false,
+            "prerelease": false,
+            "published_at": "2026-09-30T12:00:00Z",
+            "assets": [{
+                "name": archive_name,
+                "browser_download_url": format!("{}{archive_path}", archive_server.base_url),
+                "digest": digest,
+            }],
+        })
+        .to_string();
+        let metadata_path = "/repos/duckdb/duckdb/releases/latest";
+        let metadata_server = FixtureServer::serve(HashMap::from([(
+            metadata_path.to_string(),
+            metadata.into_bytes(),
+        )]));
+        let dir = tempfile::tempdir().expect("tempdir");
+        let cache = ToolCache::at(dir.path());
+        let result = CacheFetcher::fetch_latest_binary_at(
+            false,
+            cache.clone(),
+            platform,
+            &metadata_server.base_url,
+            &spec,
+            &dir.path().join("bin"),
+        );
+        (result, dir, cache)
+    }
+
+    #[test]
+    fn incorrect_duckdb_github_digest_prevents_cache_publication() {
+        let wrong_digest = format!("sha256:{}", "0".repeat(64));
+        let (result, _dir, cache) = fetch_duckdb_with_digest(|_| wrong_digest);
+        let err = result.expect_err("an incorrect GitHub digest must fail");
+        let rendered = crate::ui::render_error(&err, false);
+
+        assert!(rendered.contains("digest"), "{rendered}");
+        assert!(rendered.contains("does not match"), "{rendered}");
+        assert!(!cache.tool_dir("duckdb", "1.5.5").exists());
+        assert!(!cache.manifest_path("duckdb", "1.5.5").exists());
+    }
+
+    #[test]
+    fn matching_duckdb_github_digest_publishes_binary_and_manifest() {
+        use crate::tools::test_support::sha256_hex_of;
+
+        let (result, _dir, cache) =
+            fetch_duckdb_with_digest(|archive| format!("sha256:{}", sha256_hex_of(archive)));
+        let binary = result.expect("matching GitHub digest must install");
+
+        assert!(binary.is_file(), "{}", binary.display());
+        let manifest_path = cache.manifest_path("duckdb", "1.5.5");
+        let manifest: Value = serde_json::from_str(
+            &std::fs::read_to_string(&manifest_path).expect("published manifest"),
+        )
+        .expect("manifest JSON");
+        assert!(
+            manifest["checksum"]
+                .as_str()
+                .is_some_and(|value| value.len() == 64)
+        );
+    }
+
+    #[test]
+    fn exact_duckdb_reuses_a_verified_cache_without_metadata_access() {
+        use crate::tools::Manifest;
+        use crate::tools::test_support::FixtureServer;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let cache = ToolCache::at(dir.path());
+        let platform = Platform {
+            os: crate::tools::Os::Linux,
+            arch: crate::tools::Arch::X86_64,
+        };
+        let spec = ToolSpec {
+            name: "duckdb",
+            default_version: "latest",
+            repo: "duckdb/duckdb",
+            asset_pattern: "duckdb_cli-linux-{alt-arch}.zip",
+            checksum_pattern: None,
+        };
+        let binary = cache.binary_path("duckdb", "1.5.5", platform);
+        fs::create_dir_all(binary.parent().expect("parent")).expect("cache dir");
+        fs::write(&binary, b"verified duckdb").expect("binary");
+        Manifest::new(
+            "1.5.5".to_string(),
+            canonical_archive_url(&spec, platform, "1.5.5"),
+            Some("a".repeat(64)),
+        )
+        .save(&cache.manifest_path("duckdb", "1.5.5"))
+        .expect("manifest");
+        let server = FixtureServer::serve(HashMap::new());
+        let fetcher = CacheFetcher {
+            verbose: false,
+            injected: Some((cache, platform, server.base_url.clone())),
+            resolved: Mutex::new(HashMap::new()),
+        };
+
+        fetcher
+            .fetch_binary(&spec, "1.5.5", &dir.path().join("bin"))
+            .expect("verified exact cache works offline");
+
+        assert!(server.hits().is_empty(), "{:?}", server.hits());
+    }
+
+    #[test]
+    fn exact_cache_from_a_competing_bare_tag_does_not_bypass_metadata() {
+        use crate::tools::Manifest;
+        use crate::tools::test_support::FixtureServer;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let cache = ToolCache::at(dir.path());
+        let platform = Platform {
+            os: crate::tools::Os::Linux,
+            arch: crate::tools::Arch::X86_64,
+        };
+        let spec = ToolSpec {
+            name: "duckdb",
+            default_version: "latest",
+            repo: "duckdb/duckdb",
+            asset_pattern: "duckdb_cli-linux-{alt-arch}.zip",
+            checksum_pattern: None,
+        };
+        let binary = cache.binary_path("duckdb", "1.5.5", platform);
+        fs::create_dir_all(binary.parent().expect("parent")).expect("cache dir");
+        fs::write(&binary, b"competing duckdb").expect("binary");
+        let asset = spec.asset_name(platform, "1.5.5");
+        Manifest::new(
+            "1.5.5".to_string(),
+            format!("https://github.com/duckdb/duckdb/releases/download/1.5.5/{asset}"),
+            Some("a".repeat(64)),
+        )
+        .save(&cache.manifest_path("duckdb", "1.5.5"))
+        .expect("manifest");
+        let server = FixtureServer::serve(HashMap::new());
+        let fetcher = CacheFetcher {
+            verbose: false,
+            injected: Some((cache, platform, server.base_url.clone())),
+            resolved: Mutex::new(HashMap::new()),
+        };
+
+        fetcher
+            .fetch_binary(&spec, "1.5.5", &dir.path().join("bin"))
+            .expect_err("a competing bare-tag cache must require canonical metadata");
+
+        assert_eq!(
+            server.hits(),
+            vec!["/repos/duckdb/duckdb/releases/tags/v1.5.5"]
+        );
+    }
+
+    #[test]
+    fn production_metadata_cannot_redirect_an_asset_to_loopback() {
+        let err = validate_asset_url(
+            "http://127.0.0.1:1234/duckdb/duckdb/releases/download/v1.5.5/duckdb.zip",
+            "duckdb/duckdb",
+            "v1.5.5",
+            "duckdb.zip",
+            false,
+        )
+        .expect_err("GitHub metadata cannot redirect downloads to loopback");
+        assert!(err.to_string().contains("unexpected download URL"), "{err}");
     }
 }

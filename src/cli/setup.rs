@@ -79,6 +79,7 @@ pub fn run(args: SetupArgs, global: &GlobalArgs) -> anyhow::Result<()> {
 
     let runner = SystemRunner;
     let fetcher = CacheFetcher::new(global.verbose);
+    let server_host = setup::server::SystemServerHost::new(&runner);
     let git_setup = || super::git::run_setup_with_defaults(args.yes);
     let deps = SetupDeps {
         install: InstallCtx {
@@ -96,6 +97,8 @@ pub fn run(args: SetupArgs, global: &GlobalArgs) -> anyhow::Result<()> {
             fetcher: &fetcher,
         },
         git_setup: &git_setup,
+        installer_lookup: &crate::install::registry::find,
+        server_host: &server_host,
     };
     let interactive = std::io::stdin().is_terminal();
 

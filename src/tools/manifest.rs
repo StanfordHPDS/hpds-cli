@@ -38,9 +38,7 @@ impl Manifest {
         }
     }
 
-    /// Read and parse a manifest file (tests verify installs through it;
-    /// production code only checks the file's presence).
-    #[cfg(test)]
+    /// Read and parse an installed tool manifest.
     pub fn load(path: &Path) -> anyhow::Result<Manifest> {
         const RESET_HINT: &str = "delete the `tools` directory inside the hpds data \
                                   directory to reset the download cache, then retry";

@@ -9,18 +9,38 @@ use thiserror::Error;
 
 use super::Installer;
 use super::installers::{
-    duckdb::DuckDb, gh::Gh, quarto::Quarto, r::R, rig::Rig, tinytex::TinyTex, togi::Togi, uv::Uv,
+    duckdb::DuckDb, gh::Gh, quarto::Quarto, r::R, rig::Rig, rstudio_server::RstudioServer,
+    tinytex::TinyTex, togi::Togi, uv::Uv,
 };
 
 /// Every tool `hpds install` is meant to manage, implemented or not.
-pub const KNOWN_TOOLS: [&str; 8] = [
-    "r", "quarto", "uv", "gh", "rig", "tinytex", "duckdb", "togi",
+pub const KNOWN_TOOLS: [&str; 9] = [
+    "r",
+    "quarto",
+    "uv",
+    "gh",
+    "rig",
+    "tinytex",
+    "duckdb",
+    "togi",
+    "rstudio-server",
 ];
 
 /// The installers implemented so far. Each new installer is added here to
 /// become reachable from `hpds install <tool>`.
-static INSTALLERS: &[&(dyn Installer + Sync)] =
-    &[&Uv, &Gh, &Rig, &DuckDb, &R, &Quarto, &TinyTex, &Togi];
+static INSTALLERS: &[&(dyn Installer + Sync)] = &[
+    &Uv,
+    &Gh,
+    &Rig,
+    &DuckDb,
+    &R,
+    &Quarto,
+    &TinyTex,
+    &Togi,
+    &RSTUDIO_SERVER,
+];
+
+static RSTUDIO_SERVER: RstudioServer = RstudioServer::production();
 
 /// A tool name that cannot be dispatched to an installer. Rendered by
 /// `main` with its [`hint`](RegistryError::hint) and exit code 2.
@@ -100,6 +120,7 @@ mod tests {
 
     #[test]
     fn every_known_tool_resolves_to_its_installer() {
+        assert!(KNOWN_TOOLS.contains(&"rstudio-server"));
         for tool in KNOWN_TOOLS {
             let installer = find(tool).unwrap_or_else(|e| panic!("{tool}: {e}"));
             assert_eq!(installer.name(), tool);

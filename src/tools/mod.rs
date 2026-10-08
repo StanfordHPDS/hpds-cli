@@ -14,9 +14,13 @@ pub(crate) mod test_support;
 pub mod versions;
 
 pub use cache::ToolCache;
+pub(crate) use download::ReleaseSource;
 pub(crate) use download::extract_binary;
 pub(crate) use download::github_agent;
+pub(crate) use download::no_redirect_agent;
 pub use download::{Downloader, InstallContext};
+#[cfg(test)]
+pub(crate) use manifest::Manifest;
 pub use platform::{Os, Platform};
 pub use spec::ToolSpec;
 
