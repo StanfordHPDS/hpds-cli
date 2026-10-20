@@ -2,7 +2,9 @@
 //!
 //! These tests keep the workflow honest: it must run the full gate set
 //! (format, clippy, test, doc, typos) on the ubuntu/macos/windows matrix and
-//! keep network-dependent tests in a separate allowed-to-fail job.
+//! keep network-dependent tests in a separate allowed-to-fail job. The
+//! server-setup workflow must run its container harness against a release
+//! build whenever the installers change.
 
 use std::path::Path;
 
@@ -263,6 +265,138 @@ fn ci_runs_the_explicit_container_runtime_harness_on_linux() {
                 && command.iter().any(|token| token == "apptainer")
         }),
         "container-runtime job installs Apptainer: {commands:?}"
+    );
+}
+
+fn server_setup_doc() -> serde_yaml::Value {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join(".github")
+        .join("workflows")
+        .join("server-setup.yml");
+    let yml = std::fs::read_to_string(&path)
+        .unwrap_or_else(|e| panic!("failed to read {}: {e}", path.display()));
+    serde_yaml::from_str(&yml).expect("server-setup.yml must parse as YAML")
+}
+
+fn trigger_paths<'a>(doc: &'a serde_yaml::Value, event: &str) -> Vec<&'a str> {
+    doc.get("on")
+        .and_then(|on| on.get(event))
+        .and_then(|trigger| trigger.get("paths"))
+        .and_then(|paths| paths.as_sequence())
+        .unwrap_or_else(|| panic!("server-setup.yml {event} trigger must list paths"))
+        .iter()
+        .map(|path| path.as_str().expect("paths are strings"))
+        .collect()
+}
+
+#[test]
+fn server_setup_workflow_triggers_on_installer_changes() {
+    let doc = server_setup_doc();
+    let pull_request = trigger_paths(&doc, "pull_request");
+    assert_eq!(
+        pull_request,
+        trigger_paths(&doc, "push"),
+        "pull_request and push must filter on the same paths"
+    );
+    let branches = doc
+        .get("on")
+        .and_then(|on| on.get("push"))
+        .and_then(|push| push.get("branches"))
+        .and_then(|branches| branches.as_sequence())
+        .expect("push trigger must name its branches");
+    assert_eq!(branches, &[serde_yaml::Value::from("main")]);
+    assert!(
+        doc.get("on")
+            .and_then(|on| on.get("workflow_dispatch"))
+            .is_some(),
+        "server setup must be runnable by hand"
+    );
+    for required in [
+        "src/setup/**",
+        "src/install/**",
+        "src/ui/**",
+        "tests/server-setup/**",
+        ".github/workflows/server-setup.yml",
+    ] {
+        assert!(
+            pull_request.contains(&required),
+            "path filter must include {required}: {pull_request:?}"
+        );
+    }
+    // A filter on a path that does not exist silently never fires.
+    for path in &pull_request {
+        let literal = path.trim_end_matches("**").trim_end_matches('/');
+        assert!(
+            Path::new(env!("CARGO_MANIFEST_DIR")).join(literal).exists(),
+            "path filter {path} names nothing in the repository"
+        );
+    }
+}
+
+#[test]
+fn server_setup_workflow_runs_the_harness_against_a_release_build() {
+    let doc = server_setup_doc();
+    let permissions = doc
+        .get("permissions")
+        .and_then(|p| p.as_mapping())
+        .expect("server-setup.yml must declare top-level permissions");
+    assert_eq!(permissions.len(), 1, "got {permissions:?}");
+    assert_eq!(
+        permissions.get("contents").and_then(|v| v.as_str()),
+        Some("read")
+    );
+    let job = doc
+        .get("jobs")
+        .and_then(|jobs| jobs.get("server-setup"))
+        .expect("server-setup.yml has a server-setup job");
+    assert_eq!(
+        job.get("runs-on").and_then(|value| value.as_str()),
+        Some("ubuntu-24.04"),
+        "the server profile is x86_64 Ubuntu only"
+    );
+    assert!(
+        job.get("timeout-minutes")
+            .and_then(|value| value.as_u64())
+            .is_some(),
+        "server-setup job must bound its run time"
+    );
+    assert_ne!(
+        job.get("continue-on-error"),
+        Some(&serde_yaml::Value::Bool(true))
+    );
+    let steps = job
+        .get("steps")
+        .and_then(|steps| steps.as_sequence())
+        .expect("server-setup job has steps");
+    let commands: Vec<_> = steps.iter().flat_map(step_commands).collect();
+    let has = |expected: &[&str]| {
+        commands.iter().any(|command| {
+            command.len() >= expected.len() && command.iter().zip(expected).all(|(a, b)| a == b)
+        })
+    };
+    assert!(
+        has(&["cargo", "build", "--release", "--locked"]),
+        "server-setup job builds a release binary: {commands:?}"
+    );
+    assert!(
+        has(&[
+            "python3",
+            "-m",
+            "unittest",
+            "discover",
+            "-s",
+            "tests/server-setup"
+        ]),
+        "server-setup job runs the offline harness tests: {commands:?}"
+    );
+    assert!(
+        has(&[
+            "python3",
+            "tests/server-setup/run.py",
+            "--hpds",
+            "target/release/hpds"
+        ]),
+        "server-setup job runs the harness on the release binary: {commands:?}"
     );
 }
 

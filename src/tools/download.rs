@@ -604,13 +604,44 @@ fn agent_with_proxy(proxy: Option<ureq::Proxy>) -> ureq::Agent {
 }
 
 fn configured_agent(proxy: Option<ureq::Proxy>, disable_redirects: bool) -> ureq::Agent {
+    agent_with_timeouts(
+        proxy,
+        disable_redirects,
+        AgentTimeouts {
+            connect: Duration::from_secs(20),
+            recv_response: Duration::from_secs(30),
+            // Total time for the whole body, not an idle timeout. Sized so the
+            // largest downloads (RStudio Server, about 330 MB) finish on any
+            // link of roughly 4.5 Mbit/s or faster.
+            recv_body: Duration::from_secs(600),
+        },
+    )
+}
+
+/// Per-phase network time limits for an agent built by
+/// [`agent_with_timeouts`].
+#[derive(Debug, Clone, Copy)]
+struct AgentTimeouts {
+    /// Establishing the connection.
+    connect: Duration,
+    /// Receiving the response status line and headers.
+    recv_response: Duration,
+    /// Receiving the whole response body.
+    recv_body: Duration,
+}
+
+/// The agent [`configured_agent`] builds, with explicit timeouts so tests
+/// can exercise the timeout policy in seconds rather than minutes.
+fn agent_with_timeouts(
+    proxy: Option<ureq::Proxy>,
+    disable_redirects: bool,
+    timeouts: AgentTimeouts,
+) -> ureq::Agent {
     let mut config = ureq::Agent::config_builder()
         .proxy(proxy)
-        .timeout_connect(Some(Duration::from_secs(20)))
-        .timeout_recv_response(Some(Duration::from_secs(30)))
-        // Generous total-body budget: release archives are a few MB, so
-        // this only trips on a transfer that has effectively stalled.
-        .timeout_recv_body(Some(Duration::from_secs(600)));
+        .timeout_connect(Some(timeouts.connect))
+        .timeout_recv_response(Some(timeouts.recv_response))
+        .timeout_recv_body(Some(timeouts.recv_body));
     if disable_redirects {
         config = config.max_redirects(0).http_status_as_error(false);
     }
@@ -1239,6 +1270,88 @@ mod tests {
             agent_with_proxy(None).config().proxy().is_none(),
             "no proxy given, none configured"
         );
+    }
+
+    #[test]
+    fn slow_body_completes_after_the_response_timeout_has_elapsed() {
+        // A large download keeps streaming long after the headers arrive.
+        // Only the body budget may bound that phase: the header deadline
+        // must not carry over into body reads.
+        const CHUNKS: usize = 3;
+        const CHUNK: &[u8] = &[b'x'; 1024];
+        const GAP: Duration = Duration::from_millis(1500);
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        let addr = listener.local_addr().expect("local addr");
+        // Accept with a deadline so a client that never connects fails the
+        // test instead of leaving join() blocked forever.
+        listener
+            .set_nonblocking(true)
+            .expect("nonblocking listener");
+        let server = std::thread::spawn(move || {
+            let deadline = std::time::Instant::now() + Duration::from_secs(10);
+            let mut stream = loop {
+                match listener.accept() {
+                    Ok((stream, _)) => break stream,
+                    Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
+                        assert!(
+                            std::time::Instant::now() < deadline,
+                            "client never connected"
+                        );
+                        std::thread::sleep(Duration::from_millis(10));
+                    }
+                    Err(err) => panic!("accept: {err}"),
+                }
+            };
+            stream.set_nonblocking(false).expect("blocking stream");
+            let mut request = Vec::new();
+            let mut byte = [0u8; 1];
+            while !request.ends_with(b"\r\n\r\n") {
+                if stream.read(&mut byte).expect("read request") == 0 {
+                    return;
+                }
+                request.push(byte[0]);
+            }
+            let head = format!(
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                CHUNKS * CHUNK.len()
+            );
+            if stream.write_all(head.as_bytes()).is_err() {
+                return;
+            }
+            for _ in 0..CHUNKS {
+                std::thread::sleep(GAP);
+                if stream
+                    .write_all(CHUNK)
+                    .and_then(|()| stream.flush())
+                    .is_err()
+                {
+                    return;
+                }
+            }
+        });
+
+        let agent = agent_with_timeouts(
+            None,
+            false,
+            AgentTimeouts {
+                connect: Duration::from_secs(5),
+                recv_response: Duration::from_secs(1),
+                recv_body: Duration::from_secs(30),
+            },
+        );
+        let dir = tempfile::tempdir().expect("tempdir");
+        let dest = dir.path().join("body.bin");
+        let mut response = agent
+            .get(&format!("http://{addr}/large.deb"))
+            .call()
+            .expect("headers arrive well within the response timeout");
+        let result = stream_to_file(&mut response, &dest, "downloading");
+        server.join().expect("server thread");
+
+        let digest = result.expect("the body must download in full");
+        let expected = vec![b'x'; CHUNKS * CHUNK.len()];
+        assert_eq!(digest, sha256_hex_of(&expected));
+        assert_eq!(fs::read(&dest).expect("read body"), expected);
     }
 
     #[test]

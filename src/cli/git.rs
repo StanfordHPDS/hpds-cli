@@ -53,24 +53,31 @@ pub struct VaccinateArgs {
 
 pub fn run(args: GitArgs) -> anyhow::Result<()> {
     match args.command {
-        GitCommand::Setup(args) => setup(args),
+        GitCommand::Setup(args) => setup(args, false),
         GitCommand::Vaccinate(args) => vaccinate(args),
     }
 }
 
 /// Run the `hpds git setup` flow with no identity flags, exactly as the
-/// machine-setup bundle needs it.
+/// machine-setup bundle needs it. Under `yes`, an identity key that is not
+/// set is reported as a warning and skipped, so the remaining steps still
+/// run.
 pub(super) fn run_setup_with_defaults(yes: bool) -> anyhow::Result<()> {
-    setup(SetupArgs {
-        name: None,
-        email: None,
-        yes,
-    })
+    setup(
+        SetupArgs {
+            name: None,
+            email: None,
+            yes,
+        },
+        true,
+    )
 }
 
 /// `hpds git setup`: default branch, identity, gh auth guidance, then an
-/// offer to vaccinate the global ignore.
-fn setup(args: SetupArgs) -> anyhow::Result<()> {
+/// offer to vaccinate the global ignore. With `skip_missing_identity`, an
+/// identity key that `--yes` leaves unset and no flag supplies is a warning
+/// rather than an error.
+fn setup(args: SetupArgs, skip_missing_identity: bool) -> anyhow::Result<()> {
     configure_default_branch()?;
     configure_identity(
         "user.name",
@@ -78,6 +85,7 @@ fn setup(args: SetupArgs) -> anyhow::Result<()> {
         "--name",
         args.name,
         args.yes,
+        skip_missing_identity,
     )?;
     configure_identity(
         "user.email",
@@ -85,6 +93,7 @@ fn setup(args: SetupArgs) -> anyhow::Result<()> {
         "--email",
         args.email,
         args.yes,
+        skip_missing_identity,
     )?;
     report_gh_auth()?;
     offer_vaccinate(args.yes)
@@ -149,6 +158,7 @@ fn configure_identity(
     flag_name: &str,
     flag: Option<String>,
     yes: bool,
+    skip_missing: bool,
 ) -> anyhow::Result<()> {
     // The current value is read even when a flag is given: a flag that
     // matches it is reported as already set, not rewritten.
@@ -166,6 +176,13 @@ fn configure_identity(
         }
         IdentityAction::SetFromFlag(value) => value,
         IdentityAction::Prompt => ui::text(prompt, "")?,
+        IdentityAction::NeedFlag if skip_missing => {
+            ui::warn(&format!(
+                "{key} is not set; run `git config --global {key} <VALUE>` \
+                 or `hpds git setup` to set it"
+            ));
+            return Ok(());
+        }
         IdentityAction::NeedFlag => {
             return Err(anyhow::anyhow!(
                 "{key} is not set, and --yes suppresses the prompt for it"
@@ -326,11 +343,202 @@ mod tests {
 
     #[test]
     fn empty_identity_value_errors_with_the_flag_in_the_hint() {
-        let err = configure_identity("user.name", "Your name", "--name", Some("   ".into()), true)
-            .unwrap_err();
+        let err = configure_identity(
+            "user.name",
+            "Your name",
+            "--name",
+            Some("   ".into()),
+            true,
+            false,
+        )
+        .unwrap_err();
         let out = render_error(&err, false);
         assert!(out.contains("user.name"), "out was: {out}");
         assert!(out.contains("--name"), "out was: {out}");
         assert!(out.contains("hint:"), "out was: {out}");
+    }
+
+    // The tests below exercise the flow end to end against real `git`,
+    // which reads the global config from the process environment. Rather
+    // than mutate this process's environment, each one re-executes this
+    // test binary, filtered to a child test, with HOME and the global git
+    // config pointed into a temporary directory. A child test does nothing
+    // unless it is running inside such a sandbox, so in a normal run it
+    // passes as a no-op.
+
+    /// Holds the sandbox HOME path in a re-executed child test process.
+    const SANDBOX_CHILD: &str = "HPDS_TEST_GIT_SETUP_SANDBOX_CHILD";
+
+    /// Whether this process is a sandboxed child: SANDBOX_CHILD must equal
+    /// HOME, and GIT_CONFIG_GLOBAL must point inside that directory. A
+    /// stray SANDBOX_CHILD in a developer shell fails these checks, so the
+    /// child tests cannot touch the real global git config.
+    fn in_sandbox_child() -> bool {
+        let (Some(marker), Some(home), Some(global)) = (
+            std::env::var_os(SANDBOX_CHILD),
+            std::env::var_os("HOME"),
+            std::env::var_os("GIT_CONFIG_GLOBAL"),
+        ) else {
+            return false;
+        };
+        let home = std::path::Path::new(&home);
+        !home.as_os_str().is_empty()
+            && marker == home.as_os_str()
+            && std::path::Path::new(&global).starts_with(home)
+    }
+
+    struct SandboxRun {
+        tmp: tempfile::TempDir,
+        status: std::process::ExitStatus,
+        stdout: String,
+        stderr: String,
+    }
+
+    impl SandboxRun {
+        fn home(&self) -> std::path::PathBuf {
+            self.tmp.path().join("home")
+        }
+
+        fn config(&self, key: &str) -> Option<String> {
+            let output = std::process::Command::new("git")
+                .args(["config", "--file"])
+                .arg(self.home().join(".gitconfig"))
+                .args(["--get", key])
+                .output()
+                .unwrap();
+            output
+                .status
+                .success()
+                .then(|| String::from_utf8_lossy(&output.stdout).trim().to_string())
+        }
+
+        fn transcript(&self) -> String {
+            format!("stdout:\n{}\nstderr:\n{}", self.stdout, self.stderr)
+        }
+    }
+
+    /// Run the child test `name` (a test in this module) in a fresh
+    /// process with a sandboxed HOME, an empty global git config, and no
+    /// `gh`.
+    fn run_child(name: &str) -> SandboxRun {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path().join("home");
+        let work = tmp.path().join("work");
+        std::fs::create_dir(&home).unwrap();
+        std::fs::create_dir(&work).unwrap();
+        let module = module_path!()
+            .split_once("::")
+            .map_or(module_path!(), |(_, rest)| rest);
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                format!("{module}::{name}").as_str(),
+                "--exact",
+                "--nocapture",
+                "--test-threads=1",
+            ])
+            .current_dir(&work)
+            .env(SANDBOX_CHILD, &home)
+            .env("HOME", &home)
+            .env("USERPROFILE", &home)
+            .env("XDG_CONFIG_HOME", home.join(".config"))
+            .env("GIT_CONFIG_GLOBAL", home.join(".gitconfig"))
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .env("HPDS_GH", tmp.path().join("no-such-gh"))
+            .env_remove("GIT_DIR")
+            .env_remove("GIT_WORK_TREE")
+            .env_remove("GIT_AUTHOR_NAME")
+            .env_remove("GIT_AUTHOR_EMAIL")
+            .env_remove("GIT_COMMITTER_NAME")
+            .env_remove("GIT_COMMITTER_EMAIL")
+            .env_remove("EMAIL")
+            .output()
+            .unwrap();
+        let run = SandboxRun {
+            tmp,
+            status: output.status,
+            stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
+            stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
+        };
+        // A filter that matches nothing also exits successfully, so confirm
+        // that exactly one child test ran and passed.
+        assert!(
+            run.stdout.contains("test result: ok. 1 passed;"),
+            "the child test `{name}` must run and pass exactly once\n{}",
+            run.transcript()
+        );
+        run
+    }
+
+    #[test]
+    fn child_configure_identity_skipping_missing() {
+        if !in_sandbox_child() {
+            return;
+        }
+        configure_identity("user.name", "Your name", "--name", None, true, true).unwrap();
+    }
+
+    #[test]
+    fn child_configure_identity_requiring_flag() {
+        if !in_sandbox_child() {
+            return;
+        }
+        let err =
+            configure_identity("user.name", "Your name", "--name", None, true, false).unwrap_err();
+        let out = render_error(&err, false);
+        assert!(out.contains("--name"), "out was: {out}");
+    }
+
+    #[test]
+    fn child_bundle_setup() {
+        if !in_sandbox_child() {
+            return;
+        }
+        run_setup_with_defaults(true).unwrap();
+    }
+
+    #[test]
+    fn missing_identity_under_yes_warns_and_continues_when_skipping() {
+        let run = run_child("child_configure_identity_skipping_missing");
+        let transcript = run.transcript();
+        assert!(run.status.success(), "{transcript}");
+        assert!(run.stderr.contains("warning:"), "{transcript}");
+        assert!(run.stderr.contains("user.name"), "{transcript}");
+        assert!(
+            run.stderr.contains("git config --global user.name")
+                || run.stderr.contains("hpds git setup"),
+            "the warning must say what to run next\n{transcript}"
+        );
+        assert_eq!(run.config("user.name"), None, "{transcript}");
+    }
+
+    #[test]
+    fn missing_identity_under_yes_still_errors_without_skipping() {
+        let run = run_child("child_configure_identity_requiring_flag");
+        assert!(run.status.success(), "{}", run.transcript());
+    }
+
+    #[test]
+    fn bundle_setup_without_identity_still_runs_the_remaining_steps() {
+        let run = run_child("child_bundle_setup");
+        let transcript = run.transcript();
+        assert!(run.status.success(), "{transcript}");
+        for key in ["user.name", "user.email"] {
+            assert!(
+                run.stderr
+                    .lines()
+                    .any(|line| line.contains("warning:") && line.contains(key)),
+                "{key} must be reported as a warning\n{transcript}"
+            );
+            assert_eq!(run.config(key), None, "{transcript}");
+        }
+        assert!(
+            run.stdout.contains("gh) is not installed"),
+            "the gh auth report must still run\n{transcript}"
+        );
+        assert_eq!(run.config("init.defaultBranch").as_deref(), Some("main"));
+        let ignore = std::fs::read_to_string(run.home().join(".gitignore"))
+            .unwrap_or_else(|err| panic!("global ignore not written ({err})\n{transcript}"));
+        assert!(ignore.contains("# >>> hpds vaccinate >>>"), "{ignore}");
+        assert!(ignore.contains(".Rhistory"), "{ignore}");
     }
 }
