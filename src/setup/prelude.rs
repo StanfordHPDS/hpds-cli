@@ -231,6 +231,14 @@ pub(super) fn run(selected: &[Step], deps: &SetupDeps) -> anyhow::Result<Vec<&'s
             .collect();
         let mut registered = register_missing(&plan, deps);
         let refreshed = refresh(deps, &mut registered);
+        let running: Vec<&str> = preparations
+            .iter()
+            .filter(|preparation| preparation.is_running())
+            .map(|preparation| preparation.deb.name())
+            .collect();
+        if let Some(line) = waiting_line(&running) {
+            ui::println(&line);
+        }
         let packages: Vec<(DownloadedPackage, String)> = preparations
             .into_iter()
             .filter_map(|preparation| preparation.finish(deps))
@@ -321,13 +329,23 @@ impl<'scope> Preparation<'scope> {
         deps: &SetupDeps<'a>,
     ) -> Self {
         let thread_deps = deps.for_thread();
-        let thread = std::thread::Builder::new()
+        let spawned = std::thread::Builder::new()
             .name(deb.thread_name().to_string())
             .spawn_scoped(scope, move || {
                 ui::capture(|| prepare_file(deb, &thread_deps))
-            })
-            .ok();
-        Preparation { deb, title, thread }
+            });
+        Preparation {
+            deb,
+            title,
+            thread: started(spawned, deb),
+        }
+    }
+
+    /// Whether its thread is still preparing the package.
+    fn is_running(&self) -> bool {
+        self.thread
+            .as_ref()
+            .is_some_and(|thread| !thread.is_finished())
     }
 
     /// Wait for the package and replay what its preparation printed. A
@@ -357,6 +375,34 @@ impl<'scope> Preparation<'scope> {
             }
         }
     }
+}
+
+/// The thread that `spawned` started, or `None` with a warning when it
+/// could not start; `deb` is then prepared after the refresh instead.
+fn started<T>(spawned: std::io::Result<T>, deb: LocalDeb) -> Option<T> {
+    match spawned {
+        Ok(thread) => Some(thread),
+        Err(err) => {
+            ui::warn(&format!(
+                "could not start a background thread ({err}); preparing the {} package after the apt refresh instead",
+                deb.name()
+            ));
+            None
+        }
+    }
+}
+
+/// The line announcing the package downloads in `running`, which are
+/// still under way once the package lists are refreshed, or `None` when
+/// every download has finished.
+fn waiting_line(running: &[&str]) -> Option<String> {
+    let (last, rest) = running.split_last()?;
+    let (names, noun) = if rest.is_empty() {
+        ((*last).to_string(), "download")
+    } else {
+        (format!("{} and {last}", rest.join(", ")), "downloads")
+    };
+    Some(format!("waiting for the {names} {noun} to finish"))
 }
 
 /// Prepare `deb` and resolve the path `apt-get` installs it from.
@@ -458,5 +504,57 @@ fn prepare(deb: LocalDeb, deps: &SetupDeps) -> anyhow::Result<Option<DownloadedP
             (deps.installer_lookup)("rstudio-server")?.prepare_package(&deps.install)
         }
         LocalDeb::CodeServer => server::prepare_code_server(deps.server_host, deps.install.runner),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn waiting_line_names_every_download_still_running() {
+        assert_eq!(waiting_line(&[]), None);
+        assert_eq!(
+            waiting_line(&["code-server"]).as_deref(),
+            Some("waiting for the code-server download to finish")
+        );
+        assert_eq!(
+            waiting_line(&["RStudio Server", "code-server"]).as_deref(),
+            Some("waiting for the RStudio Server and code-server downloads to finish")
+        );
+        assert_eq!(
+            waiting_line(&["a", "b", "c"]).as_deref(),
+            Some("waiting for the a, b and c downloads to finish")
+        );
+    }
+
+    #[test]
+    fn a_thread_that_cannot_start_is_reported_and_left_to_this_one() {
+        let (thread, transcript) = ui::capture(|| {
+            started::<()>(
+                Err(std::io::Error::other("resource temporarily unavailable")),
+                LocalDeb::CodeServer,
+            )
+        });
+        assert_eq!(thread, None);
+        let lines: Vec<&str> = transcript
+            .lines()
+            .iter()
+            .map(|(_, line)| line.as_str())
+            .collect();
+        assert_eq!(lines.len(), 1, "{lines:#?}");
+        assert!(
+            lines[0].contains(
+                "could not start a background thread (resource temporarily unavailable); preparing the code-server package after the apt refresh instead"
+            ),
+            "{lines:#?}"
+        );
+    }
+
+    #[test]
+    fn a_started_thread_is_kept_without_a_warning() {
+        let (thread, transcript) = ui::capture(|| started(Ok(7), LocalDeb::RstudioServer));
+        assert_eq!(thread, Some(7));
+        assert!(transcript.is_empty());
     }
 }

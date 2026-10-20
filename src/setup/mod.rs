@@ -2533,6 +2533,28 @@ mod tests {
     }
 
     #[test]
+    fn step_one_says_which_downloads_it_is_still_waiting_for() {
+        let sim = Sim::default();
+        let rstudio = SimRstudio {
+            delay: Some(Duration::from_millis(300)),
+            ..SimRstudio::default()
+        };
+        let (results, _, lines) =
+            run_sim_captured(&sim, &SimHost::default(), rstudio, steps(Profile::Server));
+
+        assert!(failures(&results).is_empty(), "{:?}", failures(&results));
+        let refresh = only_line(&lines, "refreshing apt package lists");
+        // code-server has no delay, so it may or may not have finished.
+        let waiting = only_line(&lines, "waiting for the RStudio Server ");
+        let install = only_line(
+            &lines,
+            "installing the system libraries and the selected steps' packages",
+        );
+        assert!(lines[waiting].ends_with(" to finish"), "{}", lines[waiting]);
+        assert!(refresh < waiting && waiting < install, "{lines:#?}");
+    }
+
+    #[test]
     fn a_panicking_package_download_drops_only_that_package() {
         let sim = Sim::default();
         let rstudio = SimRstudio {

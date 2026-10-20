@@ -46,10 +46,12 @@ The unit and integration tests drive `hpds setup --profile server` against a fak
 The `server setup (Linux container)` workflow, `.github/workflows/server-setup.yml`, fills that gap.
 It builds a release binary and runs `tests/server-setup/run.py`, which starts a fresh Ubuntu 24.04 container with systemd as PID 1 (`tests/server-setup/Dockerfile`), runs `hpds setup --profile server --yes` as an ordinary sudo user with the environment an ssh login gives, and then checks:
 
-- the setup summary marks every step from `hpds setup --plan --profile server` with ✓, so a new step is covered without editing the harness;
+- the setup summary marks every step from `hpds setup --plan --profile server` with ✓, in plan order, so a new step is covered without editing the harness;
+- the output introduces each step exactly once with its `[n/N]` header, where N is the plan's step count (a step from the background lane may carry ` (ran in the background)`), refreshes the apt package lists exactly once on the first run, and never mentions `code-server.dev`, since hpds downloads the code-server package itself rather than running its install script;
 - each component works as that user: R and its package repository, Python and pip, Quarto, TinyTeX, RStudio Server and code-server (version, systemd service, and an HTTP probe), gh, DuckDB, uv, ruff, sqlfluff, rig, Rust, the Docker CLI and group membership, and the git defaults, including the warnings for a missing git identity;
 - a second `hpds setup --profile server --yes` also succeeds on every step.
 
+Each setup run's wall-clock time is printed on a line of its own and shown in the table; a first run slower than 150 seconds is reported as WARN rather than FAIL.
 The harness prints a pass/fail table and removes its container and image when it finishes, fails, or receives SIGINT or SIGTERM; only a SIGKILL leaves them behind, in which case remove the `hpds-server-setup-*` container with `docker rm --force --volumes` and the `hpds-server-setup:local` image with `docker image rm`.
 The job runs on pull requests and pushes to `main` that touch the code the setup path runs (`src/setup/`, `src/install/`, `src/tools/`, `src/gitx/`, `src/ui/`, `src/cli/setup.rs`, `src/cli/git.rs`, `src/cli/mod.rs`, `src/main.rs`), `Cargo.toml`, `Cargo.lock`, `rust-toolchain.toml`, the harness, or the workflow; run it by hand from the Actions tab with **Run workflow**.
 A full run downloads every component and can take tens of minutes.
