@@ -24,6 +24,7 @@ use std::sync::{Condvar, Mutex, MutexGuard, PoisonError, mpsc};
 
 use anyhow::anyhow;
 
+use crate::install::installers::rstudio_server;
 use crate::install::{self, InstallCtx};
 use crate::ui::{self, HintExt};
 
@@ -331,10 +332,7 @@ const SERVER_STEPS: &[Step] = &[
         lane: Lane::Foreground,
         requires: &[],
         apt: AptShare::LocalDeb(LocalDeb::RstudioServer),
-        actions: &[
-            Action::Install("rstudio-server"),
-            Action::Server(server::ServerAction::RstudioService),
-        ],
+        actions: &[Action::Install("rstudio-server")],
     },
     Step {
         title: "RStudio preferences",
@@ -473,12 +471,11 @@ fn describe(step: &Step, action: &Action, all: &[Step]) -> Vec<String> {
                 install::apt_get_command_line(&args)
             )]
         }
-        Action::Install(tool)
-            if matches!(
-                *tool,
-                "uv" | "gh" | "duckdb" | "quarto" | "togi" | "rstudio-server"
-            ) =>
-        {
+        Action::Install("rstudio-server") => vec![
+            "hpds install rstudio-server (latest stable)".to_string(),
+            rstudio_server::SERVICE_PLAN.to_string(),
+        ],
+        Action::Install(tool) if matches!(*tool, "uv" | "gh" | "duckdb" | "quarto" | "togi") => {
             vec![format!("hpds install {tool} (latest stable)")]
         }
         Action::Install(tool) => vec![format!("hpds install {tool}")],
@@ -1127,13 +1124,7 @@ mod tests {
             .iter()
             .find(|step| step.title == "RStudio Server")
             .expect("RStudio Server step");
-        assert!(matches!(
-            step.actions,
-            [
-                Action::Install("rstudio-server"),
-                Action::Server(server::ServerAction::RstudioService)
-            ]
-        ));
+        assert!(matches!(step.actions, [Action::Install("rstudio-server")]));
     }
 
     #[test]
@@ -1344,8 +1335,6 @@ mod tests {
     const RSTUDIO_IS_ACTIVE: &str = "systemctl is-active rstudio-server";
     const RSTUDIO_RESET: &str = "sudo systemctl reset-failed rstudio-server";
     const RSTUDIO_RESTART: &str = "sudo systemctl restart rstudio-server";
-    /// The directory that exists only while systemd runs the host.
-    const SYSTEMD_RUNTIME: &str = "/run/systemd/system";
 
     /// A fresh Ubuntu server, simulated through the runner seam: the user
     /// tools the dev profile manages probe as installed, every command
@@ -1710,6 +1699,8 @@ mod tests {
         created: Mutex<Vec<std::path::PathBuf>>,
         /// The name of the thread each release lookup ran on.
         lookup_threads: Mutex<Vec<Option<String>>>,
+        /// Whether systemd runs the simulated host.
+        systemd: bool,
     }
 
     impl SimRstudio {
@@ -1847,6 +1838,9 @@ mod tests {
                 .ok_or_else(|| anyhow!("the RStudio Server package path is not UTF-8"))?;
             ctx.run_apt_step("installing RStudio Server", &["install", "-y", path])?;
             Ok(())
+        }
+        fn systemd_running(&self) -> bool {
+            self.systemd
         }
     }
 
@@ -2458,11 +2452,11 @@ mod tests {
         );
     }
 
-    /// A simulated host booted with systemd.
-    fn systemd_host() -> SimHost {
-        SimHost {
-            existing: vec![SYSTEMD_RUNTIME],
-            ..SimHost::default()
+    /// RStudio Server on a simulated host booted with systemd.
+    fn systemd_rstudio() -> SimRstudio {
+        SimRstudio {
+            systemd: true,
+            ..SimRstudio::default()
         }
     }
 
@@ -2472,8 +2466,8 @@ mod tests {
         // runs, so its postinst start fails; the RStudio Server step
         // restarts it once R is installed.
         let sim = Sim::default();
-        let host = systemd_host();
-        let (results, _) = run_sim(&sim, &host, SimRstudio::default(), steps(Profile::Server));
+        let host = SimHost::default();
+        let (results, _) = run_sim(&sim, &host, systemd_rstudio(), steps(Profile::Server));
 
         assert!(failures(&results).is_empty(), "{:?}", failures(&results));
         let calls = sim.calls();
@@ -2497,8 +2491,8 @@ mod tests {
     fn rstudio_step_leaves_an_active_service_alone() {
         let sim = Sim::provisioned();
         *sim.rstudio_active.lock().unwrap() = true;
-        let host = systemd_host();
-        let (results, _) = run_sim(&sim, &host, SimRstudio::default(), steps(Profile::Server));
+        let host = SimHost::default();
+        let (results, _) = run_sim(&sim, &host, systemd_rstudio(), steps(Profile::Server));
 
         assert!(failures(&results).is_empty(), "{:?}", failures(&results));
         let calls = sim.calls();
@@ -2516,8 +2510,8 @@ mod tests {
 
     /// The RStudio Server step's error, and the run's output lines.
     fn rstudio_failure(sim: &Sim, selected: &[Step]) -> (String, Vec<String>) {
-        let host = systemd_host();
-        let (results, _, lines) = run_sim_captured(sim, &host, SimRstudio::default(), selected);
+        let host = SimHost::default();
+        let (results, _, lines) = run_sim_captured(sim, &host, systemd_rstudio(), selected);
         let failed = failures(&results);
         let error = failed
             .iter()

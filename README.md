@@ -158,6 +158,12 @@ $ hpds install quarto
 ✓ quarto 1.8.27 already installed
 ```
 
+On a Linux server, `hpds install rstudio-server` also checks the
+`rstudio-server` service, including when the current version is already
+installed, and resets and restarts it when it is not running. The service
+needs R, so install R first (`hpds install r`); when the service still will
+not start, the command fails and says how to recover.
+
 `hpds setup` runs the whole toolchain bundle.
 Preview the plan before it runs:
 

@@ -16,7 +16,6 @@ pub(crate) enum ServerAction {
     Docker,
     Rust,
     RProfile,
-    RstudioService,
     RstudioPreferences,
     InstallCodeServer,
     CodeServer,
@@ -30,9 +29,6 @@ pub(crate) fn describe(action: &ServerAction) -> &'static str {
         ServerAction::Rust => "install or update stable Rust with verified rustup",
         ServerAction::RProfile => {
             "ensure the Posit Package Manager CRAN repository line is present once"
-        }
-        ServerAction::RstudioService => {
-            "if systemd runs this host and rstudio-server is not active: sudo systemctl reset-failed rstudio-server; sudo systemctl restart rstudio-server"
         }
         ServerAction::RstudioPreferences => {
             "merge RStudio preferences: insert_native_pipe_operator=true save_workspace=never load_workspace=never rainbow_parentheses=true rainbow_fenced_divs=true"
@@ -55,7 +51,6 @@ pub(crate) fn run(
         ServerAction::Docker => reconcile_docker(host, runner, DockerState::Probe),
         ServerAction::Rust => reconcile_rust(host, runner, RustState::Probe),
         ServerAction::RProfile => reconcile_r_profile(host),
-        ServerAction::RstudioService => ensure_rstudio_service(host, runner),
         ServerAction::RstudioPreferences => merge_rstudio_preferences(host),
         ServerAction::InstallCodeServer => install_code_server(host, runner),
         ServerAction::CodeServer => reconcile_code_server(host, runner),
@@ -822,49 +817,6 @@ pub(crate) fn reconcile_r_profile(host: &dyn ServerHost) -> Result<()> {
     bytes.extend_from_slice(R_REPOSITORY_LINE.as_bytes());
     bytes.push(b'\n');
     host.write_atomic(path, &bytes, 0o644)
-}
-
-/// The directory systemd creates at boot; it exists only on hosts that
-/// systemd runs (the check behind `sd_booted`).
-const SYSTEMD_RUNTIME: &str = "/run/systemd/system";
-
-const RSTUDIO_SERVICE_HINT: &str = "RStudio Server needs R: install it with `hpds install r` (or rerun the R step of server setup), then run `sudo systemctl restart rstudio-server`; `journalctl -u rstudio-server` shows why it stopped";
-
-/// Make sure the `rstudio-server` service is running.
-///
-/// The package's install script starts the service right away, and that
-/// start fails when R is not installed yet; systemd then gives up on it.
-/// Once R is in place, a reset and restart brings it up. Hosts without
-/// systemd (such as most containers) have no service to start, so they
-/// are left as they are.
-pub(crate) fn ensure_rstudio_service(
-    host: &dyn ServerHost,
-    runner: &dyn CommandRunner,
-) -> Result<()> {
-    if !host.exists(Path::new(SYSTEMD_RUNTIME)) || rstudio_service_active(runner)? {
-        return Ok(());
-    }
-    // A unit that never hit systemd's start limit has nothing to reset.
-    let _ = run_sudo(runner, "systemctl", &["reset-failed", "rstudio-server"]);
-    if let Err(err) = run_sudo(runner, "systemctl", &["restart", "rstudio-server"]) {
-        // The restart's own generic hint would shadow the one that names R.
-        return Err(anyhow!("rstudio-server did not start: {err:#}")).hint(RSTUDIO_SERVICE_HINT);
-    }
-    if rstudio_service_active(runner)? {
-        Ok(())
-    } else {
-        Err(anyhow!("rstudio-server is not active after a restart")).hint(RSTUDIO_SERVICE_HINT)
-    }
-}
-
-/// Whether systemd reports `rstudio-server` active. `systemctl is-active`
-/// prints the unit's state and exits nonzero unless it is active.
-fn rstudio_service_active(runner: &dyn CommandRunner) -> Result<bool> {
-    let output = runner
-        .run("systemctl", &["is-active", "rstudio-server"])
-        .context("could not run `systemctl`")
-        .hint("check that systemd's `systemctl` is on PATH, then rerun server setup")?;
-    Ok(output.success && output.stdout.trim() == "active")
 }
 
 pub(crate) fn merge_rstudio_preferences(host: &dyn ServerHost) -> Result<()> {

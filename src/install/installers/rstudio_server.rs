@@ -5,15 +5,30 @@ use std::sync::Mutex;
 use anyhow::{Context, Result, anyhow};
 
 pub use crate::install::DownloadedPackage;
-use crate::install::{InstallCtx, Installer, apt_get_command_line, apt_package_path, is_current};
+use crate::install::{
+    InstallCtx, Installer, apt_get_command_line, apt_package_path, ensure_step_success, is_current,
+};
 use crate::tools::Os;
-use crate::ui::HintExt;
+use crate::ui::{self, HintExt};
 
 pub const STABLE_ENDPOINT: &str =
     "https://rstudio.org/download/latest/stable/server/jammy/rstudio-server-latest-amd64.deb";
 const RELEASE_PREFIX: &str =
     "https://s3.amazonaws.com/rstudio-server/server/jammy/amd64/rstudio-server-";
 const RELEASE_SUFFIX: &str = "-amd64.deb";
+
+/// The directory systemd creates at boot; it exists only on hosts that
+/// systemd runs (the check behind `sd_booted`).
+const SYSTEMD_RUNTIME: &str = "/run/systemd/system";
+
+/// The plan line for the service check that follows every install,
+/// including one that finds the current version already installed.
+pub(crate) const SERVICE_PLAN: &str = "if systemd runs this host and rstudio-server is not active: sudo systemctl reset-failed rstudio-server; sudo systemctl restart rstudio-server";
+
+const SERVICE_HINT: &str = "RStudio Server needs R: install it with `hpds install r` (or rerun the R step of server setup), then run `sudo systemctl restart rstudio-server`; `journalctl -u rstudio-server` shows why it stopped";
+
+const RESET_FAILED: &[&str] = &["systemctl", "reset-failed", "rstudio-server"];
+const RESTART: &[&str] = &["systemctl", "restart", "rstudio-server"];
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RstudioRelease {
@@ -39,6 +54,10 @@ pub trait RstudioBackend {
     fn download(&self, release: &RstudioRelease) -> Result<DownloadedPackage>;
     fn inspect(&self, ctx: &InstallCtx<'_>, package: &Path) -> Result<String>;
     fn install(&self, ctx: &InstallCtx<'_>, package: &Path) -> Result<()>;
+    /// Whether systemd runs this host, so `rstudio-server` is a service
+    /// it manages. Hosts without systemd (such as most containers) have
+    /// no service to start.
+    fn systemd_running(&self) -> bool;
 }
 
 pub struct RstudioServer<B = HttpBackend> {
@@ -84,6 +103,9 @@ impl<B: RstudioBackend + ?Sized> RstudioBackend for &B {
     }
     fn install(&self, ctx: &InstallCtx<'_>, package: &Path) -> Result<()> {
         (**self).install(ctx, package)
+    }
+    fn systemd_running(&self) -> bool {
+        (**self).systemd_running()
     }
 }
 
@@ -289,6 +311,10 @@ impl RstudioBackend for HttpBackend {
             .context("could not install the verified RStudio Server package")?;
         Ok(())
     }
+
+    fn systemd_running(&self) -> bool {
+        Path::new(SYSTEMD_RUNTIME).is_dir()
+    }
 }
 
 fn require_linux(ctx: &InstallCtx<'_>) -> Result<()> {
@@ -308,6 +334,48 @@ fn require_linux_amd64(ctx: &InstallCtx<'_>) -> Result<()> {
         Err(anyhow!("RStudio Server is only supported on Linux amd64"))
             .hint("run hpds setup on an amd64 Linux server")
     }
+}
+
+/// Make sure the `rstudio-server` service is running.
+///
+/// The package's install script starts the service right away, and that
+/// start fails when R is not installed yet; systemd then gives up on it.
+/// Once R is in place, a reset and restart brings it up. Hosts without
+/// systemd have no service to start, so they are left as they are.
+fn ensure_service<B: RstudioBackend>(backend: &B, ctx: &InstallCtx<'_>) -> Result<()> {
+    if !backend.systemd_running() || service_active(ctx)? {
+        return Ok(());
+    }
+    ui::println("the rstudio-server service is not running");
+    ctx.approve_sudo_commands("restarting rstudio-server", &[RESET_FAILED, RESTART])?;
+    // A unit that never hit systemd's start limit has nothing to reset.
+    let _ = ctx.run_approved_sudo(RESET_FAILED);
+    let restarted = ctx
+        .run_approved_sudo(RESTART)
+        .and_then(|output| ensure_step_success("systemctl", output));
+    if let Err(err) = restarted {
+        // The restart's own generic hint would shadow the one that names R.
+        return Err(anyhow!("rstudio-server did not start: {err:#}")).hint(SERVICE_HINT);
+    }
+    if service_active(ctx)? {
+        ui::success("rstudio-server is running");
+        Ok(())
+    } else {
+        Err(anyhow!("rstudio-server is not active after a restart")).hint(SERVICE_HINT)
+    }
+}
+
+/// Whether systemd reports `rstudio-server` active. `systemctl is-active`
+/// prints the unit's state and exits nonzero unless it is active.
+fn service_active(ctx: &InstallCtx<'_>) -> Result<bool> {
+    let output = ctx
+        .runner
+        .run("systemctl", &["is-active", "rstudio-server"])
+        .context("could not run `systemctl`")
+        .hint(
+            "check that systemd's `systemctl` is on PATH, then rerun `hpds install rstudio-server`",
+        )?;
+    Ok(output.success && output.stdout.trim() == "active")
 }
 
 impl<B: RstudioBackend> RstudioServer<B> {
@@ -378,7 +446,11 @@ impl<B: RstudioBackend> Installer for RstudioServer<B> {
             format!("download the RStudio Server {selected} amd64 package from Posit"),
             "verify its Debian package identity with dpkg-deb".to_string(),
             apt_get_command_line(&["install", "-y", "<absolute path of the verified package>"]),
+            SERVICE_PLAN.to_string(),
         ]
+    }
+    fn ensure(&self, ctx: &InstallCtx) -> Result<()> {
+        ensure_service(&self.backend, ctx)
     }
     fn supports_pin(&self) -> bool {
         true
@@ -390,7 +462,7 @@ impl<B: RstudioBackend> Installer for RstudioServer<B> {
 
 #[cfg(test)]
 mod tests {
-    use std::cell::RefCell;
+    use std::cell::{Cell, RefCell};
     use std::path::{Path, PathBuf};
     use std::sync::{Arc, Mutex};
 
@@ -402,8 +474,9 @@ mod tests {
         parse_debian_metadata, parse_stable_redirect,
     };
     use crate::install::test_support::{FakeFetcher, FakeRunner, ctx_on};
-    use crate::install::{InstallCtx, Installer, run_installer};
+    use crate::install::{CommandOutput, CommandRunner, InstallCtx, Installer, run_installer};
     use crate::tools::Os;
+    use crate::ui::render_error;
 
     const LATEST: &str = "2026.09.0+174";
     const LATEST_URL: &str = "https://s3.amazonaws.com/rstudio-server/server/jammy/amd64/rstudio-server-2026.09.0-174-amd64.deb";
@@ -578,6 +651,7 @@ mod tests {
         downloaded: RefCell<Option<String>>,
         metadata_override: Option<String>,
         fail_inspect: bool,
+        systemd: bool,
     }
 
     impl FakeBackend {
@@ -637,6 +711,231 @@ mod tests {
             self.phases.borrow_mut().push("install package".to_string());
             *self.installed.borrow_mut() = self.downloaded.borrow().clone();
             Ok(())
+        }
+
+        fn systemd_running(&self) -> bool {
+            self.systemd
+        }
+    }
+
+    const IS_ACTIVE: &str = "systemctl is-active rstudio-server";
+    const RESET: &str = "sudo systemctl reset-failed rstudio-server";
+    const RESTART: &str = "sudo systemctl restart rstudio-server";
+    const R_HINT: &str = "hint: RStudio Server needs R: install it with `hpds install r` (or rerun the R step of server setup), then run `sudo systemctl restart rstudio-server`; `journalctl -u rstudio-server` shows why it stopped";
+
+    /// The `rstudio-server` unit on a systemd host, simulated through the
+    /// runner seam: `systemctl is-active` reports the unit's state, and a
+    /// restart starts it unless the restart fails or the service does not
+    /// stay up. Any other command is unexpected.
+    #[derive(Default)]
+    struct ServiceRunner {
+        active: Mutex<bool>,
+        /// `systemctl reset-failed` exits nonzero, as it does for a unit
+        /// that never hit systemd's start limit.
+        reset_fails: bool,
+        /// `systemctl restart` exits nonzero, as it does without R.
+        restart_fails: bool,
+        /// A restart reports success but the service does not stay up.
+        never_starts: bool,
+        calls: Mutex<Vec<String>>,
+    }
+
+    impl ServiceRunner {
+        fn active() -> Self {
+            Self {
+                active: Mutex::new(true),
+                ..Self::default()
+            }
+        }
+
+        fn calls(&self) -> Vec<String> {
+            self.calls.lock().unwrap().clone()
+        }
+
+        fn is_active(&self) -> bool {
+            *self.active.lock().unwrap()
+        }
+    }
+
+    impl CommandRunner for ServiceRunner {
+        fn which(&self, _program: &str) -> Option<PathBuf> {
+            None
+        }
+
+        fn run(&self, program: &str, args: &[&str]) -> Result<CommandOutput> {
+            let command = format!("{program} {}", args.join(" "));
+            self.calls.lock().unwrap().push(command.clone());
+            let output = |success: bool, stdout: &str, stderr: &str| CommandOutput {
+                success,
+                stdout: stdout.to_string(),
+                stderr: stderr.to_string(),
+            };
+            match command.as_str() {
+                IS_ACTIVE if self.is_active() => Ok(output(true, "active\n", "")),
+                IS_ACTIVE => Ok(output(false, "failed\n", "")),
+                RESET if self.reset_fails => Ok(output(
+                    false,
+                    "",
+                    "Failed to reset failed state of unit rstudio-server.service: Unit rstudio-server.service not loaded.",
+                )),
+                RESET => Ok(output(true, "", "")),
+                RESTART if self.restart_fails => Ok(output(
+                    false,
+                    "",
+                    "Job for rstudio-server.service failed because the control process exited with error code.",
+                )),
+                RESTART => {
+                    if !self.never_starts {
+                        *self.active.lock().unwrap() = true;
+                    }
+                    Ok(output(true, "", ""))
+                }
+                _ => Err(anyhow!("unexpected command `{command}`")),
+            }
+        }
+    }
+
+    /// A ctx on Linux with `--yes` whose commands go to `runner`.
+    fn service_ctx<'a>(runner: &'a ServiceRunner, fetcher: &'a FakeFetcher) -> InstallCtx<'a> {
+        InstallCtx {
+            os: Os::Linux,
+            yes: true,
+            verbose: false,
+            pin: None,
+            plan_approved: false,
+            sudo_approved: Cell::new(false),
+            runner,
+            fetcher,
+        }
+    }
+
+    /// A backend on a systemd host with `installed` already in place.
+    fn systemd_backend(installed: Option<&str>) -> FakeBackend {
+        FakeBackend {
+            installed: RefCell::new(installed.map(str::to_string)),
+            systemd: true,
+            ..FakeBackend::default()
+        }
+    }
+
+    #[test]
+    fn a_fresh_install_restarts_a_service_that_did_not_start() {
+        let backend = systemd_backend(None);
+        let installer = RstudioServer::with_backend(&backend);
+        let runner = ServiceRunner::default();
+        let fetcher = FakeFetcher::default();
+
+        run_installer(&installer, &service_ctx(&runner, &fetcher))
+            .expect("the service starts after a restart");
+
+        assert!(
+            backend
+                .phases
+                .borrow()
+                .iter()
+                .any(|phase| phase == "install package")
+        );
+        assert_eq!(runner.calls(), [IS_ACTIVE, RESET, RESTART, IS_ACTIVE]);
+        assert!(runner.is_active());
+    }
+
+    #[test]
+    fn a_current_install_restarts_a_service_that_is_down() {
+        for reset_fails in [false, true] {
+            let backend = systemd_backend(Some(LATEST));
+            let installer = RstudioServer::with_backend(&backend);
+            let runner = ServiceRunner {
+                reset_fails,
+                ..ServiceRunner::default()
+            };
+            let fetcher = FakeFetcher::default();
+
+            run_installer(&installer, &service_ctx(&runner, &fetcher))
+                .expect("the service starts after a restart");
+
+            assert!(
+                !backend
+                    .phases
+                    .borrow()
+                    .iter()
+                    .any(|phase| phase == "install package"),
+                "a current install is not reinstalled"
+            );
+            assert_eq!(
+                runner.calls(),
+                [IS_ACTIVE, RESET, RESTART, IS_ACTIVE],
+                "reset fails: {reset_fails}"
+            );
+            assert!(runner.is_active());
+        }
+    }
+
+    #[test]
+    fn an_active_service_is_left_alone() {
+        for installed in [None, Some(LATEST)] {
+            let backend = systemd_backend(installed);
+            let installer = RstudioServer::with_backend(&backend);
+            let runner = ServiceRunner::active();
+            let fetcher = FakeFetcher::default();
+
+            run_installer(&installer, &service_ctx(&runner, &fetcher))
+                .expect("an active service needs nothing");
+
+            assert_eq!(runner.calls(), [IS_ACTIVE], "{installed:?}");
+        }
+    }
+
+    #[test]
+    fn a_service_that_will_not_start_fails_with_the_r_hint() {
+        for installed in [None, Some(LATEST)] {
+            for (restart_fails, never_starts) in [(true, false), (false, true)] {
+                let backend = systemd_backend(installed);
+                let installer = RstudioServer::with_backend(&backend);
+                let runner = ServiceRunner {
+                    restart_fails,
+                    never_starts,
+                    ..ServiceRunner::default()
+                };
+                let fetcher = FakeFetcher::default();
+
+                let error = run_installer(&installer, &service_ctx(&runner, &fetcher))
+                    .expect_err("a service that will not start fails the install");
+
+                let rendered = render_error(&error, false);
+                let case = format!("{installed:?}, restart fails: {restart_fails}");
+                assert!(rendered.contains("rstudio-server"), "{case}: {rendered}");
+                assert!(rendered.contains(R_HINT), "{case}: {rendered}");
+                let calls = runner.calls();
+                let restart = calls
+                    .iter()
+                    .position(|call| call == RESTART)
+                    .unwrap_or_else(|| panic!("{case}: no restart in {calls:?}"));
+                if never_starts {
+                    assert_eq!(
+                        calls[restart + 1..],
+                        [IS_ACTIVE],
+                        "{case}: the service is checked again after the restart"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn without_systemd_no_service_is_checked() {
+        for installed in [None, Some(LATEST)] {
+            let backend = FakeBackend {
+                installed: RefCell::new(installed.map(str::to_string)),
+                ..FakeBackend::default()
+            };
+            let installer = RstudioServer::with_backend(&backend);
+            let runner = ServiceRunner::default();
+            let fetcher = FakeFetcher::default();
+
+            run_installer(&installer, &service_ctx(&runner, &fetcher))
+                .expect("a host without systemd installs as before");
+
+            assert!(runner.calls().is_empty(), "{installed:?}");
         }
     }
 
@@ -867,11 +1166,14 @@ mod tests {
         let runner = FakeRunner::default();
         let fetcher = FakeFetcher::default();
         let plan = RstudioServer::production().plan(&ctx_on(Os::Linux, &runner, &fetcher));
-        let install = plan.last().expect("plan has an install line");
+        let [.., install, service] = plan.as_slice() else {
+            panic!("plan has an install line and a service line: {plan:?}");
+        };
         assert!(
             install.starts_with(&crate::install::apt_get_command_line(&["install", "-y"])),
             "{install}"
         );
+        assert_eq!(service, super::SERVICE_PLAN);
         assert!(plan.iter().all(|line| !line.contains("gdebi")), "{plan:?}");
     }
 }
