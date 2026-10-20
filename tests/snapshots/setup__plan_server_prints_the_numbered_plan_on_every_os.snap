@@ -29,6 +29,7 @@ hpds setup --profile server runs these 15 steps:
        hpds install tinytex
   8. RStudio Server
        hpds install rstudio-server (latest stable)
+       if systemd runs this host and rstudio-server is not active: sudo systemctl reset-failed rstudio-server; sudo systemctl restart rstudio-server
   9. RStudio preferences
        merge RStudio preferences: insert_native_pipe_operator=true save_workspace=never load_workspace=never rainbow_parentheses=true rainbow_fenced_divs=true
  10. code-server + extensions

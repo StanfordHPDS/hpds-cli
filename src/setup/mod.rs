@@ -331,7 +331,10 @@ const SERVER_STEPS: &[Step] = &[
         lane: Lane::Foreground,
         requires: &[],
         apt: AptShare::LocalDeb(LocalDeb::RstudioServer),
-        actions: &[Action::Install("rstudio-server")],
+        actions: &[
+            Action::Install("rstudio-server"),
+            Action::Server(server::ServerAction::RstudioService),
+        ],
     },
     Step {
         title: "RStudio preferences",
@@ -1124,7 +1127,13 @@ mod tests {
             .iter()
             .find(|step| step.title == "RStudio Server")
             .expect("RStudio Server step");
-        assert!(matches!(step.actions, [Action::Install("rstudio-server")]));
+        assert!(matches!(
+            step.actions,
+            [
+                Action::Install("rstudio-server"),
+                Action::Server(server::ServerAction::RstudioService)
+            ]
+        ));
     }
 
     #[test]
@@ -1332,6 +1341,11 @@ mod tests {
     const RIG_SOURCES: &str = "/etc/apt/sources.list.d/rig.list";
     const RIG_ADD: &str =
         "sudo env DEBIAN_FRONTEND=noninteractive NEEDRESTART_SUSPEND=1 rig add release";
+    const RSTUDIO_IS_ACTIVE: &str = "systemctl is-active rstudio-server";
+    const RSTUDIO_RESET: &str = "sudo systemctl reset-failed rstudio-server";
+    const RSTUDIO_RESTART: &str = "sudo systemctl restart rstudio-server";
+    /// The directory that exists only while systemd runs the host.
+    const SYSTEMD_RUNTIME: &str = "/run/systemd/system";
 
     /// A fresh Ubuntu server, simulated through the runner seam: the user
     /// tools the dev profile manages probe as installed, every command
@@ -1353,6 +1367,11 @@ mod tests {
         /// Each package file an `apt-get install` named, and whether it
         /// was on disk when the install ran.
         package_files: Mutex<Vec<(String, bool)>>,
+        /// Whether systemd reports `rstudio-server` active. A restart
+        /// starts it only once R is installed, as `rserver` needs R.
+        rstudio_active: Mutex<bool>,
+        /// A restart reports success but the service does not stay up.
+        rstudio_never_starts: bool,
     }
 
     impl Sim {
@@ -1511,6 +1530,28 @@ mod tests {
                 });
             }
             let output = match command.as_str() {
+                RSTUDIO_IS_ACTIVE => {
+                    if *self.rstudio_active.lock().unwrap() {
+                        Sim::ok("active\n")
+                    } else {
+                        CommandOutput {
+                            success: false,
+                            stdout: "failed\n".to_string(),
+                            stderr: String::new(),
+                        }
+                    }
+                }
+                RSTUDIO_RESTART if !self.has("R") => CommandOutput {
+                    success: false,
+                    stdout: String::new(),
+                    stderr: "Job for rstudio-server.service failed because the control process exited with error code.".to_string(),
+                },
+                RSTUDIO_RESTART => {
+                    if !self.rstudio_never_starts {
+                        *self.rstudio_active.lock().unwrap() = true;
+                    }
+                    Sim::ok("")
+                }
                 c if c.starts_with("dpkg-query -W") => {
                     if self.has("docker") {
                         Sim::ok(&"install ok installed\n".repeat(5))
@@ -2415,6 +2456,157 @@ mod tests {
                 .any(|line| line == "Python's packages were installed with the system libraries"),
             "{lines:#?}"
         );
+    }
+
+    /// A simulated host booted with systemd.
+    fn systemd_host() -> SimHost {
+        SimHost {
+            existing: vec![SYSTEMD_RUNTIME],
+            ..SimHost::default()
+        }
+    }
+
+    #[test]
+    fn rstudio_step_restarts_a_service_that_failed_before_r_was_installed() {
+        // Step 1 installs the RStudio Server package before the R step
+        // runs, so its postinst start fails; the RStudio Server step
+        // restarts it once R is installed.
+        let sim = Sim::default();
+        let host = systemd_host();
+        let (results, _) = run_sim(&sim, &host, SimRstudio::default(), steps(Profile::Server));
+
+        assert!(failures(&results).is_empty(), "{:?}", failures(&results));
+        let calls = sim.calls();
+        let position = |wanted: &str| {
+            calls
+                .iter()
+                .position(|call| call == wanted)
+                .unwrap_or_else(|| panic!("{wanted} never ran: {calls:#?}"))
+        };
+        let rig_add = position(RIG_ADD);
+        let check = position(RSTUDIO_IS_ACTIVE);
+        let reset = position(RSTUDIO_RESET);
+        let restart = position(RSTUDIO_RESTART);
+        assert!(rig_add < check, "{calls:#?}");
+        assert!(check < reset, "{calls:#?}");
+        assert!(reset < restart, "{calls:#?}");
+        assert!(*sim.rstudio_active.lock().unwrap());
+    }
+
+    #[test]
+    fn rstudio_step_leaves_an_active_service_alone() {
+        let sim = Sim::provisioned();
+        *sim.rstudio_active.lock().unwrap() = true;
+        let host = systemd_host();
+        let (results, _) = run_sim(&sim, &host, SimRstudio::default(), steps(Profile::Server));
+
+        assert!(failures(&results).is_empty(), "{:?}", failures(&results));
+        let calls = sim.calls();
+        assert!(
+            calls.iter().any(|call| call == RSTUDIO_IS_ACTIVE),
+            "{calls:#?}"
+        );
+        assert!(
+            calls
+                .iter()
+                .all(|call| call != RSTUDIO_RESET && call != RSTUDIO_RESTART),
+            "{calls:#?}"
+        );
+    }
+
+    /// The RStudio Server step's error, and the run's output lines.
+    fn rstudio_failure(sim: &Sim, selected: &[Step]) -> (String, Vec<String>) {
+        let host = systemd_host();
+        let (results, _, lines) = run_sim_captured(sim, &host, SimRstudio::default(), selected);
+        let failed = failures(&results);
+        let error = failed
+            .iter()
+            .find(|(title, _)| *title == "RStudio Server")
+            .map(|(_, error)| error.clone())
+            .unwrap_or_else(|| panic!("RStudio Server did not fail: {failed:?}"));
+        (error, lines)
+    }
+
+    #[test]
+    fn rstudio_step_fails_with_a_hint_when_the_service_cannot_start_without_r() {
+        let sim = Sim::default();
+        let (error, lines) =
+            rstudio_failure(&sim, &server_steps_without(&["R + CRAN/PPM repositories"]));
+
+        assert!(error.contains("rstudio-server"), "{error}");
+        assert!(
+            lines.iter().any(|line| line.contains("hpds install r")
+                && line.contains("sudo systemctl restart rstudio-server")),
+            "{lines:#?}"
+        );
+        let calls = sim.calls();
+        assert!(
+            calls.iter().any(|call| call == RSTUDIO_RESTART),
+            "{calls:#?}"
+        );
+    }
+
+    #[test]
+    fn rstudio_step_fails_with_a_hint_when_a_restart_leaves_the_service_inactive() {
+        let sim = Sim {
+            rstudio_never_starts: true,
+            ..Sim::default()
+        };
+        let (error, lines) = rstudio_failure(&sim, steps(Profile::Server));
+
+        assert!(error.contains("rstudio-server"), "{error}");
+        assert!(
+            lines.iter().any(|line| line.contains("hpds install r")
+                && line.contains("sudo systemctl restart rstudio-server")),
+            "{lines:#?}"
+        );
+        let calls = sim.calls();
+        let restart = calls
+            .iter()
+            .position(|call| call == RSTUDIO_RESTART)
+            .unwrap_or_else(|| panic!("no restart: {calls:#?}"));
+        assert!(
+            calls[restart..]
+                .iter()
+                .any(|call| call == RSTUDIO_IS_ACTIVE),
+            "the service is checked again after the restart: {calls:#?}"
+        );
+    }
+
+    #[test]
+    fn rstudio_step_without_systemd_installs_and_passes_as_before() {
+        let sim = Sim::default();
+        let host = SimHost::default();
+        let (results, rstudio) =
+            run_sim(&sim, &host, SimRstudio::default(), steps(Profile::Server));
+
+        assert!(failures(&results).is_empty(), "{:?}", failures(&results));
+        assert_eq!(rstudio.downloads(), 1);
+        let calls = sim.calls();
+        assert!(
+            calls
+                .iter()
+                .all(|call| !(call.contains("systemctl") && call.contains("rstudio-server"))),
+            "{calls:#?}"
+        );
+    }
+
+    #[test]
+    fn rstudio_server_runs_after_r_in_the_foreground() {
+        // RStudio Server's service needs R, and both steps are on the
+        // foreground lane, so plan order alone puts R first.
+        let table = steps(Profile::Server);
+        let position = |title: &str| {
+            table
+                .iter()
+                .position(|step| step.title == title)
+                .unwrap_or_else(|| panic!("no step {title}"))
+        };
+        let r = position("R + CRAN/PPM repositories");
+        let rstudio = position("RStudio Server");
+        assert!(r < rstudio);
+        assert_eq!(table[r].lane, Lane::Foreground);
+        assert_eq!(table[rstudio].lane, Lane::Foreground);
     }
 
     #[test]
