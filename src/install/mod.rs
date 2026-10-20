@@ -17,10 +17,12 @@ pub(crate) mod test_support;
 use std::cell::Cell;
 use std::cmp::Ordering;
 use std::io::IsTerminal;
+use std::path::{Path, PathBuf};
 
 use anyhow::anyhow;
 
 pub use fetch::{CacheFetcher, ReleaseFetcher};
+pub(crate) use fetch::{ReleaseAsset, latest_release_asset};
 pub use runner::{CommandOutput, CommandRunner, SystemRunner};
 
 use crate::tools::Os;
@@ -107,6 +109,68 @@ pub trait Installer {
     fn verifies_target(&self) -> bool {
         false
     }
+
+    /// For a tool that installs from a downloaded Debian package: download
+    /// and verify the package [`install`](Installer::install) would install,
+    /// without installing it, so a caller can hand it to one combined apt
+    /// transaction. `None` when the installed version is already current,
+    /// or when the tool does not install from a package file.
+    fn prepare_package(&self, _ctx: &InstallCtx) -> anyhow::Result<Option<DownloadedPackage>> {
+        Ok(None)
+    }
+}
+
+/// The form of `path` that apt-get treats as a local package file rather
+/// than a package name: a path from the filesystem root. A relative path
+/// is made absolute; a rooted path is passed as it is.
+pub(crate) fn apt_package_path(path: &Path) -> anyhow::Result<String> {
+    let rooted = if path.has_root() {
+        path.to_path_buf()
+    } else {
+        std::path::absolute(path).map_err(|err| {
+            anyhow!(
+                "could not resolve the temporary package path `{}`: {err}",
+                path.display()
+            )
+        })?
+    };
+    rooted.to_str().map(str::to_string).ok_or_else(|| {
+        anyhow!(
+            "the temporary package path `{}` is not UTF-8",
+            path.display()
+        )
+    })
+}
+
+/// A downloaded package file, removed when dropped if it lives in a
+/// private temporary file.
+#[derive(Debug)]
+pub struct DownloadedPackage {
+    path: PathBuf,
+    _temporary: Option<tempfile::NamedTempFile>,
+}
+
+impl DownloadedPackage {
+    /// A package held in a private temporary file.
+    pub(crate) fn temporary(file: tempfile::NamedTempFile) -> Self {
+        Self {
+            path: file.path().to_path_buf(),
+            _temporary: Some(file),
+        }
+    }
+
+    /// A package at a fixed path that nothing removes.
+    #[cfg(test)]
+    pub(crate) fn at(path: PathBuf) -> Self {
+        Self {
+            path,
+            _temporary: None,
+        }
+    }
+
+    pub(crate) fn path(&self) -> &Path {
+        &self.path
+    }
 }
 
 /// The shared install flow: idempotence check, plan, confirm, install,
@@ -134,11 +198,7 @@ fn run_installer_with(
     };
     if let Some(found) = installer.detect(&resolved_ctx) {
         match target.as_deref() {
-            Some(version)
-                if version != found
-                    && (explicitly_requested
-                        || compare_stable_versions(&found, version) != Some(Ordering::Greater)) =>
-            {
+            Some(version) if !is_current(&found, version, explicitly_requested) => {
                 ui::println(&format!(
                     "{name} {found} is installed; replacing it with {version}"
                 ));
@@ -194,6 +254,15 @@ fn run_installer_with(
             "open a new shell so PATH changes take effect, then check `hpds install` output above",
         ),
     }
+}
+
+/// Whether the installed version `found` satisfies the resolved `target`:
+/// the same version, or (unless that exact version was requested) a newer
+/// one.
+pub(crate) fn is_current(found: &str, target: &str, explicitly_requested: bool) -> bool {
+    found == target
+        || (!explicitly_requested
+            && compare_stable_versions(found, target) == Some(Ordering::Greater))
 }
 
 fn compare_stable_versions(left: &str, right: &str) -> Option<Ordering> {
@@ -284,6 +353,21 @@ impl InstallCtx<'_> {
         self.sudo_step(what, "env", &env_args, "apt-get")
     }
 
+    /// Run `program <args>` under sudo with the noninteractive environment
+    /// apt runs with (see [`noninteractive_sudo_argv`]), for tools that call
+    /// apt themselves. Gated and announced like any other sudo step.
+    pub fn run_noninteractive_sudo_step(
+        &self,
+        what: &str,
+        program: &str,
+        args: &[&str],
+    ) -> anyhow::Result<CommandOutput> {
+        let mut env_args = NONINTERACTIVE_ENV.to_vec();
+        env_args.push(program);
+        env_args.extend_from_slice(args);
+        self.sudo_step(what, "env", &env_args, program)
+    }
+
     /// Echo the underlying command when `-v` is on.
     fn log_command(&self, program: &str, args: &[&str]) {
         if self.verbose {
@@ -306,6 +390,21 @@ const APT_GET_ENV_ARGS: &[&str] = &[
     "-o",
     "DPkg::Lock::Timeout=600",
 ];
+
+/// The environment that keeps debconf and needrestart from prompting,
+/// as `env` arguments. The apt policy sets the same variables.
+const NONINTERACTIVE_ENV: &[&str] = &["DEBIAN_FRONTEND=noninteractive", "NEEDRESTART_SUSPEND=1"];
+
+/// The argv that follows `sudo` for running `program <args>` with the
+/// noninteractive environment, passed through `env` because sudo drops
+/// the caller's environment.
+pub(crate) fn noninteractive_sudo_argv<'a>(program: &'a str, args: &[&'a str]) -> Vec<&'a str> {
+    let mut argv = vec!["env"];
+    argv.extend_from_slice(NONINTERACTIVE_ENV);
+    argv.push(program);
+    argv.extend_from_slice(args);
+    argv
+}
 
 /// The argv that follows `sudo` for an `apt-get <args>` run under the
 /// shared apt policy.
@@ -957,6 +1056,39 @@ mod tests {
             apt_get_command_line(&["update"]),
             format!("{APT_POLICY} update")
         );
+    }
+
+    #[test]
+    fn the_apt_policy_sets_the_noninteractive_environment() {
+        assert!(APT_GET_ENV_ARGS.starts_with(NONINTERACTIVE_ENV));
+        assert_eq!(
+            noninteractive_sudo_argv("rig", &["add", "release"]).join(" "),
+            "env DEBIAN_FRONTEND=noninteractive NEEDRESTART_SUSPEND=1 rig add release"
+        );
+    }
+
+    #[test]
+    fn noninteractive_sudo_step_runs_through_env_and_names_the_program() {
+        let line = "sudo env DEBIAN_FRONTEND=noninteractive NEEDRESTART_SUSPEND=1 rig add release";
+        let runner = FakeRunner::default().with_failure(line, "E: Could not get lock");
+        let ctx = InstallCtx {
+            yes: true,
+            ..ctx(&runner)
+        };
+        let err = ctx
+            .run_noninteractive_sudo_step("installing R", "rig", &["add", "release"])
+            .expect_err("step must fail");
+        assert_eq!(runner.calls(), vec![line]);
+        let out = render_error(&err, false);
+        assert!(out.contains("`rig` failed: E: Could not get lock"), "{out}");
+    }
+
+    #[test]
+    fn is_current_accepts_equal_or_newer_unless_pinned() {
+        assert!(is_current("2026.09.0+174", "2026.09.0+174", false));
+        assert!(is_current("2026.10.0+1", "2026.09.0+174", false));
+        assert!(!is_current("2025.05.1+513", "2026.09.0+174", false));
+        assert!(!is_current("2026.10.0+1", "2026.09.0+174", true));
     }
 
     #[test]

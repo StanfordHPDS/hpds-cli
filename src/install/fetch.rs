@@ -233,6 +233,35 @@ impl ResolvedRelease {
     }
 }
 
+/// One asset of a tool's latest stable GitHub release, as resolved and
+/// validated by the same rules `hpds install` applies.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ReleaseAsset {
+    /// The release version, without a leading `v`.
+    pub(crate) version: String,
+    /// The asset's validated download URL.
+    pub(crate) url: String,
+    /// GitHub's `sha256:<hex>` digest of the asset, when it reports one.
+    pub(crate) digest: Option<String>,
+}
+
+/// Resolve the latest stable release of `spec` from the GitHub API at
+/// `api_base`: a published, non-draft, non-prerelease release with a
+/// strict version tag and exactly one asset named by `spec`'s pattern,
+/// whose URL points at that release on github.com.
+pub(crate) fn latest_release_asset(
+    agent: &ureq::Agent,
+    api_base: &str,
+    spec: &ToolSpec,
+) -> anyhow::Result<ReleaseAsset> {
+    let release = latest_github_release(agent, api_base, spec, Platform::current()?)?;
+    Ok(ReleaseAsset {
+        version: release.version,
+        url: release.archive_url,
+        digest: release.digest,
+    })
+}
+
 #[cfg(test)]
 fn latest_github_version(
     agent: &ureq::Agent,

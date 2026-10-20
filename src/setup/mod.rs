@@ -27,7 +27,10 @@ use anyhow::anyhow;
 use crate::install::{self, InstallCtx};
 use crate::ui::{self, HintExt};
 
+mod prelude;
 pub(crate) mod server;
+
+use prelude::{AptRepo, AptShare, LocalDeb};
 
 /// Which bundle of steps `hpds setup` runs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -60,6 +63,9 @@ pub struct Step {
     /// earlier step of the same profile, so plan order alone satisfies
     /// them when steps run one after another.
     requires: &'static [&'static str],
+    /// What the step adds to the server profile's apt prelude when it is
+    /// selected.
+    apt: AptShare,
     actions: &'static [Action],
 }
 
@@ -75,10 +81,9 @@ enum Lane {
     Background,
 }
 
-/// The step the background lane waits for before it starts: the system
-/// libraries (compilers, certificates, curl) that user-space installs
-/// build and download with.
-const BACKGROUND_GATE: &str = "system libraries (apt)";
+/// The server profile's first step, which installs every selected step's
+/// apt packages in one transaction (see [`Action::AptPrelude`]).
+const SYSTEM_LIBRARIES: &str = "system libraries (apt)";
 
 /// One thing a step does.
 #[derive(Debug)]
@@ -89,8 +94,16 @@ enum Action {
     GitSetup,
     /// Run one external command through the runner seam.
     Run(Cmd),
-    /// Run `apt-get` under sudo with the shared apt policy.
-    Apt(AptCmd),
+    /// Register the selected steps' apt repositories, download and verify
+    /// their package files, then refresh the package lists once and
+    /// install every selected step's packages in one `apt-get install`.
+    /// If that install fails, retry once with only the distribution
+    /// packages; the steps whose packages were dropped install their own.
+    AptPrelude,
+    /// Install this step's own [`AptShare::Packages`] with apt, unless the
+    /// apt prelude already installed them in this run. Names what the
+    /// packages are for, such as `Python`.
+    StepPackages(&'static str),
     /// Reconcile one typed server-host concern without shell evaluation.
     Server(server::ServerAction),
 }
@@ -104,15 +117,6 @@ struct Cmd {
     program: &'static str,
     args: &'static [&'static str],
     sudo: bool,
-}
-
-/// A planned `apt-get` run: announced, logged at `-v`, and executed
-/// through [`InstallCtx::run_apt_step`], which applies the dpkg lock wait
-/// and noninteractive environment every apt call needs.
-#[derive(Debug)]
-struct AptCmd {
-    what: &'static str,
-    args: &'static [&'static str],
 }
 
 /// Everything step execution needs: the installer context (OS, runner,
@@ -160,48 +164,56 @@ const DEV_STEPS: &[Step] = &[
         title: "r",
         lane: Lane::Foreground,
         requires: &[],
+        apt: AptShare::None,
         actions: &[Action::Install("r")],
     },
     Step {
         title: "quarto",
         lane: Lane::Foreground,
         requires: &[],
+        apt: AptShare::None,
         actions: &[Action::Install("quarto")],
     },
     Step {
         title: "uv",
         lane: Lane::Foreground,
         requires: &[],
+        apt: AptShare::None,
         actions: &[Action::Install("uv")],
     },
     Step {
         title: "gh",
         lane: Lane::Foreground,
         requires: &[],
+        apt: AptShare::None,
         actions: &[Action::Install("gh")],
     },
     Step {
         title: "rig",
         lane: Lane::Foreground,
         requires: &[],
+        apt: AptShare::None,
         actions: &[Action::Install("rig")],
     },
     Step {
         title: "tinytex",
         lane: Lane::Foreground,
         requires: &[],
+        apt: AptShare::None,
         actions: &[Action::Install("tinytex")],
     },
     Step {
         title: "togi",
         lane: Lane::Foreground,
         requires: &[],
+        apt: AptShare::None,
         actions: &[Action::Install("togi")],
     },
     Step {
         title: "git setup",
         lane: Lane::Foreground,
         requires: &[],
+        apt: AptShare::None,
         actions: &[Action::GitSetup],
     },
 ];
@@ -209,8 +221,6 @@ const DEV_STEPS: &[Step] = &[
 /// The Debian/Ubuntu system libraries R and Python packages routinely
 /// compile against.
 const APT_SYSTEM_LIBRARIES: &[&str] = &[
-    "install",
-    "-y",
     "build-essential",
     "ca-certificates",
     "curl",
@@ -230,48 +240,55 @@ const APT_SYSTEM_LIBRARIES: &[&str] = &[
     "zlib1g-dev",
 ];
 
+/// The system Python the server profile installs.
+const PYTHON_PACKAGES: &[&str] = &["python3", "python3-pip", "python3-venv"];
+
 /// The lab-server bundle (Linux only): system libraries, R/Python wired
 /// to Posit Package Manager, the IDE servers, and the same toolchain the
 /// dev profile installs. Every external command is a static plan run
 /// through the runner seam; nothing shells out behind the plan's back.
 ///
+/// The first step installs every selected step's apt packages in one
+/// transaction (each step's `apt` share); the steps that own those
+/// packages keep their own install paths, which find the packages
+/// installed and do nothing, or install them when the first step could
+/// not.
+///
 /// The background lane holds the steps that touch only the invoking
 /// user's files and never use sudo, apt, or a prompt under `--yes`. The
-/// requirements are the cross-lane reads: code-server's settings point at
-/// the Quarto launcher, git defaults reports `gh auth status`, and
-/// `uv tool install` uses the system Python when it is present.
+/// requirements are the cross-lane reads: TinyTeX's `tlmgr` needs the
+/// full Perl that the system libraries bring in, code-server's settings
+/// point at the Quarto launcher, git defaults reports `gh auth status`,
+/// and `uv tool install` uses the system Python when it is present. The
+/// other background steps download over TLS with hpds's own client or
+/// rustup's, so they start right away.
 const SERVER_STEPS: &[Step] = &[
     Step {
-        title: "system libraries (apt)",
+        title: SYSTEM_LIBRARIES,
         lane: Lane::Foreground,
         requires: &[],
-        actions: &[
-            Action::Apt(AptCmd {
-                what: "refreshing apt package lists",
-                args: &["update"],
-            }),
-            Action::Apt(AptCmd {
-                what: "installing system libraries",
-                args: APT_SYSTEM_LIBRARIES,
-            }),
-        ],
+        apt: AptShare::Packages(APT_SYSTEM_LIBRARIES),
+        actions: &[Action::AptPrelude],
     },
     Step {
         title: "Docker Engine",
         lane: Lane::Foreground,
         requires: &[],
+        apt: AptShare::Repo(AptRepo::Docker),
         actions: &[Action::Server(server::ServerAction::Docker)],
     },
     Step {
         title: "stable Rust",
         lane: Lane::Background,
         requires: &[],
+        apt: AptShare::None,
         actions: &[Action::Server(server::ServerAction::Rust)],
     },
     Step {
         title: "R + CRAN/PPM repositories",
         lane: Lane::Foreground,
         requires: &[],
+        apt: AptShare::Repo(AptRepo::Rig),
         actions: &[
             Action::Install("r"),
             Action::Server(server::ServerAction::RProfile),
@@ -281,11 +298,9 @@ const SERVER_STEPS: &[Step] = &[
         title: "Python + PPM pip configuration",
         lane: Lane::Foreground,
         requires: &[],
+        apt: AptShare::Packages(PYTHON_PACKAGES),
         actions: &[
-            Action::Apt(AptCmd {
-                what: "installing Python",
-                args: &["install", "-y", "python3", "python3-pip", "python3-venv"],
-            }),
+            Action::StepPackages("Python"),
             Action::Run(Cmd {
                 what: "pointing pip at Posit Package Manager",
                 program: "sh",
@@ -301,30 +316,35 @@ const SERVER_STEPS: &[Step] = &[
         title: "quarto",
         lane: Lane::Background,
         requires: &[],
+        apt: AptShare::None,
         actions: &[Action::Install("quarto")],
     },
     Step {
         title: "tinytex",
         lane: Lane::Background,
-        requires: &[],
+        requires: &[SYSTEM_LIBRARIES],
+        apt: AptShare::None,
         actions: &[Action::Install("tinytex")],
     },
     Step {
         title: "RStudio Server",
         lane: Lane::Foreground,
         requires: &[],
+        apt: AptShare::LocalDeb(LocalDeb::RstudioServer),
         actions: &[Action::Install("rstudio-server")],
     },
     Step {
         title: "RStudio preferences",
         lane: Lane::Foreground,
         requires: &[],
+        apt: AptShare::None,
         actions: &[Action::Server(server::ServerAction::RstudioPreferences)],
     },
     Step {
         title: "code-server + extensions",
         lane: Lane::Foreground,
         requires: &["quarto"],
+        apt: AptShare::LocalDeb(LocalDeb::CodeServer),
         actions: &[
             Action::Server(server::ServerAction::InstallCodeServer),
             Action::Run(Cmd {
@@ -349,18 +369,21 @@ const SERVER_STEPS: &[Step] = &[
         title: "gh",
         lane: Lane::Background,
         requires: &[],
+        apt: AptShare::None,
         actions: &[Action::Install("gh")],
     },
     Step {
         title: "duckdb",
         lane: Lane::Background,
         requires: &[],
+        apt: AptShare::None,
         actions: &[Action::Install("duckdb")],
     },
     Step {
         title: "uv + ruff + sqlfluff",
         lane: Lane::Background,
         requires: &["Python + PPM pip configuration"],
+        apt: AptShare::None,
         actions: &[
             Action::Install("uv"),
             Action::Run(Cmd {
@@ -387,12 +410,14 @@ const SERVER_STEPS: &[Step] = &[
         title: "rig",
         lane: Lane::Foreground,
         requires: &[],
+        apt: AptShare::None,
         actions: &[Action::Install("rig")],
     },
     Step {
         title: "git defaults",
         lane: Lane::Foreground,
         requires: &["gh"],
+        apt: AptShare::None,
         actions: &[Action::GitSetup],
     },
 ];
@@ -419,35 +444,51 @@ pub fn plan(profile: Profile) -> String {
     for (index, step) in steps.iter().enumerate() {
         out.push_str(&format!("{:>3}. {}\n", index + 1, step.title));
         for action in step.actions {
-            out.push_str(&format!("       {}\n", describe(action)));
+            for line in describe(step, action, steps) {
+                out.push_str(&format!("       {line}\n"));
+            }
         }
     }
     out
 }
 
-/// One plan line for an action: the command a user could run themselves.
-fn describe(action: &Action) -> String {
+/// The plan lines for one of `step`'s actions: the commands a user could
+/// run themselves. The apt prelude describes what it does for every step
+/// of `all`, the whole profile.
+fn describe(step: &Step, action: &Action, all: &[Step]) -> Vec<String> {
     match action {
+        Action::AptPrelude => prelude::describe(all),
+        Action::StepPackages(_) => {
+            let packages = match step.apt {
+                AptShare::Packages(packages) => packages,
+                _ => &[],
+            };
+            let mut args = vec!["install", "-y"];
+            args.extend_from_slice(packages);
+            vec![format!(
+                "{} (unless {SYSTEM_LIBRARIES} installed them)",
+                install::apt_get_command_line(&args)
+            )]
+        }
         Action::Install(tool)
             if matches!(
                 *tool,
                 "uv" | "gh" | "duckdb" | "quarto" | "togi" | "rstudio-server"
             ) =>
         {
-            format!("hpds install {tool} (latest stable)")
+            vec![format!("hpds install {tool} (latest stable)")]
         }
-        Action::Install(tool) => format!("hpds install {tool}"),
-        Action::GitSetup => "hpds git setup".to_string(),
+        Action::Install(tool) => vec![format!("hpds install {tool}")],
+        Action::GitSetup => vec!["hpds git setup".to_string()],
         Action::Run(cmd) => {
             let line = format!("{} {}", cmd.program, cmd.args.join(" "));
-            if cmd.sudo {
+            vec![if cmd.sudo {
                 format!("sudo {line}")
             } else {
                 line
-            }
+            }]
         }
-        Action::Apt(apt) => install::apt_get_command_line(apt.args),
-        Action::Server(action) => server::describe(action).to_string(),
+        Action::Server(action) => vec![server::describe(action).to_string()],
     }
 }
 
@@ -482,22 +523,55 @@ pub fn choose_steps(all: &[Step], yes: bool, interactive: bool) -> anyhow::Resul
 /// it, or when no background step is selected, every step runs here, one
 /// at a time, in plan order.
 pub fn execute(steps: &[Step], deps: &SetupDeps, overlap: bool) -> Vec<StepResult> {
+    let run = Run::new(steps);
     let (foreground, background) = partition(steps);
     if overlap && !background.is_empty() {
-        return execute_overlapped(steps, &foreground, &background, deps);
+        return execute_overlapped(&run, &foreground, &background, deps);
     }
-    execute_sequential(steps, deps)
+    execute_sequential(&run, deps)
 }
 
-/// Run `steps` on this thread, one at a time, in plan order.
-fn execute_sequential(steps: &[Step], deps: &SetupDeps) -> Vec<StepResult> {
-    let total = steps.len();
-    steps
+/// What every step of one run shares: the selected steps, and the steps
+/// whose own apt packages the apt prelude has installed.
+struct Run<'s> {
+    selected: &'s [Step],
+    covered: Mutex<HashSet<&'static str>>,
+}
+
+impl<'s> Run<'s> {
+    fn new(selected: &'s [Step]) -> Self {
+        Run {
+            selected,
+            covered: Mutex::new(HashSet::new()),
+        }
+    }
+
+    /// Record that the apt prelude installed these steps' packages.
+    fn cover(&self, titles: impl IntoIterator<Item = &'static str>) {
+        self.covered
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .extend(titles);
+    }
+
+    /// Whether the apt prelude installed `title`'s packages.
+    fn is_covered(&self, title: &str) -> bool {
+        self.covered
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .contains(title)
+    }
+}
+
+/// Run the selected steps on this thread, one at a time, in plan order.
+fn execute_sequential(run: &Run, deps: &SetupDeps) -> Vec<StepResult> {
+    let total = run.selected.len();
+    run.selected
         .iter()
         .enumerate()
         .map(|(index, step)| {
             ui::println(&header(index, total, step.title));
-            run_step(step, deps)
+            run_step(step, deps, run)
         })
         .collect()
 }
@@ -514,8 +588,8 @@ fn background_header(index: usize, total: usize, title: &str) -> String {
 }
 
 /// Run one step, reporting its failure (if any) as it happens.
-fn run_step(step: &Step, deps: &SetupDeps) -> StepResult {
-    let error = match run_actions(step, deps) {
+fn run_step(step: &Step, deps: &SetupDeps, run: &Run) -> StepResult {
+    let error = match run_actions(step, deps, run) {
         Ok(()) => None,
         Err(err) => {
             ui::error(&err);
@@ -614,10 +688,10 @@ impl Drop for ReleaseForeground<'_> {
 /// Run the foreground lane on this thread and the background lane on one
 /// worker thread at the same time.
 ///
-/// The background lane starts once [`BACKGROUND_GATE`] has finished and
-/// runs its steps in plan order, each inside [`ui::capture`], sending each
-/// result and transcript back here. Every step first waits for the
-/// selected steps it `requires` on the other lane. This thread replays
+/// The background lane runs its steps in plan order, each inside
+/// [`ui::capture`], sending each result and transcript back here. Every
+/// step first waits for the selected steps it `requires` on the other
+/// lane. This thread replays
 /// background transcripts, under their headers, between foreground steps
 /// as they arrive, then the rest once its own lane is done.
 ///
@@ -626,12 +700,12 @@ impl Drop for ReleaseForeground<'_> {
 /// the lines it emitted before panicking: its capture is discarded as the
 /// panic unwinds.
 fn execute_overlapped(
-    steps: &[Step],
+    run: &Run,
     foreground: &[(usize, Step)],
     background: &[(usize, Step)],
     deps: &SetupDeps,
 ) -> Vec<StepResult> {
-    let total = steps.len();
+    let total = run.selected.len();
     let completed = Completed::new(foreground.iter().map(|(_, step)| step.title));
     let worker_deps = deps.for_thread();
     let (tx, rx) = mpsc::channel::<Finished>();
@@ -641,7 +715,7 @@ fn execute_overlapped(
         let worker = std::thread::Builder::new()
             .name("hpds-setup-background".to_string())
             .spawn_scoped(scope, move || {
-                run_background(background, &worker_deps, completed, &tx);
+                run_background(background, &worker_deps, run, completed, &tx);
             });
         let worker = match worker {
             Ok(worker) => worker,
@@ -663,7 +737,7 @@ fn execute_overlapped(
         for (index, step) in foreground {
             lane.wait_for(step.requires);
             ui::println(&header(*index, total, step.title));
-            let result = run_step(step, deps);
+            let result = run_step(step, deps, run);
             if let Some(slot) = lane.results.get_mut(*index) {
                 *slot = Some(result);
             }
@@ -695,23 +769,23 @@ fn execute_overlapped(
 
     match results {
         Some(results) => results.into_iter().flatten().collect(),
-        None => execute_sequential(steps, deps),
+        None => execute_sequential(run, deps),
     }
 }
 
-/// The background lane: wait for the gate, then run each step in plan
-/// order once its foreground requirements have finished, capturing its
-/// output and sending the outcome to the main thread.
+/// The background lane: run each step in plan order once its foreground
+/// requirements have finished, capturing its output and sending the
+/// outcome to the main thread.
 fn run_background(
     steps: &[(usize, Step)],
     deps: &SetupDeps,
+    run: &Run,
     completed: &Completed,
     tx: &mpsc::Sender<Finished>,
 ) {
-    completed.wait_for(&[BACKGROUND_GATE]);
     for (index, step) in steps {
         completed.wait_for(step.requires);
-        let (result, transcript) = ui::capture(|| run_step(step, deps));
+        let (result, transcript) = ui::capture(|| run_step(step, deps, run));
         let finished = Finished {
             index: *index,
             result,
@@ -781,7 +855,7 @@ fn unreported_error() -> anyhow::Error {
 }
 
 /// Run one step's actions in order, stopping the step at the first error.
-fn run_actions(step: &Step, deps: &SetupDeps) -> anyhow::Result<()> {
+fn run_actions(step: &Step, deps: &SetupDeps, run: &Run) -> anyhow::Result<()> {
     for action in step.actions {
         match action {
             Action::Install(tool) => {
@@ -797,8 +871,23 @@ fn run_actions(step: &Step, deps: &SetupDeps) -> anyhow::Result<()> {
                     deps.install.run_step(cmd.what, cmd.program, cmd.args)?;
                 }
             }
-            Action::Apt(apt) => {
-                deps.install.run_apt_step(apt.what, apt.args)?;
+            Action::AptPrelude => {
+                let covered = prelude::run(run.selected, deps)?;
+                run.cover(covered);
+            }
+            Action::StepPackages(name) => {
+                let what = format!("installing {name}");
+                if let AptShare::Packages(packages) = step.apt {
+                    if run.is_covered(step.title) {
+                        ui::println(&format!(
+                            "{name}'s packages were installed with the system libraries"
+                        ));
+                    } else {
+                        let mut args = vec!["install", "-y"];
+                        args.extend_from_slice(packages);
+                        deps.install.run_apt_step(&what, &args)?;
+                    }
+                }
             }
             Action::Server(action) => {
                 server::run(action, deps.server_host, deps.install.runner)?;
@@ -895,8 +984,9 @@ mod tests {
     use std::time::Duration;
 
     use super::*;
+    use crate::install::DownloadedPackage;
     use crate::install::installers::rstudio_server::{
-        DownloadedPackage, RstudioBackend, RstudioRelease, RstudioServer,
+        RstudioBackend, RstudioRelease, RstudioServer,
     };
     use crate::install::registry;
     use crate::install::test_support::{FakeFetcher, FakeRunner, PanicFetcher, probe_fixture};
@@ -933,6 +1023,9 @@ mod tests {
             _runner: &dyn crate::install::CommandRunner,
         ) -> anyhow::Result<Vec<u8>> {
             Ok(b"-----BEGIN PGP PUBLIC KEY BLOCK-----\nfixture\n-----END PGP PUBLIC KEY BLOCK-----\n".to_vec())
+        }
+        fn acquire_code_server_package(&self) -> anyhow::Result<server::CodeServerPackage> {
+            Err(anyhow!("this host downloads nothing"))
         }
     }
     static NO_SERVER_HOST: NoServerHost = NoServerHost;
@@ -1228,115 +1321,433 @@ mod tests {
         assert!(!log.path().join("hpds-setup.log").exists());
     }
 
-    /// An RStudio Server backend that reports the current release as
-    /// installed, so the RStudio step is an idempotent no-op.
-    struct InstalledRstudio;
-    impl RstudioBackend for InstalledRstudio {
-        fn detect(&self, _ctx: &InstallCtx<'_>) -> Option<String> {
-            Some("2026.09.0+174".to_string())
+    // --- a simulated server -------------------------------------------------
+
+    const RSTUDIO_LATEST: &str = "2026.09.0+174";
+    const RSTUDIO_DEB: &str = "/tmp/hpds-rstudio-server-sim.deb";
+    const CODE_SERVER_DEB: &str = "/tmp/hpds-code-server-sim.deb";
+    const RIG_KEY: &str =
+        "sudo curl -L https://rig.r-pkg.org/deb/rig.gpg -o /etc/apt/trusted.gpg.d/rig.gpg";
+    const DOCKER_SOURCES: &str = "/etc/apt/sources.list.d/docker.sources";
+    const RIG_SOURCES: &str = "/etc/apt/sources.list.d/rig.list";
+    const RIG_ADD: &str =
+        "sudo env DEBIAN_FRONTEND=noninteractive NEEDRESTART_SUSPEND=1 rig add release";
+
+    /// A fresh Ubuntu server, simulated through the runner seam: the user
+    /// tools the dev profile manages probe as installed, every command
+    /// succeeds unless marked failing, and the server packages (Docker,
+    /// rig, R, RStudio Server, code-server) become installed when the
+    /// command that installs them succeeds, so later probes see them.
+    #[derive(Default)]
+    struct Sim {
+        calls: Mutex<Vec<String>>,
+        installed: Mutex<HashSet<&'static str>>,
+        failing: Vec<(String, &'static str)>,
+        /// Third-party apt sources (`docker`, `rig`) that make
+        /// `apt-get update` fail while they are registered.
+        broken_sources: Vec<&'static str>,
+        /// The third-party apt sources currently registered.
+        sources: Mutex<HashSet<&'static str>>,
+    }
+
+    impl Sim {
+        /// A server where the server packages are already installed.
+        fn provisioned() -> Self {
+            let sim = Sim::default();
+            sim.installed.lock().unwrap().extend([
+                "docker",
+                "rig",
+                "R",
+                "rstudio-server",
+                "code-server",
+            ]);
+            sim
+        }
+
+        /// `apt-get update` fails while the `source` repository
+        /// (`docker` or `rig`) is registered.
+        fn broken_source(mut self, source: &'static str) -> Self {
+            self.broken_sources.push(source);
+            self
+        }
+
+        /// The `source` repository was registered before this run.
+        fn with_source(self, source: &'static str) -> Self {
+            self.sources.lock().unwrap().insert(source);
+            self
+        }
+
+        /// What `command` does to the registered sources.
+        fn track_sources(&self, command: &str) {
+            let mut sources = self.sources.lock().unwrap();
+            match command {
+                "sudo install -m 0755 -d /etc/apt/keyrings" => {
+                    sources.insert("docker");
+                }
+                c if c.starts_with("sudo sh -c echo 'deb http://rig.r-pkg.org/deb") => {
+                    sources.insert("rig");
+                }
+                c if c == format!("sudo rm -f {DOCKER_SOURCES}") => {
+                    sources.remove("docker");
+                }
+                c if c == format!("sudo rm -f {RIG_SOURCES}") => {
+                    sources.remove("rig");
+                }
+                _ => {}
+            }
+        }
+
+        /// `command` fails with `stderr` and installs nothing.
+        fn failing(mut self, command: &str, stderr: &'static str) -> Self {
+            self.failing.push((command.to_string(), stderr));
+            self
+        }
+
+        fn calls(&self) -> Vec<String> {
+            self.calls.lock().unwrap().clone()
+        }
+
+        fn record(&self, call: &str) {
+            self.calls.lock().unwrap().push(call.to_string());
+        }
+
+        fn has(&self, package: &str) -> bool {
+            self.installed.lock().unwrap().contains(package)
+        }
+
+        /// The apt-get calls, in order.
+        fn apt_calls(&self) -> Vec<String> {
+            self.calls()
+                .into_iter()
+                .filter(|call| call.contains("apt-get"))
+                .collect()
+        }
+
+        fn ok(stdout: &str) -> CommandOutput {
+            CommandOutput {
+                success: true,
+                stdout: stdout.to_string(),
+                stderr: String::new(),
+            }
+        }
+
+        /// What a successful `command` installs.
+        fn installs(command: &str) -> Vec<&'static str> {
+            let mut installed = Vec::new();
+            if command == RIG_ADD {
+                installed.push("R");
+            }
+            if command.starts_with(&install::apt_get_command_line(&["install"])) {
+                for word in command.split_whitespace() {
+                    match word {
+                        "docker-ce" => installed.push("docker"),
+                        "r-rig" => installed.push("rig"),
+                        RSTUDIO_DEB => installed.push("rstudio-server"),
+                        CODE_SERVER_DEB => installed.push("code-server"),
+                        _ => {}
+                    }
+                }
+            }
+            installed
+        }
+    }
+
+    impl CommandRunner for Sim {
+        fn which(&self, program: &str) -> Option<std::path::PathBuf> {
+            let present = match program {
+                "quarto" | "uv" | "gh" | "duckdb" | "togi" | "apt-get" => true,
+                "R" | "rig" | "code-server" | "rstudio-server" => self.has(program),
+                _ => false,
+            };
+            present.then(|| std::path::PathBuf::from("/usr/bin").join(program))
+        }
+
+        fn run(&self, program: &str, args: &[&str]) -> anyhow::Result<CommandOutput> {
+            let command = format!("{program} {}", args.join(" "));
+            self.record(&command);
+            if command == install::apt_get_command_line(&["update"])
+                && let Some(broken) = self
+                    .broken_sources
+                    .iter()
+                    .find(|source| self.sources.lock().unwrap().contains(*source))
+            {
+                return Ok(CommandOutput {
+                    success: false,
+                    stdout: String::new(),
+                    stderr: format!("E: The {broken} repository is not signed."),
+                });
+            }
+            self.track_sources(&command);
+            if let Some((_, stderr)) = self.failing.iter().find(|(c, _)| *c == command) {
+                return Ok(CommandOutput {
+                    success: false,
+                    stdout: String::new(),
+                    stderr: stderr.to_string(),
+                });
+            }
+            let output = match command.as_str() {
+                c if c.starts_with("dpkg-query -W") => {
+                    if self.has("docker") {
+                        Sim::ok(&"install ok installed\n".repeat(5))
+                    } else {
+                        CommandOutput {
+                            success: false,
+                            stdout: String::new(),
+                            stderr: "dpkg-query: no packages found".to_string(),
+                        }
+                    }
+                }
+                c if c.starts_with("dpkg-deb --field") && c.contains(CODE_SERVER_DEB) => {
+                    Sim::ok("Package: code-server\nArchitecture: amd64\nVersion: 4.141.0\n")
+                }
+                c if c == format!("test -e {RIG_SOURCES}") => CommandOutput {
+                    success: self.sources.lock().unwrap().contains("rig"),
+                    stdout: String::new(),
+                    stderr: String::new(),
+                },
+                "dpkg --print-architecture" => Sim::ok("amd64\n"),
+                "id -nG analyst" => Sim::ok("analyst sudo"),
+                "R --version" => Sim::ok(&probe_fixture("r.txt")),
+                "rig --version" => Sim::ok(&probe_fixture("rig.txt")),
+                "quarto --version" => Sim::ok(&probe_fixture("quarto.txt")),
+                "uv --version" => Sim::ok(&probe_fixture("uv.txt")),
+                "gh --version" => Sim::ok(&probe_fixture("gh.txt")),
+                "duckdb --version" => Sim::ok(&probe_fixture("duckdb.txt")),
+                "togi --version" => Sim::ok(&probe_fixture("togi.txt")),
+                "quarto list tools" => Sim::ok(&crate::install::test_support::tool_output_fixture(
+                    "tinytex/quarto-list-tools-managed.txt",
+                )),
+                _ => Sim::ok(""),
+            };
+            self.installed
+                .lock()
+                .unwrap()
+                .extend(Sim::installs(&command));
+            Ok(output)
+        }
+    }
+
+    /// The simulated server's host side: an Ubuntu noble machine with the
+    /// managed Quarto launcher, counting the downloads it is asked for.
+    #[derive(Default)]
+    struct SimHost {
+        /// Files that existed before this run.
+        existing: Vec<&'static str>,
+        docker_key_fails: bool,
+        docker_keys: Mutex<usize>,
+        code_server_downloads: Mutex<usize>,
+        writes: Mutex<Vec<std::path::PathBuf>>,
+    }
+
+    impl SimHost {
+        fn docker_keys(&self) -> usize {
+            *self.docker_keys.lock().unwrap()
+        }
+
+        fn code_server_downloads(&self) -> usize {
+            *self.code_server_downloads.lock().unwrap()
+        }
+
+        fn writes(&self) -> Vec<std::path::PathBuf> {
+            self.writes.lock().unwrap().clone()
+        }
+    }
+
+    impl server::ServerHost for SimHost {
+        fn current_user(&self) -> anyhow::Result<String> {
+            NoServerHost.current_user()
+        }
+        fn home_dir(&self, user: &str) -> anyhow::Result<std::path::PathBuf> {
+            NoServerHost.home_dir(user)
+        }
+        fn read(&self, path: &Path) -> anyhow::Result<Option<Vec<u8>>> {
+            if self.existing.iter().any(|file| Path::new(file) == path) {
+                return Ok(Some(b"# written before this run\n".to_vec()));
+            }
+            NoServerHost.read(path)
+        }
+        fn exists(&self, path: &Path) -> bool {
+            self.existing.iter().any(|file| Path::new(file) == path) || NoServerHost.exists(path)
+        }
+        fn write_atomic(&self, path: &Path, _bytes: &[u8], _mode: u32) -> anyhow::Result<()> {
+            self.writes.lock().unwrap().push(path.to_path_buf());
+            Ok(())
+        }
+        fn acquire_verified_rustup_init(&self) -> anyhow::Result<std::path::PathBuf> {
+            NoServerHost.acquire_verified_rustup_init()
+        }
+        fn acquire_docker_key(
+            &self,
+            runner: &dyn crate::install::CommandRunner,
+        ) -> anyhow::Result<Vec<u8>> {
+            *self.docker_keys.lock().unwrap() += 1;
+            if self.docker_key_fails {
+                Err(anyhow!("Docker key download interrupted"))
+            } else {
+                NoServerHost.acquire_docker_key(runner)
+            }
+        }
+        fn acquire_code_server_package(&self) -> anyhow::Result<server::CodeServerPackage> {
+            *self.code_server_downloads.lock().unwrap() += 1;
+            Ok(server::CodeServerPackage {
+                package: DownloadedPackage::at(CODE_SERVER_DEB.into()),
+                version: "4.141.0".to_string(),
+            })
+        }
+    }
+
+    /// RStudio Server against the simulated server: installed when
+    /// `rstudio-server` is on its PATH, downloaded to a fixed path, and
+    /// installed with the shared apt policy, like the real backend.
+    #[derive(Default)]
+    struct SimRstudio {
+        download_fails: bool,
+        /// Where the download lands, when not [`RSTUDIO_DEB`].
+        download_path: Option<std::path::PathBuf>,
+        downloads: Mutex<usize>,
+    }
+
+    impl SimRstudio {
+        fn downloads(&self) -> usize {
+            *self.downloads.lock().unwrap()
+        }
+    }
+
+    impl RstudioBackend for SimRstudio {
+        fn detect(&self, ctx: &InstallCtx<'_>) -> Option<String> {
+            ctx.runner
+                .which("rstudio-server")
+                .map(|_| RSTUDIO_LATEST.to_string())
         }
         fn latest(&self) -> anyhow::Result<RstudioRelease> {
             Ok(RstudioRelease {
-                version: "2026.09.0+174".to_string(),
+                version: RSTUDIO_LATEST.to_string(),
                 filename: "rstudio-server-2026.09.0-174-amd64.deb".to_string(),
                 url: "https://s3.amazonaws.com/rstudio-server/server/jammy/amd64/rstudio-server-2026.09.0-174-amd64.deb".to_string(),
             })
         }
         fn exact(&self, _version: &str) -> anyhow::Result<RstudioRelease> {
-            unreachable!("the installed version is current")
+            unreachable!("setup never pins RStudio Server")
         }
         fn download(&self, _release: &RstudioRelease) -> anyhow::Result<DownloadedPackage> {
-            unreachable!("the installed version is current")
+            *self.downloads.lock().unwrap() += 1;
+            if self.download_fails {
+                Err(anyhow!("RStudio Server download interrupted"))
+            } else {
+                Ok(DownloadedPackage::at(
+                    self.download_path
+                        .clone()
+                        .unwrap_or_else(|| RSTUDIO_DEB.into()),
+                ))
+            }
         }
         fn inspect(&self, _ctx: &InstallCtx<'_>, _package: &Path) -> anyhow::Result<String> {
-            unreachable!("the installed version is current")
+            Ok(format!(
+                "Package: rstudio-server\nArchitecture: amd64\nVersion: {RSTUDIO_LATEST}\n"
+            ))
         }
-        fn install(&self, _ctx: &InstallCtx<'_>, _package: &Path) -> anyhow::Result<()> {
-            unreachable!("the installed version is current")
+        fn install(&self, ctx: &InstallCtx<'_>, package: &Path) -> anyhow::Result<()> {
+            let path = package
+                .to_str()
+                .ok_or_else(|| anyhow!("the RStudio Server package path is not UTF-8"))?;
+            ctx.run_apt_step("installing RStudio Server", &["install", "-y", path])?;
+            Ok(())
         }
     }
 
-    /// The registry, except that RStudio Server is backed by
-    /// [`InstalledRstudio`].
-    fn server_lookup()
-    -> impl Fn(&str) -> Result<&'static dyn install::Installer, registry::RegistryError> + Sync
-    {
-        let backend = Box::leak(Box::new(InstalledRstudio));
-        let rstudio: &'static RstudioServer<&'static InstalledRstudio> =
+    /// How setup finds an installer by name.
+    type InstallerLookup =
+        dyn Fn(&str) -> Result<&'static dyn install::Installer, registry::RegistryError> + Sync;
+
+    /// The registry, except that RStudio Server is backed by `rstudio`.
+    fn sim_lookup(rstudio: SimRstudio) -> (&'static SimRstudio, &'static InstallerLookup) {
+        let backend: &'static SimRstudio = Box::leak(Box::new(rstudio));
+        let installer: &'static RstudioServer<&'static SimRstudio> =
             Box::leak(Box::new(RstudioServer::with_backend(backend)));
-        move |tool: &str| {
+        let lookup: &'static InstallerLookup = Box::leak(Box::new(move |tool: &str| {
             if tool == "rstudio-server" {
-                Ok(rstudio as &'static dyn install::Installer)
+                Ok(installer as &'static dyn install::Installer)
             } else {
                 registry::find(tool)
             }
-        }
+        }));
+        (backend, lookup)
     }
 
-    /// A fake runner on which every registry tool probes as installed
-    /// (no-op installs) and every server command plan succeeds, so a run
-    /// exercises exactly the server profile's own command plans.
-    fn server_runner() -> FakeRunner {
-        runner_with_everything_installed()
-            .on_path("code-server")
-            .on_path("duckdb")
-            .with_output("duckdb --version", &probe_fixture("duckdb.txt"))
-            .with_output(&install::apt_get_command_line(&["update"]), "")
-            .with_output(&install::apt_get_command_line(APT_SYSTEM_LIBRARIES), "")
-            .with_output(
-                &install::apt_get_command_line(&[
-                    "install",
-                    "-y",
-                    "python3",
-                    "python3-pip",
-                    "python3-venv",
-                ]),
-                "",
-            )
-            .with_output(
-                "sudo sh -c printf '[global]\\nindex-url = https://packagemanager.posit.co/pypi/latest/simple\\n' > /etc/pip.conf",
-                "",
-            )
-            .on_path("rstudio-server")
-            .with_output("rstudio-server version", "2026.09.0+174")
-            .with_output(
-                "code-server --install-extension ms-python.python --install-extension ms-toolsai.jupyter --install-extension quarto.quarto --install-extension charliermarsh.ruff",
-                "",
-            )
-            .with_output("uv tool install --upgrade ruff", "")
-            .with_output("uv tool install --upgrade sqlfluff", "")
-            .with_output("uv tool update-shell", "")
-            .with_output("sudo systemctl enable --now code-server@analyst", "")
-            .with_output("dpkg --print-architecture", "amd64")
-            .with_output("sudo install -m 0755 -d /etc/apt/keyrings", "")
-            .with_output(
-                &install::apt_get_command_line(&[
-                    "install",
-                    "-y",
-                    "docker-ce",
-                    "docker-ce-cli",
-                    "containerd.io",
-                    "docker-buildx-plugin",
-                    "docker-compose-plugin",
-                ]),
-                "",
-            )
-            .with_output("id -nG analyst", "analyst sudo")
-            .with_output("sudo usermod -aG docker analyst", "")
-            .with_output("/verified-download/rustup-init -y --profile default --default-toolchain stable", "")
+    /// The steps of the server profile except those titled in `without`.
+    fn server_steps_without(without: &[&str]) -> Vec<Step> {
+        steps(Profile::Server)
+            .iter()
+            .filter(|step| !without.contains(&step.title))
+            .copied()
+            .collect()
+    }
+
+    /// Run `selected` against the simulated server, one step at a time,
+    /// with the git flow recorded in the simulation's call log.
+    fn run_sim(
+        sim: &Sim,
+        host: &SimHost,
+        rstudio: SimRstudio,
+        selected: &[Step],
+    ) -> (Vec<StepResult>, &'static SimRstudio) {
+        let git_setup = || {
+            sim.record("hpds git setup");
+            Ok(())
+        };
+        let fetcher = FakeFetcher::default().with_latest("0.1.0");
+        let (backend, lookup) = sim_lookup(rstudio);
+        let mut deps = deps_recording_git(Os::Linux, true, sim, &fetcher, &git_setup);
+        deps.installer_lookup = lookup;
+        deps.server_host = host;
+        (execute(selected, &deps, false), backend)
+    }
+
+    fn failures(results: &[StepResult]) -> Vec<(&'static str, String)> {
+        results
+            .iter()
+            .filter_map(|result| result.error.clone().map(|error| (result.title, error)))
+            .collect()
+    }
+
+    /// The `apt-get install -y` line for `packages`.
+    fn apt_install(packages: &[&str]) -> String {
+        let mut args = vec!["install", "-y"];
+        args.extend_from_slice(packages);
+        install::apt_get_command_line(&args)
+    }
+
+    /// Every package the full server profile installs in step 1, in order.
+    fn merged_packages() -> Vec<&'static str> {
+        let mut packages = APT_SYSTEM_LIBRARIES.to_vec();
+        packages.extend_from_slice(PYTHON_PACKAGES);
+        packages.extend_from_slice(server::DOCKER_PACKAGES);
+        packages.push("r-rig");
+        packages.push(RSTUDIO_DEB);
+        packages.push(CODE_SERVER_DEB);
+        packages
+    }
+
+    /// Step 1's distribution packages: the system libraries and Python.
+    fn base_packages() -> Vec<&'static str> {
+        let mut packages = APT_SYSTEM_LIBRARIES.to_vec();
+        packages.extend_from_slice(PYTHON_PACKAGES);
+        packages
     }
 
     #[test]
     fn server_with_yes_runs_the_command_plans_through_the_runner_and_logs() {
-        let runner = server_runner();
+        let sim = Sim::default();
+        let host = SimHost::default();
         let git_setup = || {
-            runner.record("hpds git setup");
+            sim.record("hpds git setup");
             Ok(())
         };
         let fetcher = FakeFetcher::default().with_latest("0.1.0");
-        let lookup = server_lookup();
-        let mut deps = deps_recording_git(Os::Linux, true, &runner, &fetcher, &git_setup);
-        deps.installer_lookup = &lookup;
+        let (_, lookup) = sim_lookup(SimRstudio::default());
+        let mut deps = deps_recording_git(Os::Linux, true, &sim, &fetcher, &git_setup);
+        deps.installer_lookup = lookup;
+        deps.server_host = &host;
         let dir = tempfile::tempdir().expect("create temp dir");
         let log_path = dir.path().join("hpds-setup.log");
 
@@ -1346,11 +1757,11 @@ mod tests {
         )
         .expect("all steps succeed");
 
-        let calls = runner.calls();
+        let calls = sim.calls();
         // System steps ran as the planned commands, under sudo where
         // declared, all through the runner seam.
         assert_eq!(
-            calls.first(),
+            sim.apt_calls().first(),
             Some(&install::apt_get_command_line(&["update"]))
         );
         // All four extensions install in one code-server invocation, before
@@ -1391,6 +1802,522 @@ mod tests {
         assert!(!log.contains('✗'), "no step failed: {log}");
     }
 
+    // --- the apt prelude ------------------------------------------------------
+
+    #[test]
+    fn prelude_plan_takes_every_selected_steps_share() {
+        let plan = prelude::prelude_plan(steps(Profile::Server));
+        assert_eq!(plan.base, base_packages());
+        assert_eq!(
+            plan.repos,
+            [
+                (AptRepo::Docker, "Docker Engine"),
+                (AptRepo::Rig, "R + CRAN/PPM repositories")
+            ]
+        );
+        assert_eq!(
+            plan.debs,
+            [
+                (LocalDeb::RstudioServer, "RStudio Server"),
+                (LocalDeb::CodeServer, "code-server + extensions")
+            ]
+        );
+    }
+
+    #[test]
+    fn prelude_plan_leaves_out_deselected_steps() {
+        type LeftOut = fn(&prelude::PreludePlan) -> bool;
+        let cases: [(&str, LeftOut); 5] = [
+            ("Docker Engine", |plan| {
+                !plan.repos.iter().any(|(repo, _)| *repo == AptRepo::Docker)
+            }),
+            ("R + CRAN/PPM repositories", |plan| {
+                !plan.repos.iter().any(|(repo, _)| *repo == AptRepo::Rig)
+            }),
+            ("Python + PPM pip configuration", |plan| {
+                plan.base == APT_SYSTEM_LIBRARIES
+            }),
+            ("RStudio Server", |plan| {
+                !plan
+                    .debs
+                    .iter()
+                    .any(|(deb, _)| *deb == LocalDeb::RstudioServer)
+            }),
+            ("code-server + extensions", |plan| {
+                !plan
+                    .debs
+                    .iter()
+                    .any(|(deb, _)| *deb == LocalDeb::CodeServer)
+            }),
+        ];
+        for (title, left_out) in cases {
+            let plan = prelude::prelude_plan(&server_steps_without(&[title]));
+            assert!(left_out(&plan), "{title}: {plan:?}");
+        }
+
+        let only_libraries = prelude::prelude_plan(&steps(Profile::Server)[..1]);
+        assert_eq!(only_libraries.base, APT_SYSTEM_LIBRARIES);
+        assert!(only_libraries.repos.is_empty() && only_libraries.debs.is_empty());
+        assert_eq!(
+            prelude::prelude_plan(&[]),
+            prelude::PreludePlan {
+                base: vec![],
+                repos: vec![],
+                debs: vec![]
+            }
+        );
+    }
+
+    #[test]
+    fn a_fresh_server_installs_everything_in_one_update_and_one_install() {
+        let sim = Sim::default();
+        let host = SimHost::default();
+        let (results, rstudio) =
+            run_sim(&sim, &host, SimRstudio::default(), steps(Profile::Server));
+
+        assert!(failures(&results).is_empty(), "{:?}", failures(&results));
+        assert_eq!(
+            sim.apt_calls(),
+            [
+                install::apt_get_command_line(&["update"]),
+                apt_install(&merged_packages())
+            ],
+            "later steps run no apt for packages step 1 installed"
+        );
+        assert_eq!(host.docker_keys(), 1);
+        assert_eq!(host.code_server_downloads(), 1);
+        assert_eq!(rstudio.downloads(), 1);
+        let calls = sim.calls();
+        let install = calls
+            .iter()
+            .position(|call| *call == apt_install(&merged_packages()))
+            .unwrap();
+        let identity = calls
+            .iter()
+            .position(|call| call.starts_with("dpkg-deb --field") && call.contains(CODE_SERVER_DEB))
+            .expect("the code-server package identity is verified");
+        assert!(identity < install, "{calls:#?}");
+        let rig_add = calls
+            .iter()
+            .position(|call| call == RIG_ADD)
+            .expect("R added");
+        assert!(install < rig_add, "{calls:#?}");
+        assert!(
+            calls
+                .iter()
+                .any(|call| call == "sudo usermod -aG docker analyst")
+        );
+        assert!(
+            calls.iter().all(|call| !call.contains("install.sh")),
+            "{calls:#?}"
+        );
+    }
+
+    #[test]
+    fn deselected_docker_fetches_no_key_writes_no_repo_and_installs_no_packages() {
+        let sim = Sim::default();
+        let host = SimHost::default();
+        let selected = server_steps_without(&["Docker Engine"]);
+        let (results, _) = run_sim(&sim, &host, SimRstudio::default(), &selected);
+
+        assert!(failures(&results).is_empty(), "{:?}", failures(&results));
+        assert_eq!(host.docker_keys(), 0);
+        assert!(
+            !host
+                .writes()
+                .iter()
+                .any(|path| path.to_string_lossy().contains("docker")),
+            "{:?}",
+            host.writes()
+        );
+        assert!(
+            sim.apt_calls()
+                .iter()
+                .all(|call| !call.contains("docker-ce"))
+        );
+    }
+
+    #[test]
+    fn deselected_r_registers_no_rig_repo_and_installs_no_r_rig() {
+        let sim = Sim::default();
+        let selected = server_steps_without(&["R + CRAN/PPM repositories", "rig"]);
+        let (results, _) = run_sim(&sim, &SimHost::default(), SimRstudio::default(), &selected);
+
+        assert!(failures(&results).is_empty(), "{:?}", failures(&results));
+        assert!(sim.calls().iter().all(|call| call != RIG_KEY));
+        assert!(sim.apt_calls().iter().all(|call| !call.contains("r-rig")));
+    }
+
+    #[test]
+    fn deselected_python_leaves_python_out_and_python_installs_itself_without_step_one() {
+        let sim = Sim::default();
+        let selected = server_steps_without(&["Python + PPM pip configuration"]);
+        run_sim(&sim, &SimHost::default(), SimRstudio::default(), &selected);
+        assert!(sim.apt_calls().iter().all(|call| !call.contains("python3")));
+
+        let sim = Sim::default();
+        let selected = server_steps_without(&[SYSTEM_LIBRARIES]);
+        let (results, _) = run_sim(&sim, &SimHost::default(), SimRstudio::default(), &selected);
+        assert!(failures(&results).is_empty(), "{:?}", failures(&results));
+        assert!(
+            sim.apt_calls().contains(&apt_install(PYTHON_PACKAGES)),
+            "{:#?}",
+            sim.apt_calls()
+        );
+    }
+
+    #[test]
+    fn deselected_ide_servers_download_nothing() {
+        let sim = Sim::default();
+        let host = SimHost::default();
+        let selected = server_steps_without(&["RStudio Server", "code-server + extensions"]);
+        let (results, rstudio) = run_sim(&sim, &host, SimRstudio::default(), &selected);
+
+        assert!(failures(&results).is_empty(), "{:?}", failures(&results));
+        assert_eq!(rstudio.downloads(), 0);
+        assert_eq!(host.code_server_downloads(), 0);
+        assert!(sim.apt_calls().iter().all(|call| !call.contains(".deb")));
+    }
+
+    #[test]
+    fn step_one_alone_installs_only_the_system_libraries() {
+        let sim = Sim::default();
+        let host = SimHost::default();
+        let (results, rstudio) = run_sim(
+            &sim,
+            &host,
+            SimRstudio::default(),
+            &steps(Profile::Server)[..1],
+        );
+        assert!(failures(&results).is_empty(), "{:?}", failures(&results));
+        assert_eq!(
+            sim.apt_calls(),
+            [
+                install::apt_get_command_line(&["update"]),
+                apt_install(APT_SYSTEM_LIBRARIES)
+            ]
+        );
+        assert_eq!((host.docker_keys(), host.code_server_downloads()), (0, 0));
+        assert_eq!(rstudio.downloads(), 0);
+    }
+
+    #[test]
+    fn a_docker_key_failure_leaves_step_one_passing_and_fails_docker_itself() {
+        let sim = Sim::default();
+        let host = SimHost {
+            docker_key_fails: true,
+            ..SimHost::default()
+        };
+        let (results, _) = run_sim(&sim, &host, SimRstudio::default(), steps(Profile::Server));
+
+        let failed = failures(&results);
+        assert_eq!(failed.len(), 1, "{failed:?}");
+        assert_eq!(failed[0].0, "Docker Engine");
+        assert!(
+            failed[0].1.contains("Docker key download interrupted"),
+            "{failed:?}"
+        );
+        assert_eq!(host.docker_keys(), 2, "step 1 tried, then Docker retried");
+        let mut without_docker = base_packages();
+        without_docker.extend(["r-rig", RSTUDIO_DEB, CODE_SERVER_DEB]);
+        assert!(sim.apt_calls().contains(&apt_install(&without_docker)));
+    }
+
+    #[test]
+    fn an_rstudio_download_failure_is_dropped_and_rstudio_reports_its_own_error() {
+        let sim = Sim::default();
+        let rstudio = SimRstudio {
+            download_fails: true,
+            ..SimRstudio::default()
+        };
+        let (results, rstudio) =
+            run_sim(&sim, &SimHost::default(), rstudio, steps(Profile::Server));
+
+        let failed = failures(&results);
+        assert_eq!(failed.len(), 1, "{failed:?}");
+        assert_eq!(failed[0].0, "RStudio Server");
+        assert!(failed[0].1.contains("download interrupted"), "{failed:?}");
+        assert_eq!(rstudio.downloads(), 2, "step 1 tried, then RStudio retried");
+        assert!(
+            sim.apt_calls()
+                .iter()
+                .all(|call| !call.contains(RSTUDIO_DEB))
+        );
+    }
+
+    #[test]
+    fn a_failed_merged_install_retries_the_base_list_and_steps_install_themselves() {
+        let sim = Sim::default().failing(&apt_install(&merged_packages()), "E: held packages");
+        let (results, _) = run_sim(
+            &sim,
+            &SimHost::default(),
+            SimRstudio::default(),
+            steps(Profile::Server),
+        );
+
+        assert!(failures(&results).is_empty(), "{:?}", failures(&results));
+        let apt = sim.apt_calls();
+        assert_eq!(apt[1], apt_install(&merged_packages()));
+        assert_eq!(apt[2], apt_install(&base_packages()));
+        for own in [
+            apt_install(server::DOCKER_PACKAGES),
+            apt_install(&["r-rig"]),
+            apt_install(&[RSTUDIO_DEB]),
+            apt_install(&[CODE_SERVER_DEB]),
+        ] {
+            assert!(apt.contains(&own), "missing {own}: {apt:#?}");
+        }
+        assert!(
+            !apt.contains(&apt_install(PYTHON_PACKAGES)),
+            "the retry covered Python: {apt:#?}"
+        );
+    }
+
+    #[test]
+    fn step_one_fails_only_when_the_retry_fails_too() {
+        let sim = Sim::default()
+            .failing(&apt_install(&merged_packages()), "E: held packages")
+            .failing(&apt_install(&base_packages()), "E: disk full");
+        let (results, _) = run_sim(
+            &sim,
+            &SimHost::default(),
+            SimRstudio::default(),
+            steps(Profile::Server),
+        );
+
+        let step_one = results[0].error.as_deref().expect("step 1 fails");
+        assert!(step_one.contains("E: disk full"), "{step_one}");
+        assert!(step_one.contains("E: held packages"), "{step_one}");
+    }
+
+    #[test]
+    fn an_unreachable_docker_repo_is_unwound_and_docker_fails_on_its_own() {
+        let sim = Sim::default().broken_source("docker");
+        let (results, _) = run_sim(
+            &sim,
+            &SimHost::default(),
+            SimRstudio::default(),
+            steps(Profile::Server),
+        );
+
+        // Both of this run's sources come out, since apt does not say which
+        // one broke. R then installs rig itself, and Docker fails on its
+        // own, removing its source again so later refreshes still work.
+        let failed = failures(&results);
+        assert_eq!(failed.len(), 1, "{failed:?}");
+        assert_eq!(failed[0].0, "Docker Engine");
+        assert!(
+            failed[0].1.contains("docker repository is not signed"),
+            "{failed:?}"
+        );
+        let calls = sim.calls();
+        let removal = format!("sudo rm -f {DOCKER_SOURCES}");
+        assert_eq!(
+            calls.iter().filter(|call| **call == removal).count(),
+            2,
+            "{calls:#?}"
+        );
+        assert!(
+            calls.contains(&format!("sudo rm -f {RIG_SOURCES}")),
+            "{calls:#?}"
+        );
+        let mut without_repos = base_packages();
+        without_repos.extend([RSTUDIO_DEB, CODE_SERVER_DEB]);
+        let apt = sim.apt_calls();
+        assert_eq!(
+            apt[..3],
+            [
+                install::apt_get_command_line(&["update"]),
+                install::apt_get_command_line(&["update"]),
+                apt_install(&without_repos)
+            ],
+            "{apt:#?}"
+        );
+        assert!(apt.contains(&apt_install(&["r-rig"])), "{apt:#?}");
+    }
+
+    #[test]
+    fn an_unreachable_rig_repo_is_unwound_and_r_fails_on_its_own() {
+        let sim = Sim::default().broken_source("rig");
+        let (results, _) = run_sim(
+            &sim,
+            &SimHost::default(),
+            SimRstudio::default(),
+            steps(Profile::Server),
+        );
+
+        let failed: Vec<_> = failures(&results)
+            .into_iter()
+            .map(|(title, _)| title)
+            .collect();
+        assert_eq!(failed, ["R + CRAN/PPM repositories", "rig"]);
+        assert!(
+            failures(&results)[0]
+                .1
+                .contains("rig repository is not signed"),
+            "{:?}",
+            failures(&results)
+        );
+        assert!(sim.calls().contains(&format!("sudo rm -f {RIG_SOURCES}")));
+        let mut without_repos = base_packages();
+        without_repos.extend([RSTUDIO_DEB, CODE_SERVER_DEB]);
+        let apt = sim.apt_calls();
+        assert!(apt.contains(&apt_install(&without_repos)), "{apt:#?}");
+        assert!(
+            apt.contains(&apt_install(server::DOCKER_PACKAGES)),
+            "Docker installs itself: {apt:#?}"
+        );
+        assert_eq!(
+            sim.calls()
+                .iter()
+                .filter(|call| **call == format!("sudo rm -f {RIG_SOURCES}"))
+                .count(),
+            3,
+            "step 1, R's rig install, and the rig step each remove the source they added"
+        );
+    }
+
+    #[test]
+    fn step_one_fails_when_update_fails_even_after_unwinding() {
+        let sim = Sim::default().broken_source("docker").failing(
+            &install::apt_get_command_line(&["update"]),
+            "E: mirror down",
+        );
+        let (results, _) = run_sim(
+            &sim,
+            &SimHost::default(),
+            SimRstudio::default(),
+            steps(Profile::Server),
+        );
+
+        let step_one = results[0].error.as_deref().expect("step 1 fails");
+        assert!(step_one.contains("E: mirror down"), "{step_one}");
+        assert!(
+            sim.calls()
+                .contains(&format!("sudo rm -f {DOCKER_SOURCES}"))
+        );
+    }
+
+    #[test]
+    fn a_source_file_from_before_this_run_is_never_removed() {
+        let sim = Sim::default().broken_source("docker").with_source("docker");
+        let host = SimHost {
+            existing: vec![DOCKER_SOURCES],
+            ..SimHost::default()
+        };
+        let (results, _) = run_sim(&sim, &host, SimRstudio::default(), steps(Profile::Server));
+
+        assert!(
+            results[0].error.is_some(),
+            "the broken source still breaks update"
+        );
+        let removal = format!("sudo rm -f {DOCKER_SOURCES}");
+        assert!(
+            sim.calls().iter().all(|call| *call != removal),
+            "{:#?}",
+            sim.calls()
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn an_unusable_package_path_drops_only_that_package() {
+        use std::os::unix::ffi::OsStrExt;
+
+        let sim = Sim::default();
+        let rstudio = SimRstudio {
+            download_path: Some(std::path::PathBuf::from(std::ffi::OsStr::from_bytes(
+                b"/tmp/hpds-rstudio-\xff.deb",
+            ))),
+            ..SimRstudio::default()
+        };
+        let (results, _) = run_sim(&sim, &SimHost::default(), rstudio, steps(Profile::Server));
+
+        let failed: Vec<_> = failures(&results)
+            .into_iter()
+            .map(|(title, _)| title)
+            .collect();
+        assert_eq!(failed, ["RStudio Server"]);
+        let mut without_rstudio = base_packages();
+        without_rstudio.extend_from_slice(server::DOCKER_PACKAGES);
+        without_rstudio.extend(["r-rig", CODE_SERVER_DEB]);
+        assert!(sim.apt_calls().contains(&apt_install(&without_rstudio)));
+    }
+
+    #[test]
+    fn python_says_plainly_when_step_one_installed_its_packages() {
+        let sim = Sim::default();
+        let host = SimHost::default();
+        let (_, transcript) =
+            ui::capture(|| run_sim(&sim, &host, SimRstudio::default(), steps(Profile::Server)));
+        let lines: Vec<_> = transcript
+            .lines()
+            .iter()
+            .map(|(_, line)| line.clone())
+            .collect();
+        assert!(
+            lines
+                .iter()
+                .any(|line| line == "Python's packages were installed with the system libraries"),
+            "{lines:#?}"
+        );
+    }
+
+    #[test]
+    fn a_rerun_downloads_nothing_already_installed() {
+        let sim = Sim::provisioned();
+        let host = SimHost::default();
+        let (results, rstudio) =
+            run_sim(&sim, &host, SimRstudio::default(), steps(Profile::Server));
+
+        assert!(failures(&results).is_empty(), "{:?}", failures(&results));
+        assert_eq!(rstudio.downloads(), 0);
+        assert_eq!(host.code_server_downloads(), 0);
+        assert_eq!(host.docker_keys(), 0);
+        assert!(sim.calls().iter().all(|call| call != RIG_KEY));
+        assert_eq!(
+            sim.apt_calls(),
+            [
+                install::apt_get_command_line(&["update"]),
+                apt_install(&base_packages())
+            ]
+        );
+    }
+
+    #[test]
+    fn the_plan_describes_the_whole_prelude_and_no_install_script() {
+        let text = plan(Profile::Server);
+        assert!(!text.contains("install.sh"), "{text}");
+        assert!(!text.contains("code-server.dev"), "{text}");
+        let step_one: Vec<&str> = text
+            .lines()
+            .skip_while(|line| !line.ends_with("1. system libraries (apt)"))
+            .skip(1)
+            .take_while(|line| !line.ends_with("2. Docker Engine"))
+            .collect();
+        let merged = step_one
+            .iter()
+            .find(|line| line.contains("install -y build-essential"))
+            .expect("merged install line");
+        for package in [
+            "python3-venv",
+            "docker-ce",
+            "r-rig",
+            "rstudio-server",
+            "code-server",
+        ] {
+            assert!(merged.contains(package), "{package}: {merged}");
+        }
+        assert_eq!(
+            step_one
+                .iter()
+                .filter(|line| line.ends_with("apt-get -o DPkg::Lock::Timeout=600 update"))
+                .count(),
+            1,
+            "{step_one:#?}"
+        );
+    }
+
     // --- lanes and requirements ---------------------------------------------
 
     const SERVER_BACKGROUND: [&str; 6] = [
@@ -1418,6 +2345,7 @@ mod tests {
         assert_eq!(
             requirements,
             [
+                ("tinytex", &[SYSTEM_LIBRARIES][..]),
                 ("code-server + extensions", &["quarto"][..]),
                 (
                     "uv + ruff + sqlfluff",
@@ -1458,18 +2386,18 @@ mod tests {
     }
 
     #[test]
-    fn the_background_gate_precedes_every_background_step() {
-        let table = steps(Profile::Server);
-        let gate = table
+    fn only_background_steps_that_need_system_packages_wait_for_step_one() {
+        // rustup-init, the Quarto, gh, DuckDB, and uv downloads need only
+        // TLS, which the cloud image has; TinyTeX's tlmgr needs the full
+        // Perl that the system libraries bring in.
+        let waiting: Vec<_> = steps(Profile::Server)
             .iter()
-            .position(|step| step.title == BACKGROUND_GATE)
-            .expect("the gate is a server step");
-        assert_eq!(table[gate].lane, Lane::Foreground);
-        for (index, step) in table.iter().enumerate() {
-            if step.lane == Lane::Background {
-                assert!(gate < index, "{} starts before the gate", step.title);
-            }
-        }
+            .filter(|step| step.lane == Lane::Background)
+            .filter(|step| step.requires.contains(&SYSTEM_LIBRARIES))
+            .map(|step| step.title)
+            .collect();
+        assert_eq!(waiting, ["tinytex"]);
+        assert_eq!(steps(Profile::Server)[0].title, SYSTEM_LIBRARIES);
     }
 
     #[test]
@@ -1506,7 +2434,9 @@ mod tests {
                                 cmd.what
                             );
                         }
-                        Action::Apt(apt) => panic!("{}: {} uses apt", step.title, apt.what),
+                        Action::AptPrelude | Action::StepPackages(_) => {
+                            panic!("{}: uses apt", step.title)
+                        }
                         Action::Server(action) => assert!(
                             matches!(action, server::ServerAction::Rust),
                             "{}: {action:?} is not user-space",
@@ -1551,13 +2481,13 @@ mod tests {
                             assert!(
                                 !["apt-get", "apt", "dpkg", "gdebi"].contains(&cmd.program)
                                     && !cmd.args.iter().any(|arg| arg.contains("apt-get")),
-                                "{}: `{}` must be an Action::Apt",
+                                "{}: `{}` must go through the apt policy",
                                 step.title,
                                 cmd.what
                             );
-                            vec![describe(action)]
+                            describe(step, action, steps(profile))
                         }
-                        _ => vec![describe(action)],
+                        _ => describe(step, action, steps(profile)),
                     };
                     for line in lines {
                         apt_lines += line.matches("apt-get").count();
@@ -1566,26 +2496,24 @@ mod tests {
                 }
             }
         }
-        assert!(apt_lines >= 5, "the walk found only {apt_lines} apt calls");
+        assert!(apt_lines >= 6, "the walk found only {apt_lines} apt calls");
         assert!(!APT_SYSTEM_LIBRARIES.contains(&"gdebi-core"));
     }
 
     #[test]
     fn every_executed_apt_call_waits_for_the_lock_and_runs_noninteractive() {
-        let runner = server_runner();
-        let git_setup = || Ok(());
-        let fetcher = FakeFetcher::default().with_latest("0.1.0");
-        let lookup = server_lookup();
-        let mut deps = deps_recording_git(Os::Linux, true, &runner, &fetcher, &git_setup);
-        deps.installer_lookup = &lookup;
-
-        let results = execute(steps(Profile::Server), &deps, false);
-        assert!(results.iter().all(|result| result.error.is_none()));
-        let calls = runner.calls();
-        let apt: Vec<&String> = calls.iter().filter(|c| c.contains("apt-get")).collect();
-        // Step 1's update and install, Python, and Docker's update and
-        // install.
-        assert_eq!(apt.len(), 5, "{calls:#?}");
+        // Step 1 merges everything, then its install fails, so every
+        // step's own apt path runs too.
+        let sim = Sim::default().failing(&apt_install(&merged_packages()), "E: broken");
+        let (results, _) = run_sim(
+            &sim,
+            &SimHost::default(),
+            SimRstudio::default(),
+            steps(Profile::Server),
+        );
+        assert!(failures(&results).is_empty(), "{:?}", failures(&results));
+        let apt = sim.apt_calls();
+        assert!(apt.len() >= 8, "{apt:#?}");
         for call in apt {
             assert!(call.starts_with(APT_POLICY), "{call}");
         }
@@ -1777,18 +2705,21 @@ mod tests {
             title: "foreground first",
             lane: Lane::Foreground,
             requires: &[],
+            apt: AptShare::None,
             actions: &[fake!("one")],
         },
         Step {
             title: "background waits",
             lane: Lane::Background,
             requires: &[],
+            apt: AptShare::None,
             actions: &[fake!("wait")],
         },
         Step {
             title: "foreground release",
             lane: Lane::Foreground,
             requires: &[],
+            apt: AptShare::None,
             actions: &[fake!("release")],
         },
     ];
@@ -1850,28 +2781,59 @@ mod tests {
         assert_eq!(outcome.lines_starting("[2/3]"), ["[2/3] background waits"]);
     }
 
-    const GATED_STEPS: &[Step] = &[
+    /// Step 1 can only finish once a background step without
+    /// requirements has run: if the background lane waited for step 1, the
+    /// gated command would time out.
+    const UNGATED_STEPS: &[Step] = &[
         Step {
-            title: BACKGROUND_GATE,
+            title: SYSTEM_LIBRARIES,
             lane: Lane::Foreground,
             requires: &[],
+            apt: AptShare::None,
             actions: &[fake!("apt")],
         },
         Step {
-            title: "background after the gate",
+            title: "background download",
             lane: Lane::Background,
             requires: &[],
-            actions: &[fake!("user")],
+            apt: AptShare::None,
+            actions: &[fake!("download")],
         },
     ];
 
     #[test]
-    fn the_background_lane_starts_after_the_system_libraries_step() {
+    fn download_only_background_steps_start_before_the_system_libraries_finish() {
+        let runner = GateRunner::new(Duration::from_secs(10)).gate("fake apt", "fake download");
+        let outcome = run_bounded(UNGATED_STEPS, runner, true);
+
+        assert_eq!(outcome.failed(), Vec::<&str>::new(), "{:?}", outcome.log);
+        assert_eq!(outcome.log, ["fake download", "fake apt"]);
+    }
+
+    const SYSTEM_PACKAGE_STEPS: &[Step] = &[
+        Step {
+            title: SYSTEM_LIBRARIES,
+            lane: Lane::Foreground,
+            requires: &[],
+            apt: AptShare::None,
+            actions: &[fake!("apt")],
+        },
+        Step {
+            title: "background needs system packages",
+            lane: Lane::Background,
+            requires: &[SYSTEM_LIBRARIES],
+            apt: AptShare::None,
+            actions: &[fake!("tlmgr")],
+        },
+    ];
+
+    #[test]
+    fn background_steps_that_need_system_packages_wait_for_them() {
         let runner =
             GateRunner::new(Duration::from_secs(10)).delay("fake apt", Duration::from_millis(300));
-        let outcome = run_bounded(GATED_STEPS, runner, true);
+        let outcome = run_bounded(SYSTEM_PACKAGE_STEPS, runner, true);
 
-        assert_eq!(outcome.log, ["fake apt", "fake user"]);
+        assert_eq!(outcome.log, ["fake apt", "fake tlmgr"]);
     }
 
     const REQUIRING_STEPS: &[Step] = &[
@@ -1879,24 +2841,28 @@ mod tests {
             title: "foreground slow",
             lane: Lane::Foreground,
             requires: &[],
+            apt: AptShare::None,
             actions: &[fake!("slow")],
         },
         Step {
             title: "background needs foreground",
             lane: Lane::Background,
             requires: &["foreground slow"],
+            apt: AptShare::None,
             actions: &[fake!("needs-slow")],
         },
         Step {
             title: "background slow",
             lane: Lane::Background,
             requires: &[],
+            apt: AptShare::None,
             actions: &[fake!("bg-slow")],
         },
         Step {
             title: "foreground needs background",
             lane: Lane::Foreground,
             requires: &["background slow"],
+            apt: AptShare::None,
             actions: &[fake!("needs-bg")],
         },
     ];
@@ -1918,24 +2884,28 @@ mod tests {
             title: "foreground first",
             lane: Lane::Foreground,
             requires: &[],
+            apt: AptShare::None,
             actions: &[fake!("one")],
         },
         Step {
             title: "background explodes",
             lane: Lane::Background,
             requires: &[],
+            apt: AptShare::None,
             actions: &[fake!("boom")],
         },
         Step {
             title: "background never runs",
             lane: Lane::Background,
             requires: &[],
+            apt: AptShare::None,
             actions: &[fake!("two")],
         },
         Step {
             title: "foreground needs background",
             lane: Lane::Foreground,
             requires: &["background never runs"],
+            apt: AptShare::None,
             actions: &[fake!("three")],
         },
     ];
@@ -1987,7 +2957,7 @@ mod tests {
     /// Wraps the server fakes: the command starting with `slow` takes a
     /// moment, and every command is logged when it finishes.
     struct SlowRunner {
-        inner: FakeRunner,
+        inner: Sim,
         slow: &'static str,
     }
 
@@ -2011,17 +2981,19 @@ mod tests {
         let (tx, rx) = mpsc::channel();
         std::thread::spawn(move || {
             let runner = SlowRunner {
-                inner: server_runner(),
+                inner: Sim::default(),
                 slow,
             };
+            let host = SimHost::default();
             let git_setup = || {
                 runner.inner.record("hpds git setup");
                 Ok(())
             };
             let fetcher = FakeFetcher::default().with_latest("0.1.0");
-            let lookup = server_lookup();
+            let (_, lookup) = sim_lookup(SimRstudio::default());
             let mut deps = deps_recording_git(Os::Linux, true, &runner, &fetcher, &git_setup);
-            deps.installer_lookup = &lookup;
+            deps.installer_lookup = lookup;
+            deps.server_host = &host;
             let (results, transcript) =
                 ui::capture(|| execute(steps(Profile::Server), &deps, true));
             let _ = tx.send(Outcome {
@@ -2125,6 +3097,7 @@ mod tests {
         title: "git defaults",
         lane: Lane::Foreground,
         requires: &[],
+        apt: AptShare::None,
         actions: &[Action::GitSetup],
     };
 
@@ -2132,7 +3105,7 @@ mod tests {
         let runner = FakeRunner::default();
         let fetcher = FakeFetcher::default();
         let deps = deps_recording_git(Os::Linux, true, &runner, &fetcher, git_setup);
-        run_step(&GIT_STEP, &deps).error
+        run_step(&GIT_STEP, &deps, &Run::new(&[GIT_STEP])).error
     }
 
     #[test]

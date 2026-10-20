@@ -1,10 +1,11 @@
 use std::io::copy;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::Mutex;
 
 use anyhow::{Context, Result, anyhow};
 
-use crate::install::{InstallCtx, Installer, apt_get_command_line};
+pub use crate::install::DownloadedPackage;
+use crate::install::{InstallCtx, Installer, apt_get_command_line, apt_package_path, is_current};
 use crate::tools::Os;
 use crate::ui::HintExt;
 
@@ -26,33 +27,6 @@ pub struct DebianMetadata {
     pub package: String,
     pub architecture: String,
     pub version: String,
-}
-
-#[derive(Debug)]
-pub struct DownloadedPackage {
-    path: PathBuf,
-    _temporary: Option<tempfile::NamedTempFile>,
-}
-
-impl DownloadedPackage {
-    fn temporary(file: tempfile::NamedTempFile) -> Self {
-        Self {
-            path: file.path().to_path_buf(),
-            _temporary: Some(file),
-        }
-    }
-
-    #[cfg(test)]
-    fn at(path: PathBuf) -> Self {
-        Self {
-            path,
-            _temporary: None,
-        }
-    }
-
-    fn path(&self) -> &Path {
-        &self.path
-    }
 }
 
 pub trait RstudioBackend {
@@ -157,7 +131,10 @@ fn exact_release(version: &str) -> Result<RstudioRelease> {
     parse_stable_redirect(&format!("{RELEASE_PREFIX}{base}-{build}{RELEASE_SUFFIX}"))
 }
 
-pub fn parse_debian_metadata(output: &str, selected: &str) -> Result<DebianMetadata> {
+/// Read the `Package`, `Architecture`, and `Version` fields that
+/// `dpkg-deb --field <deb> Package Architecture Version` prints. Each must
+/// appear exactly once and be nonempty.
+pub(crate) fn parse_debian_identity(output: &str) -> Result<DebianMetadata> {
     fn one(output: &str, field: &str) -> Result<String> {
         let prefix = format!("{field}:");
         let values: Vec<_> = output
@@ -171,11 +148,15 @@ pub fn parse_debian_metadata(output: &str, selected: &str) -> Result<DebianMetad
             )),
         }
     }
-    let metadata = DebianMetadata {
+    Ok(DebianMetadata {
         package: one(output, "Package")?,
         architecture: one(output, "Architecture")?,
         version: one(output, "Version")?,
-    };
+    })
+}
+
+pub fn parse_debian_metadata(output: &str, selected: &str) -> Result<DebianMetadata> {
+    let metadata = parse_debian_identity(output)?;
     if metadata.package != "rstudio-server"
         || metadata.architecture != "amd64"
         || metadata.version != selected
@@ -301,13 +282,10 @@ impl RstudioBackend for HttpBackend {
 
     fn install(&self, ctx: &InstallCtx<'_>, package: &Path) -> Result<()> {
         // apt-get treats an argument as a local package file only when it
-        // contains a slash, so the path is always passed in absolute form.
-        let package =
-            std::path::absolute(package).context("could not resolve the temporary package path")?;
-        let path = package
-            .to_str()
-            .context("the temporary package path is not valid UTF-8")?;
-        ctx.run_apt_step("installing RStudio Server", &["install", "-y", path])
+        // starts with `/`, `./`, or `../` and names a `.deb` (or `.ddeb`)
+        // file, so the path is always passed in absolute form.
+        let path = apt_package_path(package)?;
+        ctx.run_apt_step("installing RStudio Server", &["install", "-y", &path])
             .context("could not install the verified RStudio Server package")?;
         Ok(())
     }
@@ -329,6 +307,24 @@ fn require_linux_amd64(ctx: &InstallCtx<'_>) -> Result<()> {
     } else {
         Err(anyhow!("RStudio Server is only supported on Linux amd64"))
             .hint("run hpds setup on an amd64 Linux server")
+    }
+}
+
+impl<B: RstudioBackend> RstudioServer<B> {
+    /// Download `release` and check that the file is that exact
+    /// `rstudio-server` amd64 package before anything installs it.
+    fn verified_package(
+        &self,
+        ctx: &InstallCtx<'_>,
+        release: &RstudioRelease,
+    ) -> Result<DownloadedPackage> {
+        let package = self.backend.download(release)?;
+        let metadata = self
+            .backend
+            .inspect(ctx, package.path())
+            .context("could not inspect the downloaded RStudio Server package")?;
+        parse_debian_metadata(&metadata, &release.version)?;
+        Ok(package)
     }
 }
 
@@ -360,13 +356,21 @@ impl<B: RstudioBackend> Installer for RstudioServer<B> {
             .unwrap_or_else(|lock| lock.into_inner())
             .take()
             .context("missing resolved RStudio Server release")?;
-        let package = self.backend.download(&release)?;
-        let metadata = self
-            .backend
-            .inspect(ctx, package.path())
-            .context("could not inspect the downloaded RStudio Server package")?;
-        parse_debian_metadata(&metadata, &release.version)?;
+        let package = self.verified_package(ctx, &release)?;
         self.backend.install(ctx, package.path())
+    }
+    fn prepare_package(&self, ctx: &InstallCtx) -> Result<Option<DownloadedPackage>> {
+        self.backend.preflight(ctx)?;
+        let release = match ctx.pin.as_deref() {
+            Some(version) => self.backend.exact(version)?,
+            None => self.backend.latest()?,
+        };
+        if let Some(found) = self.backend.detect(ctx)
+            && is_current(&found, &release.version, ctx.pin.is_some())
+        {
+            return Ok(None);
+        }
+        self.verified_package(ctx, &release).map(Some)
     }
     fn plan(&self, ctx: &InstallCtx) -> Vec<String> {
         let selected = ctx.pin.as_deref().unwrap_or("latest stable");
@@ -758,6 +762,68 @@ mod tests {
                 "{metadata:?}"
             );
         }
+    }
+
+    #[test]
+    fn prepare_package_skips_a_current_install_without_downloading() {
+        for installed in [LATEST, "2026.10.0+1"] {
+            let backend = FakeBackend::installed(installed);
+            let installer = RstudioServer::with_backend(&backend);
+            let runner = FakeRunner::default();
+            let fetcher = FakeFetcher::default();
+            let package = installer
+                .prepare_package(&ctx_on(Os::Linux, &runner, &fetcher))
+                .expect("a current install needs no package");
+            assert!(package.is_none(), "{installed}");
+            assert_eq!(*backend.phases.borrow(), ["resolve latest"], "{installed}");
+        }
+    }
+
+    #[test]
+    fn prepare_package_downloads_and_verifies_without_installing() {
+        for installed in [None, Some("2025.05.1+513")] {
+            let backend = FakeBackend {
+                installed: RefCell::new(installed.map(str::to_string)),
+                ..FakeBackend::default()
+            };
+            let installer = RstudioServer::with_backend(&backend);
+            let runner = FakeRunner::default();
+            let fetcher = FakeFetcher::default();
+            let package = installer
+                .prepare_package(&ctx_on(Os::Linux, &runner, &fetcher))
+                .expect("an outdated install needs the package")
+                .expect("a package");
+            assert_eq!(package.path(), Path::new("/tmp/test-rstudio-server.deb"));
+            assert_eq!(
+                *backend.phases.borrow(),
+                ["resolve latest", "download 2026.09.0+174", "inspect"],
+                "{installed:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn prepare_package_rejects_a_package_with_the_wrong_identity() {
+        let backend = FakeBackend {
+            metadata_override: Some(
+                "Package: rstudio-workbench\nArchitecture: amd64\nVersion: 2026.09.0+174\n"
+                    .to_string(),
+            ),
+            ..FakeBackend::default()
+        };
+        let installer = RstudioServer::with_backend(&backend);
+        let runner = FakeRunner::default();
+        let fetcher = FakeFetcher::default();
+        installer
+            .prepare_package(&ctx_on(Os::Linux, &runner, &fetcher))
+            .expect_err("a mismatched package is never handed out");
+        assert!(
+            !backend
+                .phases
+                .borrow()
+                .iter()
+                .any(|p| p == "install package")
+        );
     }
 
     #[test]
