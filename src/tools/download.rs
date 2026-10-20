@@ -34,10 +34,10 @@ const STAGING_PREFIX: &str = ".staging-";
 /// Name of the per-tool advisory lock file inside `<tools>/<name>/`.
 const LOCK_FILE: &str = ".lock";
 
-/// Serializes the sections that draw a download progress bar. Two live
-/// bars would interleave on stderr into garbage, so a plain mutex (one
-/// bar at a time, the rest wait) keeps the rendering simple: no
-/// `MultiProgress` coordination.
+/// Serializes the sections that draw a live download progress bar. Two
+/// live bars would interleave on stderr into garbage, so a plain mutex
+/// (one bar at a time, the rest wait) keeps the rendering simple: no
+/// `MultiProgress` coordination. Hidden bars do not take it.
 static PROGRESS_SECTION: Mutex<()> = Mutex::new(());
 
 /// Hold the progress-bar section. A poisoned lock is reclaimed rather
@@ -47,6 +47,19 @@ pub(crate) fn progress_section() -> MutexGuard<'static, ()> {
     PROGRESS_SECTION
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+/// Hold the progress-bar section when this thread's bar will draw live.
+/// A hidden bar (no terminal, or a capturing thread) draws nothing, so it
+/// neither waits for a live bar nor makes one wait.
+fn live_bar_section() -> Option<MutexGuard<'static, ()>> {
+    bar_section(ui::bar_is_live())
+}
+
+/// The progress-bar section for a bar that is `live`, or `None` when the
+/// bar is hidden.
+fn bar_section(live: bool) -> Option<MutexGuard<'static, ()>> {
+    live.then(progress_section)
 }
 
 /// The per-tool advisory lock: one lock file per `<tools>/<name>/`
@@ -656,8 +669,7 @@ fn stream_to_file(
     message: &str,
 ) -> anyhow::Result<String> {
     let total = response.body().content_length().unwrap_or(0);
-    // One live bar at a time: see `PROGRESS_SECTION`.
-    let _bar_section = progress_section();
+    let _bar_section = live_bar_section();
     let bar = ui::progress_bar(total, message.to_string());
     let mut reader = response.body_mut().as_reader();
     let mut file =
@@ -1157,6 +1169,34 @@ mod tests {
         assert_eq!(fs::read(&installed).expect("read binary"), FAKE_BINARY);
         Manifest::load(&cache.manifest_path("tool", "1.2.3")).expect("manifest rewritten");
         assert!(!stale.exists(), "stale staging dirs must be swept");
+    }
+
+    #[test]
+    fn a_hidden_bar_takes_no_progress_section_and_a_live_bar_does() {
+        assert!(bar_section(false).is_none());
+        assert!(bar_section(true).is_some());
+    }
+
+    #[test]
+    fn a_captured_download_does_not_wait_for_the_progress_section() {
+        // Another bar holds the section; a download on a capturing thread
+        // hides its bar, so it must not queue behind that one.
+        let held = progress_section();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let waited = std::thread::scope(|scope| {
+            scope.spawn(move || {
+                let (took, _) = ui::capture(|| live_bar_section().is_some());
+                let _ = tx.send(took);
+            });
+            let outcome = rx.recv_timeout(Duration::from_secs(5));
+            drop(held);
+            outcome
+        });
+        assert_eq!(
+            waited,
+            Ok(false),
+            "a captured download must neither block on nor take the section"
+        );
     }
 
     #[test]

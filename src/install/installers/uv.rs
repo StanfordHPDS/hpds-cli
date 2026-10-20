@@ -93,8 +93,8 @@ mod tests {
             ..ctx_on(Os::Mac, &runner, &fetcher)
         })
         .expect("fetch must succeed");
-        assert!(runner.calls.borrow().is_empty(), "no package manager runs");
-        let calls = fetcher.calls.borrow();
+        assert!(runner.calls().is_empty(), "no package manager runs");
+        let calls = fetcher.calls();
         assert_eq!(calls.len(), 1);
         assert_eq!(calls[0].spec.name, "uv");
         assert_eq!(calls[0].version, versions::UV);
@@ -114,7 +114,7 @@ mod tests {
             ..ctx_on(Os::Linux, &runner, &fetcher)
         })
         .expect("fetch must succeed");
-        assert_eq!(fetcher.calls.borrow()[0].spec.name, "uv");
+        assert_eq!(fetcher.calls()[0].spec.name, "uv");
     }
 
     #[test]
@@ -126,7 +126,7 @@ mod tests {
             ..ctx_on(Os::Mac, &runner, &fetcher)
         };
         Uv.install(&ctx).expect("pinned fetch must succeed");
-        assert!(runner.calls.borrow().is_empty(), "brew cannot pin versions");
-        assert_eq!(fetcher.calls.borrow()[0].version, "0.9.9");
+        assert!(runner.calls().is_empty(), "brew cannot pin versions");
+        assert_eq!(fetcher.calls()[0].version, "0.9.9");
     }
 }

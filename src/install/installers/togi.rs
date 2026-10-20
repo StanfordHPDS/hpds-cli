@@ -64,6 +64,7 @@ impl Installer for Togi {
 mod tests {
     use std::cell::Cell;
     use std::path::PathBuf;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     use super::*;
     use crate::install::test_support::{FakeFetcher, FakeRunner, ctx_on, probe_fixture};
@@ -100,15 +101,12 @@ mod tests {
                 .on_path("winget");
             let fetcher = FakeFetcher::default().with_latest("0.1.1");
             let _ = run_installer(&Togi, &ctx_on(os, &runner, &fetcher));
-            assert!(
-                runner.calls.borrow().is_empty(),
-                "{os:?}: no package manager runs"
-            );
-            let calls = fetcher.calls.borrow();
+            assert!(runner.calls().is_empty(), "{os:?}: no package manager runs");
+            let calls = fetcher.calls();
             assert_eq!(calls.len(), 1, "{os:?}");
             assert_eq!(calls[0].spec.name, "togi", "{os:?}");
             assert_eq!(calls[0].version, "0.1.1", "{os:?}");
-            assert_eq!(*fetcher.latest_calls.borrow(), vec!["togi"], "{os:?}");
+            assert_eq!(fetcher.latest_calls(), vec!["togi"], "{os:?}");
         }
     }
 
@@ -125,12 +123,12 @@ mod tests {
         let _ = run_installer(&Togi, &ctx);
 
         assert_eq!(
-            fetcher.calls.borrow().len(),
+            fetcher.calls().len(),
             1,
             "an existing togi entry point must not bypass latest-release installation"
         );
         assert_eq!(
-            fetcher.latest_calls.borrow().len(),
+            fetcher.latest_calls().len(),
             1,
             "the latest release must be resolved exactly once"
         );
@@ -139,7 +137,7 @@ mod tests {
     #[test]
     fn unpinned_togi_upgrade_completes_after_the_new_entry_point_is_visible() {
         struct UpgradingRunner {
-            probes: Cell<usize>,
+            probes: AtomicUsize,
         }
 
         impl CommandRunner for UpgradingRunner {
@@ -149,8 +147,7 @@ mod tests {
 
             fn run(&self, program: &str, args: &[&str]) -> anyhow::Result<CommandOutput> {
                 assert_eq!((program, args), ("togi", ["--version"].as_slice()));
-                let probe = self.probes.get();
-                self.probes.set(probe + 1);
+                let probe = self.probes.fetch_add(1, Ordering::SeqCst);
                 Ok(CommandOutput {
                     success: true,
                     stdout: format!("togi {}", if probe == 0 { "0.1.0" } else { "0.1.1" }),
@@ -160,7 +157,7 @@ mod tests {
         }
 
         let runner = UpgradingRunner {
-            probes: Cell::new(0),
+            probes: AtomicUsize::new(0),
         };
         let fetcher = FakeFetcher::default().with_latest("0.1.1");
         let ctx = InstallCtx {
@@ -176,10 +173,10 @@ mod tests {
 
         run_installer(&Togi, &ctx).expect("the latest entry point must verify successfully");
 
-        assert_eq!(runner.probes.get(), 2);
-        assert_eq!(*fetcher.latest_calls.borrow(), vec!["togi"]);
-        assert_eq!(fetcher.calls.borrow().len(), 1);
-        assert_eq!(fetcher.calls.borrow()[0].version, "0.1.1");
+        assert_eq!(runner.probes.load(Ordering::SeqCst), 2);
+        assert_eq!(fetcher.latest_calls(), vec!["togi"]);
+        assert_eq!(fetcher.calls().len(), 1);
+        assert_eq!(fetcher.calls()[0].version, "0.1.1");
     }
 
     #[test]
@@ -209,8 +206,8 @@ mod tests {
         run_installer(&Togi, &ctx_on(Os::Mac, &runner, &fetcher))
             .expect("the current release must be a no-op");
 
-        assert!(fetcher.calls.borrow().is_empty());
-        assert_eq!(*fetcher.latest_calls.borrow(), vec!["togi"]);
+        assert!(fetcher.calls().is_empty());
+        assert_eq!(fetcher.latest_calls(), vec!["togi"]);
     }
 
     #[test]
@@ -222,7 +219,7 @@ mod tests {
             .expect_err("an unavailable latest release must fail");
 
         assert!(err.to_string().contains("metadata unavailable"), "{err:#}");
-        assert!(fetcher.calls.borrow().is_empty());
+        assert!(fetcher.calls().is_empty());
     }
 
     #[test]
@@ -249,7 +246,7 @@ mod tests {
             let err = run_installer(&Togi, &ctx).expect_err("unsafe version must fail");
 
             assert!(err.to_string().contains("invalid togi release version"));
-            assert!(fetcher.calls.borrow().is_empty());
+            assert!(fetcher.calls().is_empty());
         }
     }
 
@@ -264,9 +261,9 @@ mod tests {
 
         let _ = run_installer(&Togi, &ctx);
 
-        assert!(fetcher.latest_calls.borrow().is_empty());
-        assert_eq!(fetcher.calls.borrow().len(), 1);
-        assert_eq!(fetcher.calls.borrow()[0].version, "0.1.1");
+        assert!(fetcher.latest_calls().is_empty());
+        assert_eq!(fetcher.calls().len(), 1);
+        assert_eq!(fetcher.calls()[0].version, "0.1.1");
     }
 
     #[test]
@@ -282,8 +279,8 @@ mod tests {
 
         run_installer(&Togi, &ctx).expect("equivalent installed version must be a no-op");
 
-        assert!(fetcher.latest_calls.borrow().is_empty());
-        assert!(fetcher.calls.borrow().is_empty());
+        assert!(fetcher.latest_calls().is_empty());
+        assert!(fetcher.calls().is_empty());
     }
 
     #[test]
@@ -295,9 +292,9 @@ mod tests {
             ..ctx_on(Os::Mac, &runner, &fetcher)
         };
         let _ = run_installer(&Togi, &ctx);
-        assert_eq!(fetcher.calls.borrow()[0].version, "0.2.0");
+        assert_eq!(fetcher.calls()[0].version, "0.2.0");
         assert!(
-            fetcher.latest_calls.borrow().is_empty(),
+            fetcher.latest_calls().is_empty(),
             "an explicit pin must bypass latest-release lookup"
         );
     }
@@ -323,8 +320,8 @@ mod tests {
                 "the plan must name where the binary comes from; {os:?}: {plan:?}"
             );
         }
-        assert!(runner.calls.borrow().is_empty(), "planning must not run");
-        assert!(fetcher.calls.borrow().is_empty(), "planning must not fetch");
+        assert!(runner.calls().is_empty(), "planning must not run");
+        assert!(fetcher.calls().is_empty(), "planning must not fetch");
     }
 
     #[test]

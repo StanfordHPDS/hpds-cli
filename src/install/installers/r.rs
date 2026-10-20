@@ -5,9 +5,11 @@
 //! rig strategy lives in one place), then `rig add` puts the requested R
 //! on the machine: the current release, or the exact `--version` pin.
 //! `rig add` writes into system locations on macOS and Linux, so it runs
-//! as a declared sudo step there; on Windows it runs directly.
+//! as a declared sudo step there; on Windows it runs directly. On Linux,
+//! rig installs R's system dependencies with apt itself, so it runs with
+//! the same noninteractive environment as hpds's own apt calls.
 
-use crate::install::{InstallCtx, Installer, registry};
+use crate::install::{InstallCtx, Installer, noninteractive_sudo_argv, registry};
 use crate::tools::Os;
 use crate::ui;
 
@@ -36,7 +38,11 @@ impl Installer for R {
         }
         let wanted = ctx.pin.as_deref().unwrap_or("release");
         lines.push(match ctx.os {
-            Os::Mac | Os::Linux => format!("sudo rig add {wanted}"),
+            Os::Mac => format!("sudo rig add {wanted}"),
+            Os::Linux => format!(
+                "sudo {}",
+                noninteractive_sudo_argv("rig", &["add", wanted]).join(" ")
+            ),
             Os::Windows => format!("rig add {wanted}"),
         });
         lines
@@ -50,14 +56,8 @@ impl Installer for R {
             // into the rig install. The plan approval carries over: this
             // install's confirmed plan already listed the rig steps.
             let rig_ctx = InstallCtx {
-                os: ctx.os,
-                yes: ctx.yes,
-                verbose: ctx.verbose,
                 pin: None,
-                plan_approved: ctx.plan_approved,
-                sudo_approved: ctx.sudo_approved.clone(),
-                runner: ctx.runner,
-                fetcher: ctx.fetcher,
+                ..ctx.for_thread()
             };
             rig.install(&rig_ctx)?;
         }
@@ -70,9 +70,12 @@ impl Installer for R {
             ),
         };
         match ctx.os {
-            // `rig add` installs into /opt/R (Linux) or runs the CRAN pkg
-            // installer (macOS), both of which need root.
-            Os::Mac | Os::Linux => ctx.run_sudo_step(&what, "rig", &["add", wanted])?,
+            // `rig add` runs the CRAN pkg installer (macOS) or installs into
+            // /opt/R (Linux), both of which need root.
+            Os::Mac => ctx.run_sudo_step(&what, "rig", &["add", wanted])?,
+            // rig runs apt for R's system dependencies; without this
+            // environment debconf or needrestart could stop to prompt.
+            Os::Linux => ctx.run_noninteractive_sudo_step(&what, "rig", &["add", wanted])?,
             Os::Windows => ctx.run_step(&what, "rig", &["add", wanted])?,
         };
         Ok(())
@@ -82,6 +85,7 @@ impl Installer for R {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::install::apt_get_command_line;
     use crate::install::test_support::{FakeFetcher, FakeRunner, ctx_on, probe_fixture};
     use crate::ui::render_error;
 
@@ -97,20 +101,22 @@ mod tests {
 
     #[test]
     fn r_mac_and_linux_add_the_release_with_rig_under_sudo() {
-        for os in [Os::Mac, Os::Linux] {
+        for (os, add) in [
+            (Os::Mac, "sudo rig add release"),
+            (
+                Os::Linux,
+                "sudo env DEBIAN_FRONTEND=noninteractive NEEDRESTART_SUSPEND=1 rig add release",
+            ),
+        ] {
             let runner = FakeRunner::default()
                 .on_path("rig")
                 .with_output("rig --version", &probe_fixture("rig.txt"))
-                .with_output("sudo rig add release", "");
+                .with_output(add, "");
             let fetcher = FakeFetcher::default();
             R.install(&ctx_on(os, &runner, &fetcher))
                 .expect("rig add must succeed");
-            assert_eq!(
-                *runner.calls.borrow(),
-                vec!["rig --version", "sudo rig add release"],
-                "{os:?}"
-            );
-            assert!(fetcher.calls.borrow().is_empty(), "{os:?}");
+            assert_eq!(runner.calls(), vec!["rig --version", add], "{os:?}");
+            assert!(fetcher.calls().is_empty(), "{os:?}");
         }
     }
 
@@ -123,10 +129,7 @@ mod tests {
         let fetcher = FakeFetcher::default();
         R.install(&ctx_on(Os::Windows, &runner, &fetcher))
             .expect("rig add must succeed");
-        assert_eq!(
-            *runner.calls.borrow(),
-            vec!["rig --version", "rig add release"]
-        );
+        assert_eq!(runner.calls(), vec!["rig --version", "rig add release"]);
     }
 
     #[test]
@@ -142,7 +145,7 @@ mod tests {
         R.install(&ctx_on(Os::Mac, &runner, &fetcher))
             .expect("rig-then-R install must succeed");
         assert_eq!(
-            *runner.calls.borrow(),
+            runner.calls(),
             vec![
                 "brew tap r-lib/rig",
                 "brew install --cask rig",
@@ -166,16 +169,22 @@ mod tests {
                  > /etc/apt/sources.list.d/rig.list",
                 "",
             )
-            .with_output("sudo apt-get update", "")
-            .with_output("sudo apt-get install -y r-rig", "")
-            .with_output("sudo rig add release", "");
+            .with_output(&apt_get_command_line(&["update"]), "")
+            .with_output(&apt_get_command_line(&["install", "-y", "r-rig"]), "")
+            .with_output(
+                "sudo env DEBIAN_FRONTEND=noninteractive NEEDRESTART_SUSPEND=1 rig add release",
+                "",
+            );
         let fetcher = FakeFetcher::default();
         R.install(&ctx_on(Os::Linux, &runner, &fetcher))
             .expect("rig-then-R install must succeed");
-        let calls = runner.calls.borrow();
-        assert_eq!(calls.len(), 5, "{calls:#?}");
-        assert_eq!(calls[3], "sudo apt-get install -y r-rig");
-        assert_eq!(calls[4], "sudo rig add release");
+        let calls = runner.calls();
+        assert_eq!(calls.len(), 6, "{calls:#?}");
+        assert_eq!(calls[4], apt_get_command_line(&["install", "-y", "r-rig"]));
+        assert_eq!(
+            calls[5],
+            "sudo env DEBIAN_FRONTEND=noninteractive NEEDRESTART_SUSPEND=1 rig add release"
+        );
     }
 
     #[test]
@@ -188,7 +197,7 @@ mod tests {
         R.install(&ctx_on(Os::Windows, &runner, &fetcher))
             .expect("rig-then-R install must succeed");
         assert_eq!(
-            *runner.calls.borrow(),
+            runner.calls(),
             vec!["winget install --id posit.rig --exact", "rig add release"]
         );
     }
@@ -198,7 +207,10 @@ mod tests {
         let runner = FakeRunner::default()
             .on_path("rig")
             .with_output("rig --version", &probe_fixture("rig.txt"))
-            .with_output("sudo rig add 4.5.1", "");
+            .with_output(
+                "sudo env DEBIAN_FRONTEND=noninteractive NEEDRESTART_SUSPEND=1 rig add 4.5.1",
+                "",
+            );
         let fetcher = FakeFetcher::default();
         let ctx = InstallCtx {
             pin: Some("4.5.1".to_string()),
@@ -206,8 +218,11 @@ mod tests {
         };
         R.install(&ctx).expect("pinned rig add must succeed");
         assert_eq!(
-            *runner.calls.borrow(),
-            vec!["rig --version", "sudo rig add 4.5.1"]
+            runner.calls(),
+            vec![
+                "rig --version",
+                "sudo env DEBIAN_FRONTEND=noninteractive NEEDRESTART_SUSPEND=1 rig add 4.5.1"
+            ]
         );
     }
 
@@ -227,7 +242,7 @@ mod tests {
         };
         R.install(&ctx).expect("pinned rig-then-R must succeed");
         assert_eq!(
-            *runner.calls.borrow(),
+            runner.calls(),
             vec![
                 "brew tap r-lib/rig",
                 "brew install --cask rig",
@@ -263,6 +278,13 @@ mod tests {
         let fetcher = FakeFetcher::default();
         assert_eq!(
             R.plan(&ctx_on(Os::Linux, &runner, &fetcher)),
+            vec![
+                "sudo env DEBIAN_FRONTEND=noninteractive NEEDRESTART_SUSPEND=1 rig add release"
+                    .to_string()
+            ]
+        );
+        assert_eq!(
+            R.plan(&ctx_on(Os::Mac, &runner, &fetcher)),
             vec!["sudo rig add release".to_string()]
         );
         assert_eq!(

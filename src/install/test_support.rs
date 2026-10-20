@@ -2,9 +2,9 @@
 //! a recording [`ReleaseFetcher`], and an [`InstallCtx`] builder wiring
 //! them together with an injected OS.
 
-use std::cell::RefCell;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 
 use anyhow::anyhow;
 
@@ -19,10 +19,21 @@ use super::{CommandOutput, CommandRunner, InstallCtx};
 pub struct FakeRunner {
     paths: HashMap<String, PathBuf>,
     outputs: HashMap<String, CommandOutput>,
-    pub calls: RefCell<Vec<String>>,
+    calls: Mutex<Vec<String>>,
 }
 
 impl FakeRunner {
+    /// Every recorded command line, in the order it ran.
+    pub fn calls(&self) -> Vec<String> {
+        self.calls.lock().unwrap().clone()
+    }
+
+    /// Record a call that did not go through [`CommandRunner::run`], so
+    /// tests can interleave other seams into the same ordered log.
+    pub fn record(&self, call: &str) {
+        self.calls.lock().unwrap().push(call.to_string());
+    }
+
     pub fn on_path(mut self, program: &str) -> Self {
         self.paths.insert(
             program.to_string(),
@@ -67,7 +78,7 @@ impl CommandRunner for FakeRunner {
         } else {
             format!("{program} {}", args.join(" "))
         };
-        self.calls.borrow_mut().push(key.clone());
+        self.record(&key);
         self.outputs
             .get(&key)
             .cloned()
@@ -95,30 +106,48 @@ pub struct TreeFetchCall {
 /// Fake `ReleaseFetcher`: records requests, downloads nothing.
 #[derive(Default)]
 pub struct FakeFetcher {
-    pub calls: RefCell<Vec<FetchCall>>,
-    pub tree_calls: RefCell<Vec<TreeFetchCall>>,
-    pub latest_calls: RefCell<Vec<String>>,
-    latest: RefCell<Option<anyhow::Result<String>>>,
+    calls: Mutex<Vec<FetchCall>>,
+    tree_calls: Mutex<Vec<TreeFetchCall>>,
+    latest_calls: Mutex<Vec<String>>,
+    latest: Option<Result<String, String>>,
 }
 
 impl FakeFetcher {
-    pub fn with_latest(self, version: &str) -> Self {
-        *self.latest.borrow_mut() = Some(Ok(version.to_string()));
+    pub fn with_latest(mut self, version: &str) -> Self {
+        self.latest = Some(Ok(version.to_string()));
         self
     }
 
-    pub fn with_latest_error(self, message: &str) -> Self {
-        *self.latest.borrow_mut() = Some(Err(anyhow!(message.to_string())));
+    pub fn with_latest_error(mut self, message: &str) -> Self {
+        self.latest = Some(Err(message.to_string()));
         self
+    }
+
+    /// Every recorded [`ReleaseFetcher::fetch_binary`] request.
+    pub fn calls(&self) -> Vec<FetchCall> {
+        self.calls.lock().unwrap().clone()
+    }
+
+    /// Every recorded [`ReleaseFetcher::fetch_tree`] request.
+    pub fn tree_calls(&self) -> Vec<TreeFetchCall> {
+        self.tree_calls.lock().unwrap().clone()
+    }
+
+    /// The tool names whose latest release was looked up.
+    pub fn latest_calls(&self) -> Vec<String> {
+        self.latest_calls.lock().unwrap().clone()
     }
 }
 
 impl ReleaseFetcher for FakeFetcher {
     fn latest_version(&self, spec: &ToolSpec) -> anyhow::Result<String> {
-        self.latest_calls.borrow_mut().push(spec.name.to_string());
-        match self.latest.borrow().as_ref() {
+        self.latest_calls
+            .lock()
+            .unwrap()
+            .push(spec.name.to_string());
+        match &self.latest {
             Some(Ok(version)) => Ok(version.clone()),
-            Some(Err(error)) => Err(anyhow!(error.to_string())),
+            Some(Err(error)) => Err(anyhow!(error.clone())),
             None => Err(anyhow!(
                 "no fake latest release configured for {}",
                 spec.name
@@ -132,7 +161,7 @@ impl ReleaseFetcher for FakeFetcher {
         version: &str,
         bin_dir: &Path,
     ) -> anyhow::Result<PathBuf> {
-        self.calls.borrow_mut().push(FetchCall {
+        self.calls.lock().unwrap().push(FetchCall {
             spec: *spec,
             version: version.to_string(),
             bin_dir: bin_dir.to_path_buf(),
@@ -147,7 +176,7 @@ impl ReleaseFetcher for FakeFetcher {
         opt_dir: &Path,
         bin_dir: &Path,
     ) -> anyhow::Result<PathBuf> {
-        self.tree_calls.borrow_mut().push(TreeFetchCall {
+        self.tree_calls.lock().unwrap().push(TreeFetchCall {
             spec: *spec,
             version: version.to_string(),
             opt_dir: opt_dir.to_path_buf(),
@@ -213,7 +242,7 @@ pub fn tool_output_fixture(rel: &str) -> String {
 pub fn ctx_on<'a>(
     os: Os,
     runner: &'a FakeRunner,
-    fetcher: &'a dyn ReleaseFetcher,
+    fetcher: &'a (dyn ReleaseFetcher + Sync),
 ) -> InstallCtx<'a> {
     InstallCtx {
         os,

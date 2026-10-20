@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import argparse
 from dataclasses import dataclass
+from itertools import pairwise
 import json
 from pathlib import Path
 import re
@@ -51,6 +52,14 @@ IMAGE_TAG = "hpds-server-setup:local"
 SETUP_LOG = "/tmp/hpds-setup.log"
 SETUP_COMMAND = ["hpds", "setup", "--profile", "server", "--yes"]
 PLAN_COMMAND = ["hpds", "setup", "--plan", "--profile", "server"]
+# The line step 1 prints before its one `apt-get update`; a retry after a
+# failed refresh announces itself differently.
+REFRESH_ANNOUNCEMENT = "refreshing apt package lists (needs sudo)"
+# hpds downloads the code-server package itself; this host serves the
+# upstream install script it no longer runs.
+CODE_SERVER_SCRIPT_HOST = "code-server.dev"
+# Seconds a fresh setup should take; a slower first run is reported, not failed.
+FIRST_RUN_BUDGET = 150
 
 IDENTITY_WARNINGS = ("user.name is not set", "user.email is not set")
 VACCINATE_MARKER = "# >>> hpds vaccinate >>>"
@@ -154,6 +163,10 @@ def parse_summary(text: str) -> list[SummaryEntry]:
     return entries
 
 
+def matches_title(entry: SummaryEntry, title: str) -> bool:
+    return entry.text == title or entry.text.startswith(f"{title}: ")
+
+
 def summary_problems(expected: list[str], entries: list[SummaryEntry]) -> list[str]:
     """Every way the summary falls short of each planned step passing."""
     problems: list[str] = []
@@ -169,8 +182,7 @@ def summary_problems(expected: list[str], entries: list[SummaryEntry]) -> list[s
             (
                 i
                 for i, entry in enumerate(entries)
-                if i not in matched
-                and (entry.text == title or entry.text.startswith(f"{title}: "))
+                if i not in matched and matches_title(entry, title)
             ),
             None,
         )
@@ -185,6 +197,83 @@ def summary_problems(expected: list[str], entries: list[SummaryEntry]) -> list[s
             mark = "✓" if entry.ok else "✗"
             problems.append(f"not in the plan: {mark} {entry.text}")
     return problems
+
+
+def summary_order_problems(
+    expected: list[str], entries: list[SummaryEntry]
+) -> list[str]:
+    """Each place where the summary lists a planned step before an earlier one.
+
+    Entries that match no planned title are left to `summary_problems`.
+    """
+    positions: list[tuple[int, str]] = []
+    claimed: set[int] = set()
+    for entry in entries:
+        index = next(
+            (
+                i
+                for i, title in enumerate(expected)
+                if i not in claimed and matches_title(entry, title)
+            ),
+            None,
+        )
+        if index is not None:
+            claimed.add(index)
+            positions.append((index, expected[index]))
+    return [
+        f"the summary lists {later} before {earlier}, against the plan order"
+        for (before, later), (after, earlier) in pairwise(positions)
+        if after < before
+    ]
+
+
+HEADER = re.compile(r"\[(\d+)/(\d+)\] (.+?)( \(ran in the background\))?")
+
+
+def header_problems(text: str, expected: list[str]) -> list[str]:
+    """Every way the `[n/N] title` step headers in `text` stray from the plan.
+
+    Each planned step must be introduced exactly once, with its own title
+    and the plan's step count. A step that ran on the background lane may
+    carry the ` (ran in the background)` suffix.
+    """
+    total = len(expected)
+    seen: dict[int, int] = {}
+    problems: list[str] = []
+    for line in text.splitlines():
+        match = HEADER.fullmatch(line.rstrip())
+        if match is None:
+            continue
+        number, count, title = int(match.group(1)), int(match.group(2)), match.group(3)
+        if count != total:
+            problems.append(f"header counts {count} steps, the plan {total}: {line}")
+        if not 1 <= number <= total:
+            problems.append(f"header numbers a step outside the plan: {line}")
+            continue
+        seen[number] = seen.get(number, 0) + 1
+        if title != expected[number - 1]:
+            problems.append(
+                f"header {number} names {title!r}, the plan {expected[number - 1]!r}"
+            )
+    for number in range(1, total + 1):
+        times = seen.get(number, 0)
+        if times != 1:
+            problems.append(f"step {number} has {times} headers, expected 1")
+    return problems
+
+
+def count_lines(text: str, wanted: str) -> int:
+    """How many lines of `text` are exactly `wanted`, ignoring trailing space."""
+    return sum(line.rstrip() == wanted for line in text.splitlines())
+
+
+def lines_mentioning(text: str, needle: str) -> list[str]:
+    """The lines of `text` that mention `needle`, ignoring case."""
+    return [line for line in text.splitlines() if needle.lower() in line.lower()]
+
+
+def format_seconds(seconds: float) -> str:
+    return f"{seconds:.1f} s"
 
 
 def parse_bind_addr(config: str) -> tuple[str, int]:
@@ -245,6 +334,8 @@ class CheckResult:
     name: str
     status: str
     detail: str = ""
+    # A short note shown in the table, such as a run's duration.
+    note: str = ""
 
 
 def render_table(results: list[CheckResult]) -> str:
@@ -253,7 +344,11 @@ def render_table(results: list[CheckResult]) -> str:
         return "no checks ran"
     width = max(len(result.name) for result in results)
     lines = [f"{'check'.ljust(width)}  result", f"{'-' * width}  ------"]
-    lines += [f"{result.name.ljust(width)}  {result.status}" for result in results]
+    lines += [
+        f"{result.name.ljust(width)}  {result.status}"
+        + (f"  {result.note}" if result.note else "")
+        for result in results
+    ]
     failed = sum(result.status == "FAIL" for result in results)
     lines.append(f"{len(results)} checks, {failed} failed")
     return "\n".join(lines)
@@ -366,10 +461,16 @@ class Checks:
         self.results: list[CheckResult] = []
 
     def record(
-        self, name: str, ok: bool, detail: str, *, required: bool = True
+        self,
+        name: str,
+        ok: bool,
+        detail: str,
+        *,
+        required: bool = True,
+        note: str = "",
     ) -> bool:
         status = "PASS" if ok else ("FAIL" if required else "WARN")
-        self.results.append(CheckResult(name, status, detail))
+        self.results.append(CheckResult(name, status, detail, note))
         if not ok:
             print(f"--- {status}: {name}", flush=True)
             print(detail.rstrip() or "(no output)", flush=True)
@@ -419,11 +520,47 @@ class Checks:
         if log.code != 0:
             problems.append(f"{SETUP_LOG} is missing: {log.text.strip()}")
         else:
-            problems += summary_problems(expected, parse_summary(log.text))
+            entries = parse_summary(log.text)
+            problems += summary_problems(expected, entries)
+            problems += summary_order_problems(expected, entries)
         detail = "\n".join(problems)
         if problems:
             detail += f"\n\nsetup output:\n{run_output.text}"
         self.record(name, not problems, detail)
+
+    def setup_output(
+        self, prefix: str, expected: list[str], run: SetupRun, *, first: bool
+    ) -> None:
+        """Check what a setup run printed, and report how long it took."""
+        text = run.output.text
+        problems = header_problems(text, expected)
+        self.record(
+            f"{prefix}: one header per step",
+            not problems,
+            "\n".join(problems) + f"\n\nsetup output:\n{text}",
+        )
+        if first:
+            count = count_lines(text, REFRESH_ANNOUNCEMENT)
+            self.record(
+                f"{prefix}: one apt refresh",
+                count == 1,
+                f"{REFRESH_ANNOUNCEMENT!r} appears {count} time(s)\n\nsetup output:\n{text}",
+            )
+        mentions = lines_mentioning(text, CODE_SERVER_SCRIPT_HOST)
+        self.record(
+            f"{prefix}: no code-server install script",
+            not mentions,
+            f"the output mentions {CODE_SERVER_SCRIPT_HOST}:\n" + "\n".join(mentions),
+        )
+        took = format_seconds(run.seconds)
+        within = not first or run.seconds <= FIRST_RUN_BUDGET
+        self.record(
+            f"{prefix}: run time",
+            within,
+            f"took {took}, over the {FIRST_RUN_BUDGET} s budget for a fresh setup",
+            required=False,
+            note=took,
+        )
 
     def http(self, name: str, host: str, port: int) -> None:
         url = f"http://{probe_host(host)}:{port}/"
@@ -619,9 +756,20 @@ def install_hpds(docker: str, container: Container, binary: Path) -> None:
     )
 
 
-def run_setup(container: Container, timeout: float) -> Output:
+@dataclass(frozen=True)
+class SetupRun:
+    output: Output
+    seconds: float
+
+
+def run_setup(container: Container, timeout: float, label: str) -> SetupRun:
+    """Run setup once, timing it and printing the time on a line of its own."""
     container.exec(["rm", "-f", SETUP_LOG], root=True)
-    return container.exec(SETUP_COMMAND, timeout=timeout, stream=True)
+    start = time.monotonic()
+    output = container.exec(SETUP_COMMAND, timeout=timeout, stream=True)
+    seconds = time.monotonic() - start
+    print(f"{label} took {format_seconds(seconds)}", flush=True)
+    return SetupRun(output, seconds)
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -721,11 +869,13 @@ def main(argv: list[str] | None = None) -> int:
         if args.stop_after_plan or not titles:
             return finish(checks)
 
-        first = run_setup(container, args.setup_timeout)
-        checks.setup_summary("setup: every step succeeds", titles, first)
-        smoke_checks(checks, first)
-        second = run_setup(container, args.rerun_timeout)
-        checks.setup_summary("setup again: every step succeeds", titles, second)
+        first = run_setup(container, args.setup_timeout, "setup")
+        checks.setup_summary("setup: every step succeeds", titles, first.output)
+        checks.setup_output("setup", titles, first, first=True)
+        smoke_checks(checks, first.output)
+        second = run_setup(container, args.rerun_timeout, "setup again")
+        checks.setup_summary("setup again: every step succeeds", titles, second.output)
+        checks.setup_output("setup again", titles, second, first=False)
         return finish(checks)
     finally:
         subprocess.run(

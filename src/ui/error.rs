@@ -3,18 +3,32 @@
 
 use std::fmt;
 
-use super::{ERROR_STYLE, HINT_STYLE, paint, stderr_colors};
+use super::{ERROR_STYLE, HINT_STYLE, Stream, emit, paint, stderr_colors};
 
 /// A remediation hint riding along an error chain, attached via
 /// [`HintExt::hint`].
 ///
-/// Displays as the wrapped error so plain `{}`/`{:#}` formatting stays
-/// sensible; [`render_error`] pulls it out of the chain and renders the hint
-/// text as a trailing `hint:` line so commands can tell users what to do next.
+/// The wrapper takes the place of the error it wraps in the chain: it
+/// displays as that error's message, and its source is that error's
+/// source. Each message therefore appears once in `{:#}` formatting and
+/// in [`render_error`], which also renders the hint text as a trailing
+/// `hint:` line so commands can tell users what to do next.
 #[derive(Debug)]
 struct Hinted {
     hint: String,
     source: anyhow::Error,
+}
+
+impl Hinted {
+    /// The hint attached closest to the failure among directly nested
+    /// wrappers, which skip one another in the chain.
+    fn innermost(&self) -> &Hinted {
+        let mut hinted = self;
+        while let Some(inner) = hinted.source.downcast_ref::<Hinted>() {
+            hinted = inner;
+        }
+        hinted
+    }
 }
 
 impl fmt::Display for Hinted {
@@ -25,7 +39,7 @@ impl fmt::Display for Hinted {
 
 impl std::error::Error for Hinted {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        Some(self.source.as_ref())
+        self.source.source()
     }
 }
 
@@ -53,15 +67,15 @@ impl<T> HintExt<T> for anyhow::Result<T> {
 pub fn render_error(err: &anyhow::Error, use_color: bool) -> String {
     // Hints ride along as `Hinted` wrappers (see `HintExt`); pull them out so
     // they render as a trailing `hint:` line rather than as causes. A
-    // `Hinted` displays as its source, so skipping it drops no message.
+    // `Hinted` stands in for the error it wraps, so its message stays.
     let mut hint = None;
     let mut messages = Vec::new();
     for cause in err.chain() {
-        match cause.downcast_ref::<Hinted>() {
-            // Innermost hint wins: it was attached closest to the failure.
-            Some(h) => hint = Some(h),
-            None => messages.push(cause.to_string()),
+        // Innermost hint wins: it was attached closest to the failure.
+        if let Some(h) = cause.downcast_ref::<Hinted>() {
+            hint = Some(h.innermost());
         }
+        messages.push(cause.to_string());
     }
 
     let mut out = String::new();
@@ -89,7 +103,7 @@ pub fn render_error(err: &anyhow::Error, use_color: bool) -> String {
 
 /// Print `err` to stderr in the standard `hpds` error format.
 pub fn error(err: &anyhow::Error) {
-    eprintln!("{}", render_error(err, stderr_colors()));
+    emit(Stream::Stderr, &render_error(err, stderr_colors()));
 }
 
 #[cfg(test)]
@@ -146,6 +160,45 @@ mod tests {
              caused by: connection refused\n\
              hint: check your network connection or proxy settings"
         );
+    }
+
+    #[test]
+    fn alternate_format_of_a_hinted_error_shows_its_message_once() {
+        let err: anyhow::Error = Err::<(), _>(anyhow!("user.name is not set"))
+            .hint("set it with git config")
+            .unwrap_err();
+        assert_eq!(format!("{err:#}"), "user.name is not set");
+        assert_eq!(err.to_string(), "user.name is not set");
+    }
+
+    #[test]
+    fn alternate_format_keeps_the_context_chain_around_a_hint() {
+        let err: anyhow::Error =
+            Err::<(), _>(anyhow!("connection refused").context("could not download gh"))
+                .hint("check your network connection")
+                .unwrap_err()
+                .context("installing gh");
+        assert_eq!(
+            format!("{err:#}"),
+            "installing gh: could not download gh: connection refused"
+        );
+        assert_eq!(
+            render_error(&err, false),
+            "error: installing gh\n\
+             caused by: could not download gh\n\
+             caused by: connection refused\n\
+             hint: check your network connection"
+        );
+    }
+
+    #[test]
+    fn nested_hints_render_once_with_the_innermost_hint() {
+        let err: anyhow::Error = Err::<(), _>(anyhow!("boom"))
+            .hint("inner hint")
+            .hint("outer hint")
+            .unwrap_err();
+        assert_eq!(format!("{err:#}"), "boom");
+        assert_eq!(render_error(&err, false), "error: boom\nhint: inner hint");
     }
 
     #[test]

@@ -91,7 +91,7 @@ mod tests {
                 ..ctx_on(Os::Mac, &runner, &fetcher)
             })
             .expect("fetch must succeed");
-        let calls = fetcher.calls.borrow();
+        let calls = fetcher.calls();
         assert_eq!(calls[0].spec.name, "duckdb");
         assert_eq!(calls[0].version, "1.5.4");
     }
@@ -108,8 +108,8 @@ mod tests {
                 ..ctx_on(Os::Linux, &runner, &fetcher)
             })
             .expect("fetch must succeed");
-        assert!(runner.calls.borrow().is_empty());
-        assert_eq!(fetcher.calls.borrow()[0].spec.name, "duckdb");
+        assert!(runner.calls().is_empty());
+        assert_eq!(fetcher.calls()[0].spec.name, "duckdb");
     }
 
     #[test]
@@ -122,7 +122,7 @@ mod tests {
                 ..ctx_on(Os::Windows, &runner, &fetcher)
             })
             .expect("fetch must succeed");
-        assert_eq!(fetcher.calls.borrow()[0].spec.name, "duckdb");
+        assert_eq!(fetcher.calls()[0].spec.name, "duckdb");
     }
 
     #[test]
@@ -134,8 +134,8 @@ mod tests {
             ..ctx_on(Os::Mac, &runner, &fetcher)
         };
         DuckDb.install(&ctx).expect("pinned fetch must succeed");
-        assert!(runner.calls.borrow().is_empty());
-        assert_eq!(fetcher.calls.borrow()[0].version, "1.5.0");
+        assert!(runner.calls().is_empty());
+        assert_eq!(fetcher.calls()[0].version, "1.5.0");
     }
 
     #[test]

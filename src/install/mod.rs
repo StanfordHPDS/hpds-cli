@@ -17,10 +17,12 @@ pub(crate) mod test_support;
 use std::cell::Cell;
 use std::cmp::Ordering;
 use std::io::IsTerminal;
+use std::path::{Path, PathBuf};
 
 use anyhow::anyhow;
 
 pub use fetch::{CacheFetcher, ReleaseFetcher};
+pub(crate) use fetch::{ReleaseAsset, latest_release_asset};
 pub use runner::{CommandOutput, CommandRunner, SystemRunner};
 
 use crate::tools::Os;
@@ -47,9 +49,28 @@ pub struct InstallCtx<'a> {
     /// and sudo steps must not ask a second time.
     pub sudo_approved: Cell<bool>,
     /// Seam for process execution and `PATH` probing.
-    pub runner: &'a dyn CommandRunner,
+    pub runner: &'a (dyn CommandRunner + Sync),
     /// Seam for downloading release binaries onto the user's PATH.
-    pub fetcher: &'a dyn ReleaseFetcher,
+    pub fetcher: &'a (dyn ReleaseFetcher + Sync),
+}
+
+impl<'a> InstallCtx<'a> {
+    /// A copy of this context that shares its seams and has its own
+    /// sudo-approval cell, seeded with this context's current answer.
+    /// The cell is not `Sync`, so each thread (or nested install that
+    /// must not write back to its parent) works from its own copy.
+    pub fn for_thread(&self) -> InstallCtx<'a> {
+        InstallCtx {
+            os: self.os,
+            yes: self.yes,
+            verbose: self.verbose,
+            pin: self.pin.clone(),
+            plan_approved: self.plan_approved,
+            sudo_approved: Cell::new(self.sudo_approved.get()),
+            runner: self.runner,
+            fetcher: self.fetcher,
+        }
+    }
 }
 
 /// One installable tool: how to spot an existing install and how to put it
@@ -88,6 +109,68 @@ pub trait Installer {
     fn verifies_target(&self) -> bool {
         false
     }
+
+    /// For a tool that installs from a downloaded Debian package: download
+    /// and verify the package [`install`](Installer::install) would install,
+    /// without installing it, so a caller can hand it to one combined apt
+    /// transaction. `None` when the installed version is already current,
+    /// or when the tool does not install from a package file.
+    fn prepare_package(&self, _ctx: &InstallCtx) -> anyhow::Result<Option<DownloadedPackage>> {
+        Ok(None)
+    }
+}
+
+/// The form of `path` that apt-get treats as a local package file rather
+/// than a package name: a path from the filesystem root. A relative path
+/// is made absolute; a rooted path is passed as it is.
+pub(crate) fn apt_package_path(path: &Path) -> anyhow::Result<String> {
+    let rooted = if path.has_root() {
+        path.to_path_buf()
+    } else {
+        std::path::absolute(path).map_err(|err| {
+            anyhow!(
+                "could not resolve the temporary package path `{}`: {err}",
+                path.display()
+            )
+        })?
+    };
+    rooted.to_str().map(str::to_string).ok_or_else(|| {
+        anyhow!(
+            "the temporary package path `{}` is not UTF-8",
+            path.display()
+        )
+    })
+}
+
+/// A downloaded package file, removed when dropped if it lives in a
+/// private temporary file.
+#[derive(Debug)]
+pub struct DownloadedPackage {
+    path: PathBuf,
+    _temporary: Option<tempfile::NamedTempFile>,
+}
+
+impl DownloadedPackage {
+    /// A package held in a private temporary file.
+    pub(crate) fn temporary(file: tempfile::NamedTempFile) -> Self {
+        Self {
+            path: file.path().to_path_buf(),
+            _temporary: Some(file),
+        }
+    }
+
+    /// A package at a fixed path that nothing removes.
+    #[cfg(test)]
+    pub(crate) fn at(path: PathBuf) -> Self {
+        Self {
+            path,
+            _temporary: None,
+        }
+    }
+
+    pub(crate) fn path(&self) -> &Path {
+        &self.path
+    }
 }
 
 /// The shared install flow: idempotence check, plan, confirm, install,
@@ -110,22 +193,12 @@ fn run_installer_with(
     let explicitly_requested = ctx.pin.is_some();
     let target = installer.resolve_target(ctx)?;
     let resolved_ctx = InstallCtx {
-        os: ctx.os,
-        yes: ctx.yes,
-        verbose: ctx.verbose,
         pin: target.clone(),
-        plan_approved: ctx.plan_approved,
-        sudo_approved: Cell::new(ctx.sudo_approved.get()),
-        runner: ctx.runner,
-        fetcher: ctx.fetcher,
+        ..ctx.for_thread()
     };
     if let Some(found) = installer.detect(&resolved_ctx) {
         match target.as_deref() {
-            Some(version)
-                if version != found
-                    && (explicitly_requested
-                        || compare_stable_versions(&found, version) != Some(Ordering::Greater)) =>
-            {
+            Some(version) if !is_current(&found, version, explicitly_requested) => {
                 ui::println(&format!(
                     "{name} {found} is installed; replacing it with {version}"
                 ));
@@ -183,6 +256,15 @@ fn run_installer_with(
     }
 }
 
+/// Whether the installed version `found` satisfies the resolved `target`:
+/// the same version, or (unless that exact version was requested) a newer
+/// one.
+pub(crate) fn is_current(found: &str, target: &str, explicitly_requested: bool) -> bool {
+    found == target
+        || (!explicitly_requested
+            && compare_stable_versions(found, target) == Some(Ordering::Greater))
+}
+
 fn compare_stable_versions(left: &str, right: &str) -> Option<Ordering> {
     fn parts(version: &str) -> Option<[u64; 4]> {
         let version = version.strip_prefix('v').unwrap_or(version);
@@ -236,6 +318,18 @@ impl InstallCtx<'_> {
         program: &str,
         args: &[&str],
     ) -> anyhow::Result<CommandOutput> {
+        self.sudo_step(what, program, args, program)
+    }
+
+    /// [`Self::run_sudo_step`], naming `label` rather than `program` when
+    /// the command fails.
+    fn sudo_step(
+        &self,
+        what: &str,
+        program: &str,
+        args: &[&str],
+        label: &str,
+    ) -> anyhow::Result<CommandOutput> {
         ui::println(&format!("{what} (needs sudo)"));
         ui::println(&format!("  will run: sudo {program} {}", args.join(" ")));
         approve_sudo(
@@ -248,7 +342,30 @@ impl InstallCtx<'_> {
         sudo_args.extend_from_slice(args);
         self.log_command("sudo", &sudo_args);
         let out = self.runner.run("sudo", &sudo_args)?;
-        ensure_step_success(program, out)
+        ensure_step_success(label, out)
+    }
+
+    /// Run `apt-get <args>` under sudo with the shared apt policy (see
+    /// [`apt_get_argv`]), gated and announced like any other sudo step.
+    pub fn run_apt_step(&self, what: &str, args: &[&str]) -> anyhow::Result<CommandOutput> {
+        let mut env_args = APT_GET_ENV_ARGS.to_vec();
+        env_args.extend_from_slice(args);
+        self.sudo_step(what, "env", &env_args, "apt-get")
+    }
+
+    /// Run `program <args>` under sudo with the noninteractive environment
+    /// apt runs with (see [`noninteractive_sudo_argv`]), for tools that call
+    /// apt themselves. Gated and announced like any other sudo step.
+    pub fn run_noninteractive_sudo_step(
+        &self,
+        what: &str,
+        program: &str,
+        args: &[&str],
+    ) -> anyhow::Result<CommandOutput> {
+        let mut env_args = NONINTERACTIVE_ENV.to_vec();
+        env_args.push(program);
+        env_args.extend_from_slice(args);
+        self.sudo_step(what, "env", &env_args, program)
     }
 
     /// Echo the underlying command when `-v` is on.
@@ -257,6 +374,51 @@ impl InstallCtx<'_> {
             ui::println(&format!("$ {program} {}", args.join(" ")));
         }
     }
+}
+
+/// The policy every `apt-get` run follows, as the arguments to `env`
+/// that precede apt-get's own arguments. `apt-get` waits 0 s for the
+/// dpkg lock by default, and on a freshly booted Ubuntu machine
+/// unattended-upgrades can hold that lock at any moment, so every call
+/// waits up to ten minutes. The environment keeps debconf and needrestart from
+/// prompting; it is set through `env` because sudo drops the caller's
+/// environment.
+const APT_GET_ENV_ARGS: &[&str] = &[
+    "DEBIAN_FRONTEND=noninteractive",
+    "NEEDRESTART_SUSPEND=1",
+    "apt-get",
+    "-o",
+    "DPkg::Lock::Timeout=600",
+];
+
+/// The environment that keeps debconf and needrestart from prompting,
+/// as `env` arguments. The apt policy sets the same variables.
+const NONINTERACTIVE_ENV: &[&str] = &["DEBIAN_FRONTEND=noninteractive", "NEEDRESTART_SUSPEND=1"];
+
+/// The argv that follows `sudo` for running `program <args>` with the
+/// noninteractive environment, passed through `env` because sudo drops
+/// the caller's environment.
+pub(crate) fn noninteractive_sudo_argv<'a>(program: &'a str, args: &[&'a str]) -> Vec<&'a str> {
+    let mut argv = vec!["env"];
+    argv.extend_from_slice(NONINTERACTIVE_ENV);
+    argv.push(program);
+    argv.extend_from_slice(args);
+    argv
+}
+
+/// The argv that follows `sudo` for an `apt-get <args>` run under the
+/// shared apt policy.
+pub(crate) fn apt_get_argv<'a>(args: &[&'a str]) -> Vec<&'a str> {
+    let mut argv = vec!["env"];
+    argv.extend_from_slice(APT_GET_ENV_ARGS);
+    argv.extend_from_slice(args);
+    argv
+}
+
+/// The full command line a plan shows for `apt-get <args>`, exactly as
+/// [`InstallCtx::run_apt_step`] runs it.
+pub(crate) fn apt_get_command_line(args: &[&str]) -> String {
+    format!("sudo {}", apt_get_argv(args).join(" "))
 }
 
 /// How the install gate let a run proceed.
@@ -464,7 +626,7 @@ mod tests {
         let runner = FakeRunner::default();
         assert_eq!(ctx(&runner).probe_version("quarto"), None);
         assert!(
-            runner.calls.borrow().is_empty(),
+            runner.calls().is_empty(),
             "must not run a program that is not on PATH"
         );
     }
@@ -703,9 +865,9 @@ mod tests {
         assert!(out.contains("hint:"), "{out}");
         assert_eq!(installer.install_count(), 0, "nothing may install");
         assert!(
-            runner.calls.borrow().is_empty(),
+            runner.calls().is_empty(),
             "zero commands may run: {:?}",
-            runner.calls.borrow()
+            runner.calls()
         );
     }
 
@@ -754,7 +916,7 @@ mod tests {
         assert!(out.contains("--yes"), "{out}");
         assert!(out.contains("hint:"), "{out}");
         assert_eq!(installer.install_count(), 0, "nothing may install");
-        assert!(runner.calls.borrow().is_empty());
+        assert!(runner.calls().is_empty());
     }
 
     #[test]
@@ -770,7 +932,7 @@ mod tests {
         })
         .expect("a confirmed sudo-only install must run");
         assert_eq!(*asked.borrow(), 1, "one confirmation covers the sudo step");
-        assert_eq!(*runner.calls.borrow(), vec!["sudo faker add release"]);
+        assert_eq!(runner.calls(), vec!["sudo faker add release"]);
     }
 
     #[test]
@@ -783,7 +945,7 @@ mod tests {
         let ctx = approved_ctx(&runner);
         run_installer_with(&installer, &ctx, true, &no_prompt)
             .expect("an approved plan must not re-prompt");
-        assert_eq!(*runner.calls.borrow(), vec!["faker add release"]);
+        assert_eq!(runner.calls(), vec!["faker add release"]);
         assert!(
             !ctx.sudo_approved.get(),
             "a surrounding flow's approval must not silently cover sudo"
@@ -832,7 +994,7 @@ mod tests {
         ctx(&runner)
             .run_step("refreshing package lists", "apt-get", &["update"])
             .expect("step must succeed");
-        assert_eq!(*runner.calls.borrow(), vec!["apt-get update"]);
+        assert_eq!(runner.calls(), vec!["apt-get update"]);
     }
 
     #[test]
@@ -856,10 +1018,7 @@ mod tests {
         };
         ctx.run_sudo_step("installing quarto", "apt-get", &["install", "-y", "quarto"])
             .expect("pre-approved sudo step must run");
-        assert_eq!(
-            *runner.calls.borrow(),
-            vec!["sudo apt-get install -y quarto"]
-        );
+        assert_eq!(runner.calls(), vec!["sudo apt-get install -y quarto"]);
     }
 
     #[test]
@@ -871,7 +1030,96 @@ mod tests {
         ctx.sudo_approved.set(true);
         ctx.run_sudo_step("refreshing package lists", "apt-get", &["update"])
             .expect("a confirmed plan must cover its sudo steps");
-        assert_eq!(*runner.calls.borrow(), vec!["sudo apt-get update"]);
+        assert_eq!(runner.calls(), vec!["sudo apt-get update"]);
+    }
+
+    const APT_POLICY: &str = "sudo env DEBIAN_FRONTEND=noninteractive NEEDRESTART_SUSPEND=1 \
+                              apt-get -o DPkg::Lock::Timeout=600";
+
+    #[test]
+    fn apt_get_runs_noninteractive_and_waits_for_the_dpkg_lock() {
+        assert_eq!(
+            apt_get_argv(&["install", "-y", "quarto"]),
+            [
+                "env",
+                "DEBIAN_FRONTEND=noninteractive",
+                "NEEDRESTART_SUSPEND=1",
+                "apt-get",
+                "-o",
+                "DPkg::Lock::Timeout=600",
+                "install",
+                "-y",
+                "quarto",
+            ]
+        );
+        assert_eq!(
+            apt_get_command_line(&["update"]),
+            format!("{APT_POLICY} update")
+        );
+    }
+
+    #[test]
+    fn the_apt_policy_sets_the_noninteractive_environment() {
+        assert!(APT_GET_ENV_ARGS.starts_with(NONINTERACTIVE_ENV));
+        assert_eq!(
+            noninteractive_sudo_argv("rig", &["add", "release"]).join(" "),
+            "env DEBIAN_FRONTEND=noninteractive NEEDRESTART_SUSPEND=1 rig add release"
+        );
+    }
+
+    #[test]
+    fn noninteractive_sudo_step_runs_through_env_and_names_the_program() {
+        let line = "sudo env DEBIAN_FRONTEND=noninteractive NEEDRESTART_SUSPEND=1 rig add release";
+        let runner = FakeRunner::default().with_failure(line, "E: Could not get lock");
+        let ctx = InstallCtx {
+            yes: true,
+            ..ctx(&runner)
+        };
+        let err = ctx
+            .run_noninteractive_sudo_step("installing R", "rig", &["add", "release"])
+            .expect_err("step must fail");
+        assert_eq!(runner.calls(), vec![line]);
+        let out = render_error(&err, false);
+        assert!(out.contains("`rig` failed: E: Could not get lock"), "{out}");
+    }
+
+    #[test]
+    fn is_current_accepts_equal_or_newer_unless_pinned() {
+        assert!(is_current("2026.09.0+174", "2026.09.0+174", false));
+        assert!(is_current("2026.10.0+1", "2026.09.0+174", false));
+        assert!(!is_current("2025.05.1+513", "2026.09.0+174", false));
+        assert!(!is_current("2026.10.0+1", "2026.09.0+174", true));
+    }
+
+    #[test]
+    fn apt_step_runs_the_planned_command_under_sudo() {
+        let line = apt_get_command_line(&["install", "-y", "quarto"]);
+        let runner = FakeRunner::default().with_output(&line, "");
+        let ctx = InstallCtx {
+            yes: true,
+            ..ctx(&runner)
+        };
+        ctx.run_apt_step("installing quarto", &["install", "-y", "quarto"])
+            .expect("pre-approved apt step must run");
+        assert_eq!(runner.calls(), vec![line]);
+    }
+
+    #[test]
+    fn apt_step_failure_names_apt_get() {
+        let line = apt_get_command_line(&["update"]);
+        let runner = FakeRunner::default().with_failure(&line, "E: Could not get lock");
+        let ctx = InstallCtx {
+            yes: true,
+            ..ctx(&runner)
+        };
+        let err = ctx
+            .run_apt_step("refreshing package lists", &["update"])
+            .expect_err("step must fail");
+        let out = render_error(&err, false);
+        assert!(
+            out.contains("`apt-get` failed: E: Could not get lock"),
+            "{out}"
+        );
     }
 
     #[test]
@@ -928,6 +1176,6 @@ mod tests {
         };
         ctx.run_step("refreshing package lists", "apt-get", &["update"])
             .expect("step must succeed");
-        assert_eq!(*runner.calls.borrow(), vec!["apt-get update"]);
+        assert_eq!(runner.calls(), vec!["apt-get update"]);
     }
 }

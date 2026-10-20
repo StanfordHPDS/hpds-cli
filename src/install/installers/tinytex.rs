@@ -252,7 +252,7 @@ mod tests {
         let ctx = ctx_on(Os::Mac, &runner, &fetcher);
         assert_eq!(TinyTex.detect(&ctx), None);
         assert!(
-            runner.calls.borrow().is_empty(),
+            runner.calls().is_empty(),
             "must not run anything that is not on PATH"
         );
     }
@@ -281,12 +281,12 @@ mod tests {
                 .install(&ctx_on(os, &runner, &fetcher))
                 .expect("quarto install must succeed");
             assert_eq!(
-                *runner.calls.borrow(),
+                runner.calls(),
                 vec!["quarto install tinytex --update-path --no-prompt"],
                 "{os:?}"
             );
-            assert!(fetcher.calls.borrow().is_empty(), "{os:?}");
-            assert!(fetcher.tree_calls.borrow().is_empty(), "{os:?}");
+            assert!(fetcher.calls().is_empty(), "{os:?}");
+            assert!(fetcher.tree_calls().is_empty(), "{os:?}");
         }
     }
 
@@ -301,10 +301,7 @@ mod tests {
             ..ctx_on(Os::Mac, &runner, &fetcher)
         };
         TinyTex.install(&ctx).expect("quarto install must succeed");
-        assert_eq!(
-            *runner.calls.borrow(),
-            vec!["quarto install tinytex --update-path"]
-        );
+        assert_eq!(runner.calls(), vec!["quarto install tinytex --update-path"]);
     }
 
     #[test]
@@ -318,7 +315,7 @@ mod tests {
             let out = render_error(&err, false);
             assert!(out.contains("needs quarto"), "{os:?}: {out}");
             assert!(out.contains("hpds install quarto"), "{os:?}: {out}");
-            assert!(runner.calls.borrow().is_empty(), "{os:?}");
+            assert!(runner.calls().is_empty(), "{os:?}");
         }
     }
 

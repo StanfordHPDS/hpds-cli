@@ -119,8 +119,8 @@ mod tests {
                     ..ctx_on(os, &runner, &fetcher)
                 })
                 .expect("tree fetch must succeed");
-            assert!(runner.calls.borrow().is_empty(), "{os:?}");
-            let calls = fetcher.tree_calls.borrow();
+            assert!(runner.calls().is_empty(), "{os:?}");
+            let calls = fetcher.tree_calls();
             assert_eq!(calls.len(), 1, "{os:?}");
             assert_eq!(calls[0].spec.name, "quarto", "{os:?}");
             assert_eq!(calls[0].version, "1.9.36", "{os:?}");
@@ -147,7 +147,7 @@ mod tests {
                 ..ctx_on(Os::Windows, &runner, &fetcher)
             })
             .expect("tree fetch must succeed");
-        assert_eq!(fetcher.tree_calls.borrow()[0].spec.name, "quarto");
+        assert_eq!(fetcher.tree_calls()[0].spec.name, "quarto");
     }
 
     #[test]
@@ -160,7 +160,7 @@ mod tests {
                 ..ctx_on(os, &runner, &fetcher)
             };
             Quarto.install(&ctx).expect("pinned fetch must succeed");
-            assert_eq!(fetcher.tree_calls.borrow()[0].version, "1.8.27", "{os:?}");
+            assert_eq!(fetcher.tree_calls()[0].version, "1.8.27", "{os:?}");
         }
     }
 

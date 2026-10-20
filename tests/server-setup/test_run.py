@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import contextlib
 import importlib.util
+import io
 from pathlib import Path
 import sys
 from typing import ClassVar
@@ -168,6 +170,208 @@ class SummaryTests(unittest.TestCase):
         )
 
 
+class SummaryOrderTests(unittest.TestCase):
+    PLAN: ClassVar[list[str]] = SummaryTests.PLAN
+
+    def test_plan_order_has_no_problems(self) -> None:
+        entries = [
+            RUN.SummaryEntry(True, "system libraries (apt)"),
+            RUN.SummaryEntry(False, "Docker Engine: boom"),
+            RUN.SummaryEntry(True, "git defaults"),
+        ]
+        self.assertEqual(RUN.summary_order_problems(self.PLAN, entries), [])
+
+    def test_reports_a_step_listed_before_an_earlier_one(self) -> None:
+        entries = [
+            RUN.SummaryEntry(True, "system libraries (apt)"),
+            RUN.SummaryEntry(True, "git defaults"),
+            RUN.SummaryEntry(True, "Docker Engine"),
+        ]
+        self.assertEqual(
+            RUN.summary_order_problems(self.PLAN, entries),
+            [
+                (
+                    "the summary lists git defaults before Docker Engine, "
+                    "against the plan order"
+                )
+            ],
+        )
+
+    def test_unplanned_and_missing_entries_do_not_count_as_disorder(self) -> None:
+        entries = [
+            RUN.SummaryEntry(True, "system libraries (apt)"),
+            RUN.SummaryEntry(True, "extra"),
+            RUN.SummaryEntry(True, "git defaults"),
+        ]
+        self.assertEqual(RUN.summary_order_problems(self.PLAN, entries), [])
+
+    def test_parses_a_summary_after_step_one_warnings(self) -> None:
+        text = (
+            "+ docker exec --user nero hpds-server-setup-1 hpds setup --profile server --yes\n"
+            "[1/3] system libraries (apt)\n"
+            "refreshing apt package lists (needs sudo)\n"
+            "  will run: sudo env DEBIAN_FRONTEND=noninteractive apt-get update\n"
+            "warning: could not register the Docker apt repository (curl: (6) "
+            "Could not resolve host)\n"
+            "  setup summary: is not a header when indented\n"
+            "waiting for the RStudio Server and code-server downloads to finish\n"
+            "warning: could not prepare the code-server package (download "
+            "interrupted); code-server + extensions will install it itself\n"
+            "[2/3] Docker Engine\n"
+            "[3/3] git defaults (ran in the background)\n"
+            "setup summary:\n"
+            "  ✓ system libraries (apt)\n"
+            "  ✗ Docker Engine: apt-get failed\n"
+            "E: Unable to locate package docker-ce\n"
+            "E: Package 'docker-ce-cli' has no installation candidate\n"
+            "  ✓ git defaults\n"
+            "summary written to /tmp/hpds-setup.log\n"
+            "error: 1 of 3 setup steps failed\n"
+        )
+        entries = RUN.parse_summary(text)
+        self.assertEqual(
+            entries,
+            [
+                RUN.SummaryEntry(True, "system libraries (apt)"),
+                RUN.SummaryEntry(
+                    False,
+                    "Docker Engine: apt-get failed\n"
+                    "E: Unable to locate package docker-ce\n"
+                    "E: Package 'docker-ce-cli' has no installation candidate",
+                ),
+                RUN.SummaryEntry(True, "git defaults"),
+            ],
+        )
+        self.assertEqual(RUN.header_problems(text, self.PLAN), [])
+        self.assertEqual(RUN.count_lines(text, RUN.REFRESH_ANNOUNCEMENT), 1)
+
+
+class HeaderTests(unittest.TestCase):
+    PLAN: ClassVar[list[str]] = SummaryTests.PLAN
+
+    def test_one_header_per_step_passes_with_background_suffixes(self) -> None:
+        text = (
+            "[1/3] system libraries (apt)\n"
+            "some output\n"
+            "[3/3] git defaults (ran in the background)\n"
+            "[2/3] Docker Engine\r\n"
+        )
+        self.assertEqual(RUN.header_problems(text, self.PLAN), [])
+
+    def test_reports_a_missing_header(self) -> None:
+        text = "[1/3] system libraries (apt)\n[3/3] git defaults\n"
+        self.assertEqual(
+            RUN.header_problems(text, self.PLAN),
+            ["step 2 has 0 headers, expected 1"],
+        )
+
+    def test_reports_a_repeated_header(self) -> None:
+        text = (
+            "[1/3] system libraries (apt)\n"
+            "[2/3] Docker Engine\n"
+            "[2/3] Docker Engine (ran in the background)\n"
+            "[3/3] git defaults\n"
+        )
+        self.assertEqual(
+            RUN.header_problems(text, self.PLAN),
+            ["step 2 has 2 headers, expected 1"],
+        )
+
+    def test_reports_the_wrong_step_count(self) -> None:
+        text = "[1/3] system libraries (apt)\n[2/4] Docker Engine\n[3/3] git defaults\n"
+        self.assertEqual(
+            RUN.header_problems(text, self.PLAN),
+            ["header counts 4 steps, the plan 3: [2/4] Docker Engine"],
+        )
+
+    def test_reports_a_wrong_title_and_a_number_outside_the_plan(self) -> None:
+        text = (
+            "[1/3] system libraries (apt)\n"
+            "[2/3] Docker\n"
+            "[3/3] git defaults\n"
+            "[4/3] extra\n"
+        )
+        self.assertEqual(
+            RUN.header_problems(text, self.PLAN),
+            [
+                "header 2 names 'Docker', the plan 'Docker Engine'",
+                "header numbers a step outside the plan: [4/3] extra",
+            ],
+        )
+
+    def test_indented_lines_are_not_headers(self) -> None:
+        text = "  [1/3] system libraries (apt)\n"
+        self.assertIn(
+            "step 1 has 0 headers, expected 1", RUN.header_problems(text, self.PLAN)
+        )
+
+
+class OutputScanTests(unittest.TestCase):
+    def test_counts_only_the_exact_refresh_announcement(self) -> None:
+        text = (
+            "refreshing apt package lists (needs sudo)\n"
+            "refreshing apt package lists again (needs sudo)\n"
+            "  will run: refreshing apt package lists (needs sudo)\n"
+            "refreshing apt package lists (needs sudo)  \n"
+        )
+        self.assertEqual(RUN.count_lines(text, RUN.REFRESH_ANNOUNCEMENT), 2)
+
+    def test_finds_mentions_of_the_install_script_host(self) -> None:
+        text = (
+            "installing code-server (needs sudo)\n"
+            "+ curl -fsSL https://Code-Server.dev/install.sh\n"
+        )
+        self.assertEqual(
+            RUN.lines_mentioning(text, RUN.CODE_SERVER_SCRIPT_HOST),
+            ["+ curl -fsSL https://Code-Server.dev/install.sh"],
+        )
+        self.assertEqual(
+            RUN.lines_mentioning("code-server 4.141.0\n", RUN.CODE_SERVER_SCRIPT_HOST),
+            [],
+        )
+
+    def test_formats_seconds_with_one_decimal(self) -> None:
+        self.assertEqual(RUN.format_seconds(143.26), "143.3 s")
+
+
+class SetupOutputCheckTests(unittest.TestCase):
+    PLAN: ClassVar[list[str]] = SummaryTests.PLAN
+    TEXT = (
+        "[1/3] system libraries (apt)\n"
+        "refreshing apt package lists (needs sudo)\n"
+        "[2/3] Docker Engine\n"
+        "[3/3] git defaults (ran in the background)\n"
+    )
+
+    def results(self, seconds: float, *, first: bool) -> dict[str, tuple[str, str]]:
+        checks = RUN.Checks(container=None)
+        run = RUN.SetupRun(RUN.Output(0, self.TEXT), seconds)
+        with contextlib.redirect_stdout(io.StringIO()):
+            checks.setup_output("setup", self.PLAN, run, first=first)
+        return {result.name: (result.status, result.note) for result in checks.results}
+
+    def test_a_fast_first_run_passes_every_check(self) -> None:
+        self.assertEqual(
+            self.results(90.0, first=True),
+            {
+                "setup: one header per step": ("PASS", ""),
+                "setup: one apt refresh": ("PASS", ""),
+                "setup: no code-server install script": ("PASS", ""),
+                "setup: run time": ("PASS", "90.0 s"),
+            },
+        )
+
+    def test_a_slow_first_run_warns_without_failing(self) -> None:
+        self.assertEqual(
+            self.results(151.0, first=True)["setup: run time"], ("WARN", "151.0 s")
+        )
+
+    def test_a_rerun_skips_the_refresh_count_and_the_budget(self) -> None:
+        results = self.results(400.0, first=False)
+        self.assertNotIn("setup: one apt refresh", results)
+        self.assertEqual(results["setup: run time"], ("PASS", "400.0 s"))
+
+
 class CodeServerConfigTests(unittest.TestCase):
     def test_reads_the_default_bind_addr(self) -> None:
         config = (
@@ -233,6 +437,16 @@ class SmallPredicateTests(unittest.TestCase):
         )
         self.assertIn("quarto                  PASS", table)
         self.assertTrue(table.endswith("3 checks, 1 failed"))
+
+    def test_table_shows_a_check_note(self) -> None:
+        table = RUN.render_table(
+            [
+                RUN.CheckResult("setup: run time", "WARN", "slow", "151.0 s"),
+                RUN.CheckResult("quarto", "PASS"),
+            ]
+        )
+        self.assertIn("setup: run time  WARN  151.0 s", table)
+        self.assertIn("quarto           PASS\n", table)
 
 
 if __name__ == "__main__":
