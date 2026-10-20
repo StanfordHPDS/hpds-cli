@@ -520,28 +520,7 @@ fn acquire_rustup_init() -> Result<PathBuf> {
         .context("could not download the rustup-init checksum")?
         .into_body()
         .read_to_string()?;
-    let lines: Vec<_> = checksum
-        .lines()
-        .filter(|line| !line.trim().is_empty())
-        .collect();
-    let [line] = lines.as_slice() else {
-        return Err(anyhow!(
-            "rustup-init checksum file must contain exactly one entry"
-        ));
-    };
-    let fields: Vec<_> = line.split_whitespace().collect();
-    let expected = match fields.as_slice() {
-        [digest] => *digest,
-        [digest, filename] if filename.trim_start_matches('*') == "rustup-init" => *digest,
-        _ => {
-            return Err(anyhow!(
-                "rustup-init checksum entry is malformed or names another file"
-            ));
-        }
-    };
-    if expected.len() != 64 || !expected.bytes().all(|byte| byte.is_ascii_hexdigit()) {
-        return Err(anyhow!("rustup-init checksum is malformed"));
-    }
+    let expected = parse_rustup_checksum(&checksum)?;
     let mut response = agent
         .get(&base)
         .call()
@@ -575,6 +554,48 @@ fn acquire_rustup_init() -> Result<PathBuf> {
         .keep()
         .context("could not retain verified rustup-init")?;
     Ok(path)
+}
+
+/// Extract the sha256 digest from a `rustup-init.sha256` file: exactly one
+/// `sha256sum`-style entry, either a bare digest or a digest and filename.
+/// The filename must be `rustup-init`, optionally marked as binary mode with
+/// a leading `*` and then prefixed with a single `./`; upstream serves
+/// `<hex> *./rustup-init`.
+fn parse_rustup_checksum(checksum: &str) -> Result<&str> {
+    let lines: Vec<_> = checksum
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .collect();
+    let [line] = lines.as_slice() else {
+        return Err(anyhow!(
+            "rustup-init checksum file must contain exactly one entry"
+        ))
+        .hint("retry server setup; rustup-init was not downloaded or run");
+    };
+    let fields: Vec<_> = line.split_whitespace().collect();
+    let expected = match fields.as_slice() {
+        [digest] => *digest,
+        [digest, filename] if names_rustup_init(filename) => *digest,
+        _ => {
+            return Err(anyhow!(
+                "rustup-init checksum entry is malformed or names another file"
+            ))
+            .hint("retry server setup; rustup-init was not downloaded or run");
+        }
+    };
+    if expected.len() != 64 || !expected.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return Err(anyhow!("rustup-init checksum is malformed"))
+            .hint("retry server setup; rustup-init was not downloaded or run");
+    }
+    Ok(expected)
+}
+
+/// Whether a checksum entry's filename is `rustup-init`, allowing one leading
+/// binary-mode `*` followed by one leading `./`.
+fn names_rustup_init(filename: &str) -> bool {
+    let name = filename.strip_prefix('*').unwrap_or(filename);
+    let name = name.strip_prefix("./").unwrap_or(name);
+    name == "rustup-init"
 }
 
 fn merge_json(
@@ -1259,5 +1280,67 @@ mod tests {
         assert!(text.contains("✓ RStudio preferences"), "{text}");
         let error = finish(&results, None).expect_err("one failed step fails setup");
         assert!(error.to_string().contains("1 of 2"), "{error:#}");
+    }
+
+    const RUSTUP_DIGEST: &str = "dda7234360b7f578ca8b0ddcb80145646fa61a67c1720a5abc7051b35c9fcb71";
+
+    #[test]
+    fn rustup_checksum_accepts_the_upstream_form_and_sha256sum_variants() {
+        let d = RUSTUP_DIGEST;
+        let accepted = [
+            // Verbatim body of the published rustup-init.sha256.
+            format!("{d} *./rustup-init\n"),
+            format!("{d}  ./rustup-init"),
+            format!("{d} *rustup-init"),
+            format!("{d}  rustup-init"),
+            d.to_string(),
+        ];
+        let failures: Vec<String> = accepted
+            .iter()
+            .filter_map(|text| match super::parse_rustup_checksum(text) {
+                Ok(digest) if digest == d => None,
+                Ok(other) => Some(format!("{text:?} parsed to {other:?}")),
+                Err(error) => Some(format!("{text:?} was rejected: {error}")),
+            })
+            .collect();
+        assert!(failures.is_empty(), "{failures:#?}");
+    }
+
+    #[test]
+    fn rustup_checksum_rejects_other_files_and_malformed_digests() {
+        let d = RUSTUP_DIGEST;
+        let rejected = [
+            format!("{d} *./rustup-init.exe"),
+            format!("{d}  ../rustup-init"),
+            format!("{d}  ././rustup-init"),
+            format!("{d} *./other/rustup-init"),
+            format!("{d}  rustup-init\n{d}  rustup-init\n"),
+            "dda7234360b7f578 *./rustup-init".to_string(),
+            format!("{} *./rustup-init", "z".repeat(64)),
+        ];
+        let accepted: Vec<&String> = rejected
+            .iter()
+            .filter(|text| super::parse_rustup_checksum(text).is_ok())
+            .collect();
+        assert!(accepted.is_empty(), "wrongly accepted: {accepted:#?}");
+    }
+
+    #[test]
+    fn rustup_checksum_rejections_say_what_to_do_next() {
+        let d = RUSTUP_DIGEST;
+        let rejected = [
+            format!("{d}  rustup-init\n{d}  rustup-init\n"),
+            format!("{d} *./rustup-init.exe"),
+            format!("{} *./rustup-init", "z".repeat(64)),
+        ];
+        for text in &rejected {
+            let err = super::parse_rustup_checksum(text).unwrap_err();
+            let rendered = crate::ui::render_error(&err, false);
+            assert!(rendered.contains("hint:"), "{text:?}: {rendered}");
+            assert!(
+                rendered.contains("retry server setup"),
+                "{text:?}: {rendered}"
+            );
+        }
     }
 }
