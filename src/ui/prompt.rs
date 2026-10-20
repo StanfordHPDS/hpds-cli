@@ -13,6 +13,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use anyhow::Context;
 
 use super::HintExt;
+use super::capture::is_capturing;
 
 static NON_INTERACTIVE: AtomicBool = AtomicBool::new(false);
 
@@ -33,13 +34,20 @@ fn is_non_interactive(flag: bool, stdin_is_tty: bool) -> bool {
 /// optional prompt (offer something, or just print a suggestion) check
 /// this instead of letting the prompt wrapper fail the whole run.
 pub fn can_prompt() -> bool {
-    !is_non_interactive(
-        NON_INTERACTIVE.load(Ordering::Relaxed),
-        std::io::stdin().is_terminal(),
-    )
+    !is_capturing()
+        && !is_non_interactive(
+            NON_INTERACTIVE.load(Ordering::Relaxed),
+            std::io::stdin().is_terminal(),
+        )
 }
 
+/// Fails instead of prompting when the process is non-interactive, or when
+/// the calling thread is capturing its output: a prompt drawn there would be
+/// invisible, and the work would block on an answer nobody can give.
 fn ensure_interactive(prompt: &str) -> anyhow::Result<()> {
+    if is_capturing() {
+        return Err(capturing_error(prompt));
+    }
     if is_non_interactive(
         NON_INTERACTIVE.load(Ordering::Relaxed),
         std::io::stdin().is_terminal(),
@@ -56,6 +64,15 @@ fn interactivity_error(prompt: &str) -> anyhow::Error {
         "cannot ask \"{prompt}\": hpds is running non-interactively"
     ))
     .hint("re-run from an interactive terminal, or pass the flag that answers this prompt (see --help)")
+    .unwrap_err()
+}
+
+/// The error a prompt wrapper returns when called from captured work.
+fn capturing_error(prompt: &str) -> anyhow::Error {
+    Err::<(), _>(anyhow::anyhow!(
+        "cannot ask \"{prompt}\": hpds is running this step in the background"
+    ))
+    .hint("re-run without --yes so every step runs in the foreground, or pass the flag that answers this prompt (see --help)")
     .unwrap_err()
 }
 
@@ -127,6 +144,23 @@ mod tests {
     #[test]
     fn non_interactive_when_stdin_is_not_a_tty() {
         assert!(is_non_interactive(false, false));
+    }
+
+    #[test]
+    fn prompting_while_capturing_fails_with_a_clear_error() {
+        let (result, transcript) = crate::ui::capture(|| confirm("Install quarto?", true));
+        let err = result.unwrap_err();
+        let out = render_error(&err, false);
+        assert!(out.contains("Install quarto?"), "out was: {out}");
+        assert!(out.contains("in the background"), "out was: {out}");
+        assert!(out.contains("hint:"), "out was: {out}");
+        assert!(transcript.is_empty());
+    }
+
+    #[test]
+    fn cannot_prompt_while_capturing() {
+        let (can, _) = crate::ui::capture(can_prompt);
+        assert!(!can);
     }
 
     #[test]

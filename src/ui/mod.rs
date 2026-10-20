@@ -3,11 +3,17 @@
 //! This is the ONLY module allowed to print to the terminal. All
 //! helpers degrade gracefully: color is dropped when `NO_COLOR` is set, when
 //! `TERM=dumb`, or when the stream is not a TTY, and progress bars hide
-//! themselves on non-TTY stderr.
+//! themselves on non-TTY stderr. Human-facing lines can be captured per
+//! thread and replayed later (see [`fn@capture`]).
 
+mod capture;
 mod error;
 mod progress;
 mod prompt;
+
+use capture::{Stream, emit};
+#[allow(unused_imports)] // consumed by background setup work; part of the ui API
+pub use capture::{Transcript, capture, replay};
 
 #[allow(unused_imports)] // consumed only by unit tests today; part of the ui API
 pub use error::render_error;
@@ -137,8 +143,12 @@ fn render_warn(msg: &str, use_color: bool) -> String {
 
 /// Print an unstyled informational line to stdout. Suppressed by `--quiet`.
 pub fn println(msg: &str) {
-    if !is_quiet() {
-        std::println!("{msg}");
+    info_line(msg, is_quiet());
+}
+
+fn info_line(msg: &str, quiet: bool) {
+    if !quiet {
+        emit(Stream::Stdout, msg);
     }
 }
 
@@ -152,8 +162,12 @@ pub fn data(msg: &str) {
 /// Print a green `✓`-prefixed success line to stdout. Suppressed by
 /// `--quiet`.
 pub fn success(msg: &str) {
-    if !is_quiet() {
-        std::println!("{}", render_success(msg, stdout_colors()));
+    success_line(msg, is_quiet());
+}
+
+fn success_line(msg: &str, quiet: bool) {
+    if !quiet {
+        emit(Stream::Stdout, &render_success(msg, stdout_colors()));
     }
 }
 
@@ -161,7 +175,7 @@ pub fn success(msg: &str) {
 /// warnings flag conditions the user likely needs to act on, so they stay
 /// visible alongside errors.
 pub fn warn(msg: &str) {
-    eprintln!("{}", render_warn(msg, stderr_colors()));
+    emit(Stream::Stderr, &render_warn(msg, stderr_colors()));
 }
 
 #[cfg(test)]
@@ -282,5 +296,43 @@ mod tests {
     #[test]
     fn warn_line_with_color_contains_ansi() {
         assert!(render_warn("careful", true).contains(ESC));
+    }
+
+    #[test]
+    fn captured_output_keeps_order_and_stream_across_helpers() {
+        let ((), transcript) = capture(|| {
+            info_line("installing quarto", false);
+            warn("quarto is already on PATH");
+            success_line("quarto 1.6 installed", false);
+            error(&anyhow::anyhow!("tinytex failed"));
+        });
+        let (_, replayed) = capture(|| replay(&transcript));
+        assert_eq!(replayed, transcript);
+        let lines = transcript_lines(&transcript);
+        assert_eq!(lines.len(), 4, "lines were: {lines:?}");
+        assert_eq!(lines[0], (Stream::Stdout, "installing quarto".to_string()));
+        assert_eq!(lines[1].0, Stream::Stderr);
+        assert!(lines[1].1.contains("quarto is already on PATH"));
+        assert_eq!(lines[2].0, Stream::Stdout);
+        assert!(lines[2].1.contains("quarto 1.6 installed"));
+        assert_eq!(lines[3].0, Stream::Stderr);
+        assert!(lines[3].1.contains("tinytex failed"));
+    }
+
+    #[test]
+    fn quiet_suppresses_the_same_lines_while_capturing() {
+        let ((), transcript) = capture(|| {
+            info_line("installing quarto", true);
+            success_line("quarto installed", true);
+            warn("still shown under quiet");
+        });
+        let lines = transcript_lines(&transcript);
+        assert_eq!(lines.len(), 1, "lines were: {lines:?}");
+        assert_eq!(lines[0].0, Stream::Stderr);
+        assert!(lines[0].1.contains("still shown under quiet"));
+    }
+
+    fn transcript_lines(transcript: &Transcript) -> Vec<(Stream, String)> {
+        transcript.lines().to_vec()
     }
 }
