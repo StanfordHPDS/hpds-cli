@@ -118,6 +118,15 @@ pub trait Installer {
     fn prepare_package(&self, _ctx: &InstallCtx) -> anyhow::Result<Option<DownloadedPackage>> {
         Ok(None)
     }
+
+    /// Bring what the installed tool runs into working order, such as a
+    /// service its package starts. [`run_installer`] calls this after a
+    /// fresh install and when the installed version is already current,
+    /// so rerunning the install repairs it. Most tools have nothing to
+    /// check.
+    fn ensure(&self, _ctx: &InstallCtx) -> anyhow::Result<()> {
+        Ok(())
+    }
 }
 
 /// The form of `path` that apt-get treats as a local package file rather
@@ -174,7 +183,9 @@ impl DownloadedPackage {
 }
 
 /// The shared install flow: idempotence check, plan, confirm, install,
-/// verify. Nothing mutates the machine until the plan is approved.
+/// verify, and then [`Installer::ensure`], which also runs when the tool
+/// is already installed. Nothing mutates the machine until the plan is
+/// approved.
 pub fn run_installer(installer: &dyn Installer, ctx: &InstallCtx) -> anyhow::Result<()> {
     run_installer_with(installer, ctx, std::io::stdin().is_terminal(), &|prompt| {
         ui::confirm(prompt, true)
@@ -205,7 +216,7 @@ fn run_installer_with(
             }
             _ => {
                 ui::success(&format!("{name} {found} already installed"));
-                return Ok(());
+                return installer.ensure(&resolved_ctx);
             }
         }
     }
@@ -245,7 +256,7 @@ fn run_installer_with(
                 ));
             }
             ui::success(&format!("{name} {version} installed"));
-            Ok(())
+            installer.ensure(&resolved_ctx)
         }
         None => Err(anyhow!(
             "{name} was installed but `{name}` is still not found on PATH"
@@ -330,19 +341,40 @@ impl InstallCtx<'_> {
         args: &[&str],
         label: &str,
     ) -> anyhow::Result<CommandOutput> {
+        let mut sudo_args = vec![program];
+        sudo_args.extend_from_slice(args);
+        self.approve_sudo_commands(what, &[&sudo_args])?;
+        let out = self.run_approved_sudo(&sudo_args)?;
+        ensure_step_success(label, out)
+    }
+
+    /// Announce a sudo step that runs `commands` (each the argv after
+    /// `sudo`), then ask once before any of them runs, under the same
+    /// rules as [`Self::run_sudo_step`]. Run the commands afterwards with
+    /// [`Self::run_approved_sudo`].
+    pub(crate) fn approve_sudo_commands(
+        &self,
+        what: &str,
+        commands: &[&[&str]],
+    ) -> anyhow::Result<()> {
         ui::println(&format!("{what} (needs sudo)"));
-        ui::println(&format!("  will run: sudo {program} {}", args.join(" ")));
+        for command in commands {
+            ui::println(&format!("  will run: sudo {}", command.join(" ")));
+        }
         approve_sudo(
             what,
             self.yes || self.sudo_approved.get(),
             std::io::stdin().is_terminal(),
             |prompt| ui::confirm(prompt, true),
-        )?;
-        let mut sudo_args = vec![program];
-        sudo_args.extend_from_slice(args);
-        self.log_command("sudo", &sudo_args);
-        let out = self.runner.run("sudo", &sudo_args)?;
-        ensure_step_success(label, out)
+        )
+    }
+
+    /// Run `sudo <args>` that [`Self::approve_sudo_commands`] already
+    /// announced and approved, logging it at `-v`. The output comes back
+    /// whatever the exit status; `Err` means sudo could not be started.
+    pub(crate) fn run_approved_sudo(&self, args: &[&str]) -> anyhow::Result<CommandOutput> {
+        self.log_command("sudo", args);
+        self.runner.run("sudo", args)
     }
 
     /// Run `apt-get <args>` under sudo with the shared apt policy (see
@@ -566,6 +598,10 @@ mod tests {
         detected: RefCell<Option<String>>,
         after_install: Option<String>,
         installed_on: RefCell<Vec<Os>>,
+        /// The version detected each time `ensure` ran.
+        ensured: RefCell<Vec<Option<String>>>,
+        /// Make `ensure` fail.
+        ensure_fails: bool,
     }
 
     impl FakeInstaller {
@@ -574,6 +610,8 @@ mod tests {
                 detected: RefCell::new(detected.map(str::to_string)),
                 after_install: after_install.map(str::to_string),
                 installed_on: RefCell::new(Vec::new()),
+                ensured: RefCell::new(Vec::new()),
+                ensure_fails: false,
             }
         }
 
@@ -603,6 +641,17 @@ mod tests {
 
         fn supports_pin(&self) -> bool {
             true
+        }
+
+        fn ensure(&self, _ctx: &InstallCtx) -> anyhow::Result<()> {
+            self.ensured
+                .borrow_mut()
+                .push(self.detected.borrow().clone());
+            if self.ensure_fails {
+                Err(anyhow!("faketool is not running")).hint("start faketool")
+            } else {
+                Ok(())
+            }
         }
     }
 
@@ -685,6 +734,42 @@ mod tests {
         let installer = FakeInstaller::new(Some("1.8.27"), None);
         run_installer(&installer, &ctx(&runner)).expect("no-op must succeed");
         assert_eq!(installer.install_count(), 0);
+    }
+
+    #[test]
+    fn already_installed_still_runs_the_ensure_hook() {
+        let runner = FakeRunner::default();
+        let installer = FakeInstaller::new(Some("1.8.27"), None);
+        run_installer(&installer, &ctx(&runner)).expect("no-op must succeed");
+        assert_eq!(installer.install_count(), 0);
+        assert_eq!(*installer.ensured.borrow(), [Some("1.8.27".to_string())]);
+    }
+
+    #[test]
+    fn a_fresh_install_runs_the_ensure_hook_after_installing() {
+        let runner = FakeRunner::default();
+        let installer = FakeInstaller::new(None, Some("1.8.27"));
+        run_installer_with(&installer, &approved_ctx(&runner), false, &no_prompt)
+            .expect("install must succeed");
+        assert_eq!(installer.install_count(), 1);
+        assert_eq!(*installer.ensured.borrow(), [Some("1.8.27".to_string())]);
+    }
+
+    #[test]
+    fn a_failing_ensure_hook_fails_the_install_on_either_path() {
+        for (detected, after_install) in [(Some("1.8.27"), None), (None, Some("1.8.27"))] {
+            let runner = FakeRunner::default();
+            let installer = FakeInstaller {
+                ensure_fails: true,
+                ..FakeInstaller::new(detected, after_install)
+            };
+            let error = run_installer_with(&installer, &approved_ctx(&runner), false, &no_prompt)
+                .expect_err("a failing ensure hook fails the install");
+            assert!(
+                render_error(&error, false).contains("hint: start faketool"),
+                "{detected:?}: {error:#}"
+            );
+        }
     }
 
     #[test]
