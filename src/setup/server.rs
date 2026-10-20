@@ -6,7 +6,7 @@ use anyhow::{Context, Result, anyhow};
 use serde_json::{Map, Value, json};
 use sha2::{Digest, Sha256};
 
-use crate::install::CommandRunner;
+use crate::install::{self, CommandRunner};
 use crate::ui::{self, HintExt};
 
 #[derive(Debug)]
@@ -293,6 +293,11 @@ fn run_sudo(runner: &dyn CommandRunner, program: &str, args: &[&str]) -> Result<
     run_checked(runner, "sudo", &sudo)
 }
 
+/// Run `apt-get <args>` under sudo with the shared apt policy.
+fn run_apt(runner: &dyn CommandRunner, args: &[&str]) -> Result<String> {
+    run_checked(runner, "sudo", &install::apt_get_argv(args))
+}
+
 fn validate_user(user: &str) -> Result<()> {
     let valid = !user.is_empty()
         && user.len() <= 32
@@ -409,10 +414,10 @@ pub(crate) fn reconcile_docker(
         if host.read(source_path)?.as_deref() != Some(source.as_bytes()) {
             host.write_atomic(source_path, source.as_bytes(), 0o644)?;
         }
-        run_sudo(runner, "apt-get", &["update"])?;
+        run_apt(runner, &["update"])?;
         let mut args = vec!["install", "-y"];
         args.extend_from_slice(DOCKER_PACKAGES);
-        run_sudo(runner, "apt-get", &args)?;
+        run_apt(runner, &args)?;
     }
     let groups = run_checked(runner, "id", &["-nG", &user])?;
     if !groups.split_whitespace().any(|group| group == "docker") {
@@ -724,12 +729,12 @@ mod tests {
     use serde_json::{Value, json};
 
     use super::{
-        DockerState, RustState, ServerHost, SystemServerHost, merge_code_server_settings,
-        merge_rstudio_preferences, reconcile_code_server, reconcile_docker, reconcile_r_profile,
-        reconcile_rust, reconcile_server,
+        DOCKER_PACKAGES, DockerState, RustState, ServerHost, SystemServerHost,
+        merge_code_server_settings, merge_rstudio_preferences, reconcile_code_server,
+        reconcile_docker, reconcile_r_profile, reconcile_rust, reconcile_server,
     };
-    use crate::install::InstallCtx;
     use crate::install::test_support::{FakeRunner, PanicFetcher};
+    use crate::install::{InstallCtx, apt_get_command_line};
     use crate::setup::{Profile, SetupDeps, execute, finish, steps, summary};
     use crate::tools::Os;
 
@@ -839,13 +844,19 @@ mod tests {
         }
     }
 
+    fn docker_install_line() -> String {
+        let mut args = vec!["install", "-y"];
+        args.extend_from_slice(DOCKER_PACKAGES);
+        apt_get_command_line(&args)
+    }
+
     fn mutation_calls(runner: &FakeRunner) -> Vec<String> {
         runner
             .calls()
             .iter()
             .filter(|call| {
                 [
-                    "apt-get install",
+                    "apt-get -o DPkg::Lock::Timeout=600 install",
                     "usermod",
                     "rustup update",
                     "rustup default",
@@ -865,17 +876,18 @@ mod tests {
         let runner = FakeRunner::default()
             .with_output("dpkg --print-architecture", "amd64")
             .with_output("sudo install -m 0755 -d /etc/apt/keyrings", "")
-            .with_output("sudo apt-get update", "")
-            .with_output(
-                "sudo apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin",
-                "",
-            )
+            .with_output(&apt_get_command_line(&["update"]), "")
+            .with_output(&docker_install_line(), "")
             .with_output("id -nG analyst", "analyst sudo")
             .with_output("sudo usermod -aG docker analyst", "");
 
         reconcile_docker(&host, &runner, DockerState::Absent).expect("install Docker");
 
         let calls = runner.calls();
+        assert!(
+            calls.contains(&"sudo env DEBIAN_FRONTEND=noninteractive NEEDRESTART_SUSPEND=1 apt-get -o DPkg::Lock::Timeout=600 install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin".to_string()),
+            "{calls:?}"
+        );
         let install = calls
             .iter()
             .position(|call| call.contains("docker-ce docker-ce-cli containerd.io"))
@@ -1045,8 +1057,8 @@ mod tests {
         let runner = FakeRunner::default()
             .with_output("dpkg --print-architecture", "amd64")
             .with_output("sudo install -m 0755 -d /etc/apt/keyrings", "")
-            .with_output("sudo apt-get update", "")
-            .with_output("sudo apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin", "")
+            .with_output(&apt_get_command_line(&["update"]), "")
+            .with_output(&docker_install_line(), "")
             .with_output("id -nG analyst", "analyst docker");
         reconcile_docker(&retry, &runner, DockerState::Absent).expect("retry Docker setup");
         assert_eq!(retry.docker_key_acquisitions(), 1);
@@ -1157,11 +1169,8 @@ mod tests {
         let first = FakeRunner::default()
             .with_output("dpkg --print-architecture", "amd64")
             .with_output("sudo install -m 0755 -d /etc/apt/keyrings", "")
-            .with_output("sudo apt-get update", "")
-            .with_output(
-                "sudo apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin",
-                "",
-            )
+            .with_output(&apt_get_command_line(&["update"]), "")
+            .with_output(&docker_install_line(), "")
             .with_output("id -nG analyst", "analyst sudo")
             .with_output("sudo usermod -aG docker analyst", "")
             .with_output(

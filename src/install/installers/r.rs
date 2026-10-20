@@ -76,6 +76,7 @@ impl Installer for R {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::install::apt_get_command_line;
     use crate::install::test_support::{FakeFetcher, FakeRunner, ctx_on, probe_fixture};
     use crate::ui::render_error;
 
@@ -157,15 +158,15 @@ mod tests {
                  > /etc/apt/sources.list.d/rig.list",
                 "",
             )
-            .with_output("sudo apt-get update", "")
-            .with_output("sudo apt-get install -y r-rig", "")
+            .with_output(&apt_get_command_line(&["update"]), "")
+            .with_output(&apt_get_command_line(&["install", "-y", "r-rig"]), "")
             .with_output("sudo rig add release", "");
         let fetcher = FakeFetcher::default();
         R.install(&ctx_on(Os::Linux, &runner, &fetcher))
             .expect("rig-then-R install must succeed");
         let calls = runner.calls();
         assert_eq!(calls.len(), 5, "{calls:#?}");
-        assert_eq!(calls[3], "sudo apt-get install -y r-rig");
+        assert_eq!(calls[3], apt_get_command_line(&["install", "-y", "r-rig"]));
         assert_eq!(calls[4], "sudo rig add release");
     }
 

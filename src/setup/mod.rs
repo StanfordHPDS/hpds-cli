@@ -89,6 +89,8 @@ enum Action {
     GitSetup,
     /// Run one external command through the runner seam.
     Run(Cmd),
+    /// Run `apt-get` under sudo with the shared apt policy.
+    Apt(AptCmd),
     /// Reconcile one typed server-host concern without shell evaluation.
     Server(server::ServerAction),
 }
@@ -102,6 +104,15 @@ struct Cmd {
     program: &'static str,
     args: &'static [&'static str],
     sudo: bool,
+}
+
+/// A planned `apt-get` run: announced, logged at `-v`, and executed
+/// through [`InstallCtx::run_apt_step`], which applies the dpkg lock wait
+/// and noninteractive environment every apt call needs.
+#[derive(Debug)]
+struct AptCmd {
+    what: &'static str,
+    args: &'static [&'static str],
 }
 
 /// Everything step execution needs: the installer context (OS, runner,
@@ -196,7 +207,7 @@ const DEV_STEPS: &[Step] = &[
 ];
 
 /// The Debian/Ubuntu system libraries R and Python packages routinely
-/// compile against, plus gdebi for installing the RStudio Server deb.
+/// compile against.
 const APT_SYSTEM_LIBRARIES: &[&str] = &[
     "install",
     "-y",
@@ -204,7 +215,6 @@ const APT_SYSTEM_LIBRARIES: &[&str] = &[
     "ca-certificates",
     "curl",
     "gnupg",
-    "gdebi-core",
     "libcurl4-openssl-dev",
     "libfontconfig1-dev",
     "libfreetype6-dev",
@@ -236,17 +246,13 @@ const SERVER_STEPS: &[Step] = &[
         lane: Lane::Foreground,
         requires: &[],
         actions: &[
-            Action::Run(Cmd {
+            Action::Apt(AptCmd {
                 what: "refreshing apt package lists",
-                program: "apt-get",
                 args: &["update"],
-                sudo: true,
             }),
-            Action::Run(Cmd {
+            Action::Apt(AptCmd {
                 what: "installing system libraries",
-                program: "apt-get",
                 args: APT_SYSTEM_LIBRARIES,
-                sudo: true,
             }),
         ],
     },
@@ -276,11 +282,9 @@ const SERVER_STEPS: &[Step] = &[
         lane: Lane::Foreground,
         requires: &[],
         actions: &[
-            Action::Run(Cmd {
+            Action::Apt(AptCmd {
                 what: "installing Python",
-                program: "apt-get",
                 args: &["install", "-y", "python3", "python3-pip", "python3-venv"],
-                sudo: true,
             }),
             Action::Run(Cmd {
                 what: "pointing pip at Posit Package Manager",
@@ -442,6 +446,7 @@ fn describe(action: &Action) -> String {
                 line
             }
         }
+        Action::Apt(apt) => install::apt_get_command_line(apt.args),
         Action::Server(action) => server::describe(action).to_string(),
     }
 }
@@ -791,6 +796,9 @@ fn run_actions(step: &Step, deps: &SetupDeps) -> anyhow::Result<()> {
                 } else {
                     deps.install.run_step(cmd.what, cmd.program, cmd.args)?;
                 }
+            }
+            Action::Apt(apt) => {
+                deps.install.run_apt_step(apt.what, apt.args)?;
             }
             Action::Server(action) => {
                 server::run(action, deps.server_host, deps.install.runner)?;
@@ -1273,12 +1281,18 @@ mod tests {
             .on_path("code-server")
             .on_path("duckdb")
             .with_output("duckdb --version", &probe_fixture("duckdb.txt"))
-            .with_output("sudo apt-get update", "")
+            .with_output(&install::apt_get_command_line(&["update"]), "")
+            .with_output(&install::apt_get_command_line(APT_SYSTEM_LIBRARIES), "")
             .with_output(
-                &format!("sudo apt-get {}", APT_SYSTEM_LIBRARIES.join(" ")),
+                &install::apt_get_command_line(&[
+                    "install",
+                    "-y",
+                    "python3",
+                    "python3-pip",
+                    "python3-venv",
+                ]),
                 "",
             )
-            .with_output("sudo apt-get install -y python3 python3-pip python3-venv", "")
             .with_output(
                 "sudo sh -c printf '[global]\\nindex-url = https://packagemanager.posit.co/pypi/latest/simple\\n' > /etc/pip.conf",
                 "",
@@ -1295,7 +1309,18 @@ mod tests {
             .with_output("sudo systemctl enable --now code-server@analyst", "")
             .with_output("dpkg --print-architecture", "amd64")
             .with_output("sudo install -m 0755 -d /etc/apt/keyrings", "")
-            .with_output("sudo apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin", "")
+            .with_output(
+                &install::apt_get_command_line(&[
+                    "install",
+                    "-y",
+                    "docker-ce",
+                    "docker-ce-cli",
+                    "containerd.io",
+                    "docker-buildx-plugin",
+                    "docker-compose-plugin",
+                ]),
+                "",
+            )
             .with_output("id -nG analyst", "analyst sudo")
             .with_output("sudo usermod -aG docker analyst", "")
             .with_output("/verified-download/rustup-init -y --profile default --default-toolchain stable", "")
@@ -1325,8 +1350,8 @@ mod tests {
         // System steps ran as the planned commands, under sudo where
         // declared, all through the runner seam.
         assert_eq!(
-            calls.first().map(String::as_str),
-            Some("sudo apt-get update")
+            calls.first(),
+            Some(&install::apt_get_command_line(&["update"]))
         );
         // All four extensions install in one code-server invocation, before
         // the service is enabled.
@@ -1481,6 +1506,7 @@ mod tests {
                                 cmd.what
                             );
                         }
+                        Action::Apt(apt) => panic!("{}: {} uses apt", step.title, apt.what),
                         Action::Server(action) => assert!(
                             matches!(action, server::ServerAction::Rust),
                             "{}: {action:?} is not user-space",
@@ -1490,6 +1516,78 @@ mod tests {
                     }
                 }
             }
+        }
+    }
+
+    /// The prefix every planned or executed apt-get call must carry: a
+    /// dpkg lock wait and the noninteractive environment, passed through
+    /// `env` because sudo drops the caller's environment.
+    const APT_POLICY: &str = "sudo env DEBIAN_FRONTEND=noninteractive NEEDRESTART_SUSPEND=1 \
+                              apt-get -o DPkg::Lock::Timeout=600 ";
+
+    /// Every apt-get mention in `line` is the policy-carrying invocation.
+    fn assert_apt_policy(context: &str, line: &str) {
+        let mentions = line.matches("apt-get").count();
+        assert_eq!(
+            line.matches(APT_POLICY).count(),
+            mentions,
+            "{context}: apt-get without the lock wait and environment: {line}"
+        );
+        assert!(!line.contains("gdebi"), "{context}: {line}");
+    }
+
+    #[test]
+    fn every_planned_apt_call_waits_for_the_lock_and_runs_noninteractive() {
+        let runner = FakeRunner::default();
+        let fetcher = FakeFetcher::default();
+        let ctx = crate::install::test_support::ctx_on(Os::Linux, &runner, &fetcher);
+        let mut apt_lines = 0;
+        for profile in [Profile::Dev, Profile::Server] {
+            for step in steps(profile) {
+                for action in step.actions {
+                    let lines = match action {
+                        Action::Install(tool) => registry::find(tool).unwrap().plan(&ctx),
+                        Action::Run(cmd) => {
+                            assert!(
+                                !["apt-get", "apt", "dpkg", "gdebi"].contains(&cmd.program)
+                                    && !cmd.args.iter().any(|arg| arg.contains("apt-get")),
+                                "{}: `{}` must be an Action::Apt",
+                                step.title,
+                                cmd.what
+                            );
+                            vec![describe(action)]
+                        }
+                        _ => vec![describe(action)],
+                    };
+                    for line in lines {
+                        apt_lines += line.matches("apt-get").count();
+                        assert_apt_policy(step.title, &line);
+                    }
+                }
+            }
+        }
+        assert!(apt_lines >= 5, "the walk found only {apt_lines} apt calls");
+        assert!(!APT_SYSTEM_LIBRARIES.contains(&"gdebi-core"));
+    }
+
+    #[test]
+    fn every_executed_apt_call_waits_for_the_lock_and_runs_noninteractive() {
+        let runner = server_runner();
+        let git_setup = || Ok(());
+        let fetcher = FakeFetcher::default().with_latest("0.1.0");
+        let lookup = server_lookup();
+        let mut deps = deps_recording_git(Os::Linux, true, &runner, &fetcher, &git_setup);
+        deps.installer_lookup = &lookup;
+
+        let results = execute(steps(Profile::Server), &deps, false);
+        assert!(results.iter().all(|result| result.error.is_none()));
+        let calls = runner.calls();
+        let apt: Vec<&String> = calls.iter().filter(|c| c.contains("apt-get")).collect();
+        // Step 1's update and install, Python, and Docker's update and
+        // install.
+        assert_eq!(apt.len(), 5, "{calls:#?}");
+        for call in apt {
+            assert!(call.starts_with(APT_POLICY), "{call}");
         }
     }
 
@@ -2021,6 +2119,48 @@ mod tests {
         let text = summary(&results);
         assert!(text.contains("✓ quarto"), "{text}");
         assert!(text.contains("✗ rig: boom"), "{text}");
+    }
+
+    const GIT_STEP: Step = Step {
+        title: "git defaults",
+        lane: Lane::Foreground,
+        requires: &[],
+        actions: &[Action::GitSetup],
+    };
+
+    fn git_step_error(git_setup: &(dyn Fn() -> anyhow::Result<()> + Sync)) -> Option<String> {
+        let runner = FakeRunner::default();
+        let fetcher = FakeFetcher::default();
+        let deps = deps_recording_git(Os::Linux, true, &runner, &fetcher, git_setup);
+        run_step(&GIT_STEP, &deps).error
+    }
+
+    #[test]
+    fn summary_shows_a_hinted_error_message_once() {
+        let message = "user.name is not set, and --yes suppresses the prompt for it";
+        let error = git_step_error(&|| {
+            Err(anyhow!(
+                "user.name is not set, and --yes suppresses the prompt for it"
+            ))
+            .hint("set it with `git config --global user.name`")
+        });
+        assert_eq!(error.as_deref(), Some(message));
+        let text = summary(&[StepResult {
+            title: "git defaults",
+            error,
+        }]);
+        assert_eq!(text.matches(message).count(), 1, "{text}");
+    }
+
+    #[test]
+    fn summary_keeps_the_context_chain_of_a_plain_error() {
+        let error = git_step_error(&|| {
+            Err(anyhow!("permission denied").context("could not write ~/.gitconfig"))
+        });
+        assert_eq!(
+            error.as_deref(),
+            Some("could not write ~/.gitconfig: permission denied")
+        );
     }
 
     #[test]

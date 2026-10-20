@@ -4,7 +4,7 @@ use std::sync::Mutex;
 
 use anyhow::{Context, Result, anyhow};
 
-use crate::install::{InstallCtx, Installer};
+use crate::install::{InstallCtx, Installer, apt_get_command_line};
 use crate::tools::Os;
 use crate::ui::HintExt;
 
@@ -300,10 +300,14 @@ impl RstudioBackend for HttpBackend {
     }
 
     fn install(&self, ctx: &InstallCtx<'_>, package: &Path) -> Result<()> {
+        // apt-get treats an argument as a local package file only when it
+        // contains a slash, so the path is always passed in absolute form.
+        let package =
+            std::path::absolute(package).context("could not resolve the temporary package path")?;
         let path = package
             .to_str()
             .context("the temporary package path is not valid UTF-8")?;
-        ctx.run_sudo_step("installing RStudio Server", "gdebi", &["-n", path])
+        ctx.run_apt_step("installing RStudio Server", &["install", "-y", path])
             .context("could not install the verified RStudio Server package")?;
         Ok(())
     }
@@ -369,7 +373,7 @@ impl<B: RstudioBackend> Installer for RstudioServer<B> {
         vec![
             format!("download the RStudio Server {selected} amd64 package from Posit"),
             "verify its Debian package identity with dpkg-deb".to_string(),
-            "sudo gdebi -n the verified temporary package".to_string(),
+            apt_get_command_line(&["install", "-y", "<absolute path of the verified package>"]),
         ]
     }
     fn supports_pin(&self) -> bool {
@@ -389,9 +393,9 @@ mod tests {
     use anyhow::{Result, anyhow};
 
     use super::{
-        DebianMetadata, DownloadedPackage, RstudioBackend, RstudioRelease, RstudioServer,
-        STABLE_ENDPOINT, discover_stable, download_package_from, parse_debian_metadata,
-        parse_stable_redirect,
+        DebianMetadata, DownloadedPackage, HttpBackend, RstudioBackend, RstudioRelease,
+        RstudioServer, STABLE_ENDPOINT, discover_stable, download_package_from,
+        parse_debian_metadata, parse_stable_redirect,
     };
     use crate::install::test_support::{FakeFetcher, FakeRunner, ctx_on};
     use crate::install::{InstallCtx, Installer, run_installer};
@@ -626,7 +630,7 @@ mod tests {
         }
 
         fn install(&self, _ctx: &InstallCtx<'_>, _package: &Path) -> Result<()> {
-            self.phases.borrow_mut().push("sudo gdebi".to_string());
+            self.phases.borrow_mut().push("install package".to_string());
             *self.installed.borrow_mut() = self.downloaded.borrow().clone();
             Ok(())
         }
@@ -649,7 +653,10 @@ mod tests {
 
             let phases = backend.phases.borrow();
             assert_eq!(phases.first().map(String::as_str), Some("resolve latest"));
-            assert_eq!(phases.iter().any(|phase| phase == "sudo gdebi"), installs);
+            assert_eq!(
+                phases.iter().any(|phase| phase == "install package"),
+                installs
+            );
         }
     }
 
@@ -674,7 +681,7 @@ mod tests {
         );
         assert!(!phases.iter().any(|phase| phase == "resolve latest"));
         assert!(phases.iter().any(|phase| phase == "download 2025.05.1+513"));
-        assert!(phases.iter().any(|phase| phase == "sudo gdebi"));
+        assert!(phases.iter().any(|phase| phase == "install package"));
         assert_eq!(backend.installed.borrow().as_deref(), Some(PIN));
     }
 
@@ -709,7 +716,7 @@ mod tests {
                 "resolve latest",
                 "download 2026.09.0+174",
                 "inspect",
-                "sudo gdebi"
+                "install package"
             ]
         );
 
@@ -751,5 +758,54 @@ mod tests {
                 "{metadata:?}"
             );
         }
+    }
+
+    #[test]
+    fn install_hands_apt_get_the_verified_package_by_absolute_path() {
+        let line = crate::install::apt_get_command_line(&[
+            "install",
+            "-y",
+            "/tmp/hpds-rstudio-server-abc.deb",
+        ]);
+        let runner = FakeRunner::default().with_output(&line, "");
+        let fetcher = FakeFetcher::default();
+        let ctx = InstallCtx {
+            yes: true,
+            ..ctx_on(Os::Linux, &runner, &fetcher)
+        };
+        HttpBackend
+            .install(&ctx, Path::new("/tmp/hpds-rstudio-server-abc.deb"))
+            .expect("apt-get installs the package");
+        assert_eq!(runner.calls(), [line]);
+    }
+
+    #[test]
+    fn install_makes_a_relative_package_path_absolute_for_apt_get() {
+        let absolute = std::path::absolute("hpds-rstudio-server-abc.deb").expect("absolute path");
+        let absolute = absolute.to_str().expect("UTF-8 path");
+        let line = crate::install::apt_get_command_line(&["install", "-y", absolute]);
+        let runner = FakeRunner::default().with_output(&line, "");
+        let fetcher = FakeFetcher::default();
+        let ctx = InstallCtx {
+            yes: true,
+            ..ctx_on(Os::Linux, &runner, &fetcher)
+        };
+        HttpBackend
+            .install(&ctx, Path::new("hpds-rstudio-server-abc.deb"))
+            .expect("apt-get installs the package");
+        assert_eq!(runner.calls(), [line]);
+    }
+
+    #[test]
+    fn plan_installs_the_verified_package_with_apt_get_not_gdebi() {
+        let runner = FakeRunner::default();
+        let fetcher = FakeFetcher::default();
+        let plan = RstudioServer::production().plan(&ctx_on(Os::Linux, &runner, &fetcher));
+        let install = plan.last().expect("plan has an install line");
+        assert!(
+            install.starts_with(&crate::install::apt_get_command_line(&["install", "-y"])),
+            "{install}"
+        );
+        assert!(plan.iter().all(|line| !line.contains("gdebi")), "{plan:?}");
     }
 }

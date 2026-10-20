@@ -7,7 +7,7 @@
 
 use anyhow::anyhow;
 
-use crate::install::{InstallCtx, Installer};
+use crate::install::{InstallCtx, Installer, apt_get_command_line};
 use crate::tools::Os;
 use crate::ui::HintExt;
 
@@ -38,8 +38,8 @@ impl Installer for Rig {
                     .to_string(),
                 "register the rig apt repository in /etc/apt/sources.list.d/rig.list (sudo)"
                     .to_string(),
-                "sudo apt-get update".to_string(),
-                "sudo apt-get install -y r-rig".to_string(),
+                apt_get_command_line(&["update"]),
+                apt_get_command_line(&["install", "-y", "r-rig"]),
             ],
             Os::Windows => vec!["winget install --id posit.rig --exact".to_string()],
         }
@@ -123,12 +123,8 @@ fn install_from_apt(ctx: &InstallCtx) -> anyhow::Result<()> {
             "echo 'deb http://rig.r-pkg.org/deb rig main' > /etc/apt/sources.list.d/rig.list",
         ],
     )?;
-    ctx.run_sudo_step("refreshing apt package lists", "apt-get", &["update"])?;
-    ctx.run_sudo_step(
-        "installing rig with apt",
-        "apt-get",
-        &["install", "-y", "r-rig"],
-    )?;
+    ctx.run_apt_step("refreshing apt package lists", &["update"])?;
+    ctx.run_apt_step("installing rig with apt", &["install", "-y", "r-rig"])?;
     Ok(())
 }
 
@@ -190,14 +186,14 @@ mod tests {
                  > /etc/apt/sources.list.d/rig.list",
                 "",
             )
-            .with_output("sudo apt-get update", "")
-            .with_output("sudo apt-get install -y r-rig", "");
+            .with_output(&apt_get_command_line(&["update"]), "")
+            .with_output(&apt_get_command_line(&["install", "-y", "r-rig"]), "");
         let fetcher = FakeFetcher::default();
         Rig.install(&ctx_on(Os::Linux, &runner, &fetcher))
             .expect("apt install must succeed");
         let calls = runner.calls();
         assert_eq!(calls.len(), 4, "{calls:#?}");
-        assert_eq!(calls[3], "sudo apt-get install -y r-rig");
+        assert_eq!(calls[3], apt_get_command_line(&["install", "-y", "r-rig"]));
     }
 
     #[test]
@@ -256,7 +252,9 @@ mod tests {
         );
         let linux = Rig.plan(&ctx_on(Os::Linux, &runner, &fetcher));
         assert!(
-            linux.iter().any(|l| l == "sudo apt-get install -y r-rig"),
+            linux
+                .iter()
+                .any(|l| *l == apt_get_command_line(&["install", "-y", "r-rig"])),
             "{linux:?}"
         );
         assert_eq!(

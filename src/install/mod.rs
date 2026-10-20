@@ -249,6 +249,18 @@ impl InstallCtx<'_> {
         program: &str,
         args: &[&str],
     ) -> anyhow::Result<CommandOutput> {
+        self.sudo_step(what, program, args, program)
+    }
+
+    /// [`Self::run_sudo_step`], naming `label` rather than `program` when
+    /// the command fails.
+    fn sudo_step(
+        &self,
+        what: &str,
+        program: &str,
+        args: &[&str],
+        label: &str,
+    ) -> anyhow::Result<CommandOutput> {
         ui::println(&format!("{what} (needs sudo)"));
         ui::println(&format!("  will run: sudo {program} {}", args.join(" ")));
         approve_sudo(
@@ -261,7 +273,15 @@ impl InstallCtx<'_> {
         sudo_args.extend_from_slice(args);
         self.log_command("sudo", &sudo_args);
         let out = self.runner.run("sudo", &sudo_args)?;
-        ensure_step_success(program, out)
+        ensure_step_success(label, out)
+    }
+
+    /// Run `apt-get <args>` under sudo with the shared apt policy (see
+    /// [`apt_get_argv`]), gated and announced like any other sudo step.
+    pub fn run_apt_step(&self, what: &str, args: &[&str]) -> anyhow::Result<CommandOutput> {
+        let mut env_args = APT_GET_ENV_ARGS.to_vec();
+        env_args.extend_from_slice(args);
+        self.sudo_step(what, "env", &env_args, "apt-get")
     }
 
     /// Echo the underlying command when `-v` is on.
@@ -270,6 +290,36 @@ impl InstallCtx<'_> {
             ui::println(&format!("$ {program} {}", args.join(" ")));
         }
     }
+}
+
+/// The policy every `apt-get` run follows, as the arguments to `env`
+/// that precede apt-get's own arguments. `apt-get` waits 0 s for the
+/// dpkg lock by default, and on a freshly booted Ubuntu machine
+/// unattended-upgrades can hold that lock at any moment, so every call
+/// waits up to ten minutes. The environment keeps debconf and needrestart from
+/// prompting; it is set through `env` because sudo drops the caller's
+/// environment.
+const APT_GET_ENV_ARGS: &[&str] = &[
+    "DEBIAN_FRONTEND=noninteractive",
+    "NEEDRESTART_SUSPEND=1",
+    "apt-get",
+    "-o",
+    "DPkg::Lock::Timeout=600",
+];
+
+/// The argv that follows `sudo` for an `apt-get <args>` run under the
+/// shared apt policy.
+pub(crate) fn apt_get_argv<'a>(args: &[&'a str]) -> Vec<&'a str> {
+    let mut argv = vec!["env"];
+    argv.extend_from_slice(APT_GET_ENV_ARGS);
+    argv.extend_from_slice(args);
+    argv
+}
+
+/// The full command line a plan shows for `apt-get <args>`, exactly as
+/// [`InstallCtx::run_apt_step`] runs it.
+pub(crate) fn apt_get_command_line(args: &[&str]) -> String {
+    format!("sudo {}", apt_get_argv(args).join(" "))
 }
 
 /// How the install gate let a run proceed.
@@ -882,6 +932,62 @@ mod tests {
         ctx.run_sudo_step("refreshing package lists", "apt-get", &["update"])
             .expect("a confirmed plan must cover its sudo steps");
         assert_eq!(runner.calls(), vec!["sudo apt-get update"]);
+    }
+
+    const APT_POLICY: &str = "sudo env DEBIAN_FRONTEND=noninteractive NEEDRESTART_SUSPEND=1 \
+                              apt-get -o DPkg::Lock::Timeout=600";
+
+    #[test]
+    fn apt_get_runs_noninteractive_and_waits_for_the_dpkg_lock() {
+        assert_eq!(
+            apt_get_argv(&["install", "-y", "quarto"]),
+            [
+                "env",
+                "DEBIAN_FRONTEND=noninteractive",
+                "NEEDRESTART_SUSPEND=1",
+                "apt-get",
+                "-o",
+                "DPkg::Lock::Timeout=600",
+                "install",
+                "-y",
+                "quarto",
+            ]
+        );
+        assert_eq!(
+            apt_get_command_line(&["update"]),
+            format!("{APT_POLICY} update")
+        );
+    }
+
+    #[test]
+    fn apt_step_runs_the_planned_command_under_sudo() {
+        let line = apt_get_command_line(&["install", "-y", "quarto"]);
+        let runner = FakeRunner::default().with_output(&line, "");
+        let ctx = InstallCtx {
+            yes: true,
+            ..ctx(&runner)
+        };
+        ctx.run_apt_step("installing quarto", &["install", "-y", "quarto"])
+            .expect("pre-approved apt step must run");
+        assert_eq!(runner.calls(), vec![line]);
+    }
+
+    #[test]
+    fn apt_step_failure_names_apt_get() {
+        let line = apt_get_command_line(&["update"]);
+        let runner = FakeRunner::default().with_failure(&line, "E: Could not get lock");
+        let ctx = InstallCtx {
+            yes: true,
+            ..ctx(&runner)
+        };
+        let err = ctx
+            .run_apt_step("refreshing package lists", &["update"])
+            .expect_err("step must fail");
+        let out = render_error(&err, false);
+        assert!(
+            out.contains("`apt-get` failed: E: Could not get lock"),
+            "{out}"
+        );
     }
 
     #[test]
