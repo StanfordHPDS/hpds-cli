@@ -40,6 +40,31 @@ CI also runs `cargo test --features online-tests` in a separate job that is allo
 
 Do not reach for `#[allow]` on a clippy lint without a genuine reason written in a comment beside it.
 
+### Server setup in a container
+
+The unit and integration tests drive `hpds setup --profile server` against a fake host, so they cannot show that the real installers work on a real machine.
+The `server setup (Linux container)` workflow, `.github/workflows/server-setup.yml`, fills that gap.
+It builds a release binary and runs `tests/server-setup/run.py`, which starts a fresh Ubuntu 24.04 container with systemd as PID 1 (`tests/server-setup/Dockerfile`), runs `hpds setup --profile server --yes` as an ordinary sudo user with the environment an ssh login gives, and then checks:
+
+- the setup summary marks every step from `hpds setup --plan --profile server` with ✓, so a new step is covered without editing the harness;
+- each component works as that user: R and its package repository, Python and pip, Quarto, TinyTeX, RStudio Server and code-server (version, systemd service, and an HTTP probe), gh, DuckDB, uv, ruff, sqlfluff, rig, Rust, the Docker CLI and group membership, and the git defaults, including the warnings for a missing git identity;
+- a second `hpds setup --profile server --yes` also succeeds on every step.
+
+The harness prints a pass/fail table and removes its container and image when it finishes, fails, or receives SIGINT or SIGTERM; only a SIGKILL leaves them behind, in which case remove the `hpds-server-setup-*` container with `docker rm --force --volumes` and the `hpds-server-setup:local` image with `docker image rm`.
+The job runs on pull requests and pushes to `main` that touch the code the setup path runs (`src/setup/`, `src/install/`, `src/tools/`, `src/gitx/`, `src/ui/`, `src/cli/setup.rs`, `src/cli/git.rs`, `src/cli/mod.rs`, `src/main.rs`), `Cargo.toml`, `Cargo.lock`, `rust-toolchain.toml`, the harness, or the workflow; run it by hand from the Actions tab with **Run workflow**.
+A full run downloads every component and can take tens of minutes.
+The harness allows the first setup run 50 minutes and the second 20 minutes (`--setup-timeout` and `--rerun-timeout`, in seconds), inside the job's 90-minute limit.
+
+To run it locally you need an x86_64 Linux host with Docker: the server profile is x86_64 only, and its systemd services do not start under emulation on Apple Silicon.
+
+```
+cargo build --release --locked
+python3 -m unittest discover -s tests/server-setup -p 'test_*.py'
+python3 tests/server-setup/run.py --hpds target/release/hpds
+```
+
+On a host that cannot run the full setup, `--platform linux/amd64 --stop-after-plan` with a Linux x86_64 binary checks the image, the systemd boot, and the plan parsing only.
+
 ## Recipe: adding a managed tool
 
 A "managed tool" is anything `hpds install` can put on a machine (`uv`, `gh`, `duckdb`, and so on).
