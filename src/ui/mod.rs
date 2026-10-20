@@ -12,7 +12,6 @@ mod progress;
 mod prompt;
 
 use capture::{Stream, emit};
-#[allow(unused_imports)] // consumed by background setup work; part of the ui API
 pub use capture::{Transcript, capture, replay};
 
 #[allow(unused_imports)] // consumed only by unit tests today; part of the ui API

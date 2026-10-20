@@ -1285,7 +1285,7 @@ mod tests {
             ["Docker Engine", "RStudio preferences"]
         );
 
-        let results = execute(&selected, &deps);
+        let results = execute(&selected, &deps, true);
         assert!(
             host.files()
                 .contains_key(Path::new("/etc/rstudio/rstudio-prefs.json"))

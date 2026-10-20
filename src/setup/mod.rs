@@ -9,9 +9,18 @@
 //! failing step is reported and the remaining steps still run; the caller
 //! gets every step's outcome back for the summary and the exit code.
 //!
+//! Under `hpds setup --profile server --yes`, steps on the background
+//! [`Lane`] (user-space installs that never need sudo or a prompt) run on a
+//! worker thread while the rest run on the main thread; each step waits
+//! for the steps it `requires` on the other lane, and background output is
+//! captured and replayed under the step's header. Every other run executes
+//! the steps one at a time, in plan order.
+//!
 //! [`CommandRunner`]: crate::install::CommandRunner
 
+use std::collections::HashSet;
 use std::path::Path;
+use std::sync::{Condvar, Mutex, MutexGuard, PoisonError, mpsc};
 
 use anyhow::anyhow;
 
@@ -44,8 +53,32 @@ impl Profile {
 pub struct Step {
     /// What the checklist, plan, and summary call this step.
     pub title: &'static str,
+    /// Where the step runs when independent work overlaps.
+    lane: Lane,
+    /// Titles of steps that must have finished (successfully or not)
+    /// before this one starts, when they are selected. Each names an
+    /// earlier step of the same profile, so plan order alone satisfies
+    /// them when steps run one after another.
+    requires: &'static [&'static str],
     actions: &'static [Action],
 }
+
+/// Which thread runs a step when `hpds setup --yes` overlaps independent
+/// work. Without overlap every step runs in the foreground.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Lane {
+    /// The main thread, in plan order: everything that uses sudo, apt,
+    /// or the terminal.
+    Foreground,
+    /// One worker thread, in plan order, with its output captured and
+    /// replayed by the main thread: user-space installs only.
+    Background,
+}
+
+/// The step the background lane waits for before it starts: the system
+/// libraries (compilers, certificates, curl) that user-space installs
+/// build and download with.
+const BACKGROUND_GATE: &str = "system libraries (apt)";
 
 /// One thing a step does.
 #[derive(Debug)]
@@ -86,6 +119,19 @@ pub struct SetupDeps<'a> {
     pub(crate) server_host: &'a (dyn server::ServerHost + Sync),
 }
 
+impl<'a> SetupDeps<'a> {
+    /// A copy for another thread: the same seams, with an installer
+    /// context that has its own sudo-approval cell.
+    fn for_thread(&self) -> SetupDeps<'a> {
+        SetupDeps {
+            install: self.install.for_thread(),
+            git_setup: self.git_setup,
+            installer_lookup: self.installer_lookup,
+            server_host: self.server_host,
+        }
+    }
+}
+
 /// How one executed step ended.
 #[derive(Debug)]
 pub struct StepResult {
@@ -101,34 +147,50 @@ pub struct StepResult {
 const DEV_STEPS: &[Step] = &[
     Step {
         title: "r",
+        lane: Lane::Foreground,
+        requires: &[],
         actions: &[Action::Install("r")],
     },
     Step {
         title: "quarto",
+        lane: Lane::Foreground,
+        requires: &[],
         actions: &[Action::Install("quarto")],
     },
     Step {
         title: "uv",
+        lane: Lane::Foreground,
+        requires: &[],
         actions: &[Action::Install("uv")],
     },
     Step {
         title: "gh",
+        lane: Lane::Foreground,
+        requires: &[],
         actions: &[Action::Install("gh")],
     },
     Step {
         title: "rig",
+        lane: Lane::Foreground,
+        requires: &[],
         actions: &[Action::Install("rig")],
     },
     Step {
         title: "tinytex",
+        lane: Lane::Foreground,
+        requires: &[],
         actions: &[Action::Install("tinytex")],
     },
     Step {
         title: "togi",
+        lane: Lane::Foreground,
+        requires: &[],
         actions: &[Action::Install("togi")],
     },
     Step {
         title: "git setup",
+        lane: Lane::Foreground,
+        requires: &[],
         actions: &[Action::GitSetup],
     },
 ];
@@ -162,9 +224,17 @@ const APT_SYSTEM_LIBRARIES: &[&str] = &[
 /// to Posit Package Manager, the IDE servers, and the same toolchain the
 /// dev profile installs. Every external command is a static plan run
 /// through the runner seam; nothing shells out behind the plan's back.
+///
+/// The background lane holds the steps that touch only the invoking
+/// user's files and never use sudo, apt, or a prompt under `--yes`. The
+/// requirements are the cross-lane reads: code-server's settings point at
+/// the Quarto launcher, git defaults reports `gh auth status`, and
+/// `uv tool install` uses the system Python when it is present.
 const SERVER_STEPS: &[Step] = &[
     Step {
         title: "system libraries (apt)",
+        lane: Lane::Foreground,
+        requires: &[],
         actions: &[
             Action::Run(Cmd {
                 what: "refreshing apt package lists",
@@ -182,14 +252,20 @@ const SERVER_STEPS: &[Step] = &[
     },
     Step {
         title: "Docker Engine",
+        lane: Lane::Foreground,
+        requires: &[],
         actions: &[Action::Server(server::ServerAction::Docker)],
     },
     Step {
         title: "stable Rust",
+        lane: Lane::Background,
+        requires: &[],
         actions: &[Action::Server(server::ServerAction::Rust)],
     },
     Step {
         title: "R + CRAN/PPM repositories",
+        lane: Lane::Foreground,
+        requires: &[],
         actions: &[
             Action::Install("r"),
             Action::Server(server::ServerAction::RProfile),
@@ -197,6 +273,8 @@ const SERVER_STEPS: &[Step] = &[
     },
     Step {
         title: "Python + PPM pip configuration",
+        lane: Lane::Foreground,
+        requires: &[],
         actions: &[
             Action::Run(Cmd {
                 what: "installing Python",
@@ -217,22 +295,32 @@ const SERVER_STEPS: &[Step] = &[
     },
     Step {
         title: "quarto",
+        lane: Lane::Background,
+        requires: &[],
         actions: &[Action::Install("quarto")],
     },
     Step {
         title: "tinytex",
+        lane: Lane::Background,
+        requires: &[],
         actions: &[Action::Install("tinytex")],
     },
     Step {
         title: "RStudio Server",
+        lane: Lane::Foreground,
+        requires: &[],
         actions: &[Action::Install("rstudio-server")],
     },
     Step {
         title: "RStudio preferences",
+        lane: Lane::Foreground,
+        requires: &[],
         actions: &[Action::Server(server::ServerAction::RstudioPreferences)],
     },
     Step {
         title: "code-server + extensions",
+        lane: Lane::Foreground,
+        requires: &["quarto"],
         actions: &[
             Action::Server(server::ServerAction::InstallCodeServer),
             Action::Run(Cmd {
@@ -255,14 +343,20 @@ const SERVER_STEPS: &[Step] = &[
     },
     Step {
         title: "gh",
+        lane: Lane::Background,
+        requires: &[],
         actions: &[Action::Install("gh")],
     },
     Step {
         title: "duckdb",
+        lane: Lane::Background,
+        requires: &[],
         actions: &[Action::Install("duckdb")],
     },
     Step {
         title: "uv + ruff + sqlfluff",
+        lane: Lane::Background,
+        requires: &["Python + PPM pip configuration"],
         actions: &[
             Action::Install("uv"),
             Action::Run(Cmd {
@@ -287,10 +381,14 @@ const SERVER_STEPS: &[Step] = &[
     },
     Step {
         title: "rig",
+        lane: Lane::Foreground,
+        requires: &[],
         actions: &[Action::Install("rig")],
     },
     Step {
         title: "git defaults",
+        lane: Lane::Foreground,
+        requires: &["gh"],
         actions: &[Action::GitSetup],
     },
 ];
@@ -370,29 +468,311 @@ pub fn choose_steps(all: &[Step], yes: bool, interactive: bool) -> anyhow::Resul
         .collect())
 }
 
-/// Run every selected step in order, reporting each failure as it happens
-/// and carrying on with the rest.
-pub fn execute(steps: &[Step], deps: &SetupDeps) -> Vec<StepResult> {
+/// Run every selected step, reporting each failure as it happens and
+/// carrying on with the rest. Results come back in plan order, one per
+/// selected step.
+///
+/// With `overlap`, background-lane steps run on a worker thread while the
+/// foreground lane runs on this one (see [`execute_overlapped`]). Without
+/// it, or when no background step is selected, every step runs here, one
+/// at a time, in plan order.
+pub fn execute(steps: &[Step], deps: &SetupDeps, overlap: bool) -> Vec<StepResult> {
+    let (foreground, background) = partition(steps);
+    if overlap && !background.is_empty() {
+        return execute_overlapped(steps, &foreground, &background, deps);
+    }
+    execute_sequential(steps, deps)
+}
+
+/// Run `steps` on this thread, one at a time, in plan order.
+fn execute_sequential(steps: &[Step], deps: &SetupDeps) -> Vec<StepResult> {
     let total = steps.len();
     steps
         .iter()
         .enumerate()
         .map(|(index, step)| {
-            ui::println(&format!("[{}/{total}] {}", index + 1, step.title));
-            let error = match run_actions(step, deps) {
-                Ok(()) => None,
-                Err(err) => {
-                    ui::error(&err);
-                    ui::warn(&format!("step failed: {}; continuing", step.title));
-                    Some(format!("{err:#}"))
-                }
-            };
-            StepResult {
-                title: step.title,
-                error,
-            }
+            ui::println(&header(index, total, step.title));
+            run_step(step, deps)
         })
         .collect()
+}
+
+/// The `[n/N] title` line that introduces a step's output.
+fn header(index: usize, total: usize, title: &str) -> String {
+    format!("[{}/{total}] {title}", index + 1)
+}
+
+/// The header for a step whose output is replayed after it ran on the
+/// background lane.
+fn background_header(index: usize, total: usize, title: &str) -> String {
+    format!("{} (ran in the background)", header(index, total, title))
+}
+
+/// Run one step, reporting its failure (if any) as it happens.
+fn run_step(step: &Step, deps: &SetupDeps) -> StepResult {
+    let error = match run_actions(step, deps) {
+        Ok(()) => None,
+        Err(err) => {
+            ui::error(&err);
+            ui::warn(&format!("step failed: {}; continuing", step.title));
+            Some(format!("{err:#}"))
+        }
+    };
+    StepResult {
+        title: step.title,
+        error,
+    }
+}
+
+/// One lane's steps, in plan order, each with its plan index.
+type LaneSteps = Vec<(usize, Step)>;
+
+/// Split selected steps into the foreground and background lanes, each
+/// in plan order and carrying its plan index.
+fn partition(steps: &[Step]) -> (LaneSteps, LaneSteps) {
+    steps
+        .iter()
+        .copied()
+        .enumerate()
+        .partition(|(_, step)| step.lane == Lane::Foreground)
+}
+
+/// Why a background step has no result, and what to do about it.
+const UNREPORTED: &str = "the background worker stopped before this step reported a result";
+const UNREPORTED_HINT: &str =
+    "re-run `hpds setup` to retry it; steps that completed are idempotent and will no-op";
+
+/// One background step's outcome, on its way to the main thread.
+struct Finished {
+    index: usize,
+    result: StepResult,
+    transcript: ui::Transcript,
+}
+
+/// The foreground steps the background lane may still have to wait for.
+/// A step leaves the set when it finishes, whether or not it succeeded.
+struct Completed {
+    pending: Mutex<HashSet<&'static str>>,
+    changed: Condvar,
+}
+
+impl Completed {
+    fn new(titles: impl IntoIterator<Item = &'static str>) -> Self {
+        Completed {
+            pending: Mutex::new(titles.into_iter().collect()),
+            changed: Condvar::new(),
+        }
+    }
+
+    /// The set, reclaimed if a panicking thread poisoned the lock: updates
+    /// only ever remove titles, so a poisoned set is still accurate.
+    fn lock(&self) -> MutexGuard<'_, HashSet<&'static str>> {
+        self.pending.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    fn finish(&self, title: &str) {
+        self.lock().remove(title);
+        self.changed.notify_all();
+    }
+
+    fn finish_all(&self) {
+        self.lock().clear();
+        self.changed.notify_all();
+    }
+
+    /// Block until none of `requires` is a pending foreground step.
+    /// Titles that were never pending (unselected steps, or steps on the
+    /// caller's own lane, which plan order already settled) do not wait.
+    fn wait_for(&self, requires: &[&str]) {
+        let pending = self.lock();
+        let _settled = self
+            .changed
+            .wait_while(pending, |pending| {
+                requires.iter().any(|title| pending.contains(title))
+            })
+            .unwrap_or_else(PoisonError::into_inner);
+    }
+}
+
+/// Marks every foreground step finished when dropped, including while the
+/// foreground unwinds from a panic, so the background lane never waits on
+/// a step that will not run (the scope joins the worker before the panic
+/// propagates).
+struct ReleaseForeground<'a>(&'a Completed);
+
+impl Drop for ReleaseForeground<'_> {
+    fn drop(&mut self) {
+        self.0.finish_all();
+    }
+}
+
+/// Run the foreground lane on this thread and the background lane on one
+/// worker thread at the same time.
+///
+/// The background lane starts once [`BACKGROUND_GATE`] has finished and
+/// runs its steps in plan order, each inside [`ui::capture`], sending each
+/// result and transcript back here. Every step first waits for the
+/// selected steps it `requires` on the other lane. This thread replays
+/// background transcripts, under their headers, between foreground steps
+/// as they arrive, then the rest once its own lane is done.
+///
+/// If the worker panics, the steps it never reported fail with a hint to
+/// re-run, and every foreground result stands. A step that panics loses
+/// the lines it emitted before panicking: its capture is discarded as the
+/// panic unwinds.
+fn execute_overlapped(
+    steps: &[Step],
+    foreground: &[(usize, Step)],
+    background: &[(usize, Step)],
+    deps: &SetupDeps,
+) -> Vec<StepResult> {
+    let total = steps.len();
+    let completed = Completed::new(foreground.iter().map(|(_, step)| step.title));
+    let worker_deps = deps.for_thread();
+    let (tx, rx) = mpsc::channel::<Finished>();
+
+    let results = std::thread::scope(|scope| {
+        let completed = &completed;
+        let worker = std::thread::Builder::new()
+            .name("hpds-setup-background".to_string())
+            .spawn_scoped(scope, move || {
+                run_background(background, &worker_deps, completed, &tx);
+            });
+        let worker = match worker {
+            Ok(worker) => worker,
+            Err(err) => {
+                ui::warn(&format!(
+                    "could not start a background thread ({err}); running every step in order"
+                ));
+                return None;
+            }
+        };
+
+        let mut lane = ForegroundLane {
+            total,
+            results: (0..total).map(|_| None).collect(),
+            unreported: background.iter().map(|(_, step)| step.title).collect(),
+            rx,
+        };
+        let release = ReleaseForeground(completed);
+        for (index, step) in foreground {
+            lane.wait_for(step.requires);
+            ui::println(&header(*index, total, step.title));
+            let result = run_step(step, deps);
+            if let Some(slot) = lane.results.get_mut(*index) {
+                *slot = Some(result);
+            }
+            completed.finish(step.title);
+            lane.replay_arrivals();
+        }
+        drop(release);
+        lane.replay_rest();
+        // A panic on the worker has already been reported by the panic
+        // hook; what matters here is which steps it never reported, and
+        // the loop below fails those.
+        let _ = worker.join();
+
+        let mut results = lane.results;
+        for (index, step) in background {
+            if let Some(slot) = results.get_mut(*index)
+                && slot.is_none()
+            {
+                ui::println(&background_header(*index, total, step.title));
+                ui::error(&unreported_error());
+                *slot = Some(StepResult {
+                    title: step.title,
+                    error: Some(format!("{UNREPORTED}; {UNREPORTED_HINT}")),
+                });
+            }
+        }
+        Some(results)
+    });
+
+    match results {
+        Some(results) => results.into_iter().flatten().collect(),
+        None => execute_sequential(steps, deps),
+    }
+}
+
+/// The background lane: wait for the gate, then run each step in plan
+/// order once its foreground requirements have finished, capturing its
+/// output and sending the outcome to the main thread.
+fn run_background(
+    steps: &[(usize, Step)],
+    deps: &SetupDeps,
+    completed: &Completed,
+    tx: &mpsc::Sender<Finished>,
+) {
+    completed.wait_for(&[BACKGROUND_GATE]);
+    for (index, step) in steps {
+        completed.wait_for(step.requires);
+        let (result, transcript) = ui::capture(|| run_step(step, deps));
+        let finished = Finished {
+            index: *index,
+            result,
+            transcript,
+        };
+        if tx.send(finished).is_err() {
+            // The main thread stopped listening; nobody would see the rest.
+            return;
+        }
+    }
+}
+
+/// The main thread's view of an overlapped run: results so far, and the
+/// background steps that have not reported yet.
+struct ForegroundLane {
+    total: usize,
+    results: Vec<Option<StepResult>>,
+    unreported: HashSet<&'static str>,
+    rx: mpsc::Receiver<Finished>,
+}
+
+impl ForegroundLane {
+    /// Record a background step's outcome and replay its output.
+    fn record(&mut self, finished: Finished) {
+        let title = finished.result.title;
+        self.unreported.remove(title);
+        ui::println(&background_header(finished.index, self.total, title));
+        ui::replay(&finished.transcript);
+        if let Some(slot) = self.results.get_mut(finished.index) {
+            *slot = Some(finished.result);
+        }
+    }
+
+    /// Block until none of `requires` is an unreported background step,
+    /// replaying outcomes as they arrive. Stops waiting if the worker has
+    /// gone: what it never reported is failed at the end.
+    fn wait_for(&mut self, requires: &[&str]) {
+        while requires.iter().any(|title| self.unreported.contains(title)) {
+            match self.rx.recv() {
+                Ok(finished) => self.record(finished),
+                Err(mpsc::RecvError) => return,
+            }
+        }
+    }
+
+    /// Replay every outcome that has already arrived, without blocking.
+    fn replay_arrivals(&mut self) {
+        while let Ok(finished) = self.rx.try_recv() {
+            self.record(finished);
+        }
+    }
+
+    /// Replay outcomes until the worker is done.
+    fn replay_rest(&mut self) {
+        while let Ok(finished) = self.rx.recv() {
+            self.record(finished);
+        }
+    }
+}
+
+/// The error shown for a background step that never reported.
+fn unreported_error() -> anyhow::Error {
+    Err::<(), _>(anyhow!(UNREPORTED))
+        .hint(UNREPORTED_HINT)
+        .err()
+        .unwrap_or_else(|| anyhow!(UNREPORTED))
 }
 
 /// Run one step's actions in order, stopping the step at the first error.
@@ -464,13 +844,15 @@ pub fn finish(results: &[StepResult], log_path: Option<&Path>) -> anyhow::Result
 /// The dev-profile flow: checklist, execute, summarize.
 pub fn run_dev(deps: &SetupDeps, yes: bool, interactive: bool) -> anyhow::Result<()> {
     let selected = choose_steps(steps(Profile::Dev), yes, interactive)?;
-    finish(&execute(&selected, deps), None)
+    finish(&execute(&selected, deps, false), None)
 }
 
 /// The server-profile flow: print the plan, checklist, confirm, execute,
 /// summarize into `log_path`. The caller has already verified the host is
 /// Linux; nothing runs until the confirmation gate passes (`--yes` skips
-/// it, and a non-interactive session without `--yes` refuses).
+/// it, and a non-interactive session without `--yes` refuses). Under
+/// `--yes` the background lane overlaps the foreground; an interactive
+/// run keeps every step on the main thread, where it may prompt.
 pub fn run_server(
     deps: &SetupDeps,
     yes: bool,
@@ -495,17 +877,22 @@ pub fn run_server(
                 .hint("re-run `hpds setup --profile server` when you are ready");
         }
     }
-    finish(&execute(&selected, deps), Some(log_path))
+    finish(&execute(&selected, deps, yes), Some(log_path))
 }
 
 #[cfg(test)]
 mod tests {
     use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::{Condvar, Mutex, mpsc};
+    use std::time::Duration;
 
     use super::*;
-    use crate::install::ReleaseFetcher;
+    use crate::install::installers::rstudio_server::{
+        DownloadedPackage, RstudioBackend, RstudioRelease, RstudioServer,
+    };
     use crate::install::registry;
     use crate::install::test_support::{FakeFetcher, FakeRunner, PanicFetcher, probe_fixture};
+    use crate::install::{CommandOutput, CommandRunner, ReleaseFetcher};
     use crate::tools::Os;
     use crate::ui::render_error;
 
@@ -547,7 +934,7 @@ mod tests {
     fn deps_recording_git<'a>(
         os: Os,
         yes: bool,
-        runner: &'a FakeRunner,
+        runner: &'a (dyn CommandRunner + Sync),
         fetcher: &'a (dyn ReleaseFetcher + Sync),
         git_setup: &'a (dyn Fn() -> anyhow::Result<()> + Sync),
     ) -> SetupDeps<'a> {
@@ -789,7 +1176,7 @@ mod tests {
             .with_output("togi --version", &probe_fixture("togi.txt"));
         let deps = deps_recording_git(Os::Mac, true, &runner, &fetcher, &git_setup);
 
-        let results = execute(steps(Profile::Dev), &deps);
+        let results = execute(steps(Profile::Dev), &deps, false);
 
         let failures: Vec<_> = results
             .iter()
@@ -833,43 +1220,56 @@ mod tests {
         assert!(!log.path().join("hpds-setup.log").exists());
     }
 
-    #[test]
-    fn server_with_yes_runs_the_command_plans_through_the_runner_and_logs() {
-        use std::path::Path;
+    /// An RStudio Server backend that reports the current release as
+    /// installed, so the RStudio step is an idempotent no-op.
+    struct InstalledRstudio;
+    impl RstudioBackend for InstalledRstudio {
+        fn detect(&self, _ctx: &InstallCtx<'_>) -> Option<String> {
+            Some("2026.09.0+174".to_string())
+        }
+        fn latest(&self) -> anyhow::Result<RstudioRelease> {
+            Ok(RstudioRelease {
+                version: "2026.09.0+174".to_string(),
+                filename: "rstudio-server-2026.09.0-174-amd64.deb".to_string(),
+                url: "https://s3.amazonaws.com/rstudio-server/server/jammy/amd64/rstudio-server-2026.09.0-174-amd64.deb".to_string(),
+            })
+        }
+        fn exact(&self, _version: &str) -> anyhow::Result<RstudioRelease> {
+            unreachable!("the installed version is current")
+        }
+        fn download(&self, _release: &RstudioRelease) -> anyhow::Result<DownloadedPackage> {
+            unreachable!("the installed version is current")
+        }
+        fn inspect(&self, _ctx: &InstallCtx<'_>, _package: &Path) -> anyhow::Result<String> {
+            unreachable!("the installed version is current")
+        }
+        fn install(&self, _ctx: &InstallCtx<'_>, _package: &Path) -> anyhow::Result<()> {
+            unreachable!("the installed version is current")
+        }
+    }
 
-        use crate::install::installers::rstudio_server::{
-            DownloadedPackage, RstudioBackend, RstudioRelease, RstudioServer,
-        };
-
-        struct InstalledRstudio;
-        impl RstudioBackend for InstalledRstudio {
-            fn detect(&self, _ctx: &InstallCtx<'_>) -> Option<String> {
-                Some("2026.09.0+174".to_string())
-            }
-            fn latest(&self) -> anyhow::Result<RstudioRelease> {
-                Ok(RstudioRelease {
-                    version: "2026.09.0+174".to_string(),
-                    filename: "rstudio-server-2026.09.0-174-amd64.deb".to_string(),
-                    url: "https://s3.amazonaws.com/rstudio-server/server/jammy/amd64/rstudio-server-2026.09.0-174-amd64.deb".to_string(),
-                })
-            }
-            fn exact(&self, _version: &str) -> anyhow::Result<RstudioRelease> {
-                unreachable!("the installed version is current")
-            }
-            fn download(&self, _release: &RstudioRelease) -> anyhow::Result<DownloadedPackage> {
-                unreachable!("the installed version is current")
-            }
-            fn inspect(&self, _ctx: &InstallCtx<'_>, _package: &Path) -> anyhow::Result<String> {
-                unreachable!("the installed version is current")
-            }
-            fn install(&self, _ctx: &InstallCtx<'_>, _package: &Path) -> anyhow::Result<()> {
-                unreachable!("the installed version is current")
+    /// The registry, except that RStudio Server is backed by
+    /// [`InstalledRstudio`].
+    fn server_lookup()
+    -> impl Fn(&str) -> Result<&'static dyn install::Installer, registry::RegistryError> + Sync
+    {
+        let backend = Box::leak(Box::new(InstalledRstudio));
+        let rstudio: &'static RstudioServer<&'static InstalledRstudio> =
+            Box::leak(Box::new(RstudioServer::with_backend(backend)));
+        move |tool: &str| {
+            if tool == "rstudio-server" {
+                Ok(rstudio as &'static dyn install::Installer)
+            } else {
+                registry::find(tool)
             }
         }
+    }
 
-        // Every registry tool probes as installed (no-op installs) so the
-        // run exercises exactly the server profile's own command plans.
-        let runner = runner_with_everything_installed()
+    /// A fake runner on which every registry tool probes as installed
+    /// (no-op installs) and every server command plan succeeds, so a run
+    /// exercises exactly the server profile's own command plans.
+    fn server_runner() -> FakeRunner {
+        runner_with_everything_installed()
             .on_path("code-server")
             .on_path("duckdb")
             .with_output("duckdb --version", &probe_fixture("duckdb.txt"))
@@ -891,36 +1291,35 @@ mod tests {
             )
             .with_output("uv tool install --upgrade ruff", "")
             .with_output("uv tool install --upgrade sqlfluff", "")
-            .with_output("uv tool update-shell", "");
-        let runner = runner
+            .with_output("uv tool update-shell", "")
             .with_output("sudo systemctl enable --now code-server@analyst", "")
             .with_output("dpkg --print-architecture", "amd64")
             .with_output("sudo install -m 0755 -d /etc/apt/keyrings", "")
             .with_output("sudo apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin", "")
             .with_output("id -nG analyst", "analyst sudo")
             .with_output("sudo usermod -aG docker analyst", "")
-            .with_output("/verified-download/rustup-init -y --profile default --default-toolchain stable", "");
+            .with_output("/verified-download/rustup-init -y --profile default --default-toolchain stable", "")
+    }
+
+    #[test]
+    fn server_with_yes_runs_the_command_plans_through_the_runner_and_logs() {
+        let runner = server_runner();
         let git_setup = || {
             runner.record("hpds git setup");
             Ok(())
         };
         let fetcher = FakeFetcher::default().with_latest("0.1.0");
-        let backend = Box::leak(Box::new(InstalledRstudio));
-        let rstudio = Box::leak(Box::new(RstudioServer::with_backend(backend)));
-        let lookup = |tool: &str| {
-            if tool == "rstudio-server" {
-                Ok(rstudio as &'static dyn install::Installer)
-            } else {
-                registry::find(tool)
-            }
-        };
+        let lookup = server_lookup();
         let mut deps = deps_recording_git(Os::Linux, true, &runner, &fetcher, &git_setup);
         deps.installer_lookup = &lookup;
         let dir = tempfile::tempdir().expect("create temp dir");
         let log_path = dir.path().join("hpds-setup.log");
 
-        finish(&execute(steps(Profile::Server), &deps), Some(&log_path))
-            .expect("all steps succeed");
+        finish(
+            &execute(steps(Profile::Server), &deps, false),
+            Some(&log_path),
+        )
+        .expect("all steps succeed");
 
         let calls = runner.calls();
         // System steps ran as the planned commands, under sudo where
@@ -965,6 +1364,644 @@ mod tests {
             );
         }
         assert!(!log.contains('✗'), "no step failed: {log}");
+    }
+
+    // --- lanes and requirements ---------------------------------------------
+
+    const SERVER_BACKGROUND: [&str; 6] = [
+        "stable Rust",
+        "quarto",
+        "tinytex",
+        "gh",
+        "duckdb",
+        "uv + ruff + sqlfluff",
+    ];
+
+    #[test]
+    fn server_lanes_and_requirements_match_the_dependency_analysis() {
+        let background: Vec<_> = steps(Profile::Server)
+            .iter()
+            .filter(|step| step.lane == Lane::Background)
+            .map(|step| step.title)
+            .collect();
+        assert_eq!(background, SERVER_BACKGROUND);
+        let requirements: Vec<(&str, &[&str])> = steps(Profile::Server)
+            .iter()
+            .filter(|step| !step.requires.is_empty())
+            .map(|step| (step.title, step.requires))
+            .collect();
+        assert_eq!(
+            requirements,
+            [
+                ("code-server + extensions", &["quarto"][..]),
+                (
+                    "uv + ruff + sqlfluff",
+                    &["Python + PPM pip configuration"][..]
+                ),
+                ("git defaults", &["gh"][..]),
+            ]
+        );
+    }
+
+    #[test]
+    fn dev_profile_runs_everything_in_the_foreground() {
+        for step in steps(Profile::Dev) {
+            assert_eq!(step.lane, Lane::Foreground, "{}", step.title);
+        }
+    }
+
+    #[test]
+    fn every_requirement_names_an_earlier_step_of_the_same_profile() {
+        // Pointing only backwards makes the requirement graph acyclic, and
+        // means plain plan order satisfies it when steps run one at a time.
+        for profile in [Profile::Dev, Profile::Server] {
+            let table = steps(profile);
+            for (index, step) in table.iter().enumerate() {
+                for required in step.requires {
+                    let position = table
+                        .iter()
+                        .position(|other| other.title == *required)
+                        .unwrap_or_else(|| panic!("{}: unknown step {required}", step.title));
+                    assert!(
+                        position < index,
+                        "{} requires the later step {required}",
+                        step.title
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn the_background_gate_precedes_every_background_step() {
+        let table = steps(Profile::Server);
+        let gate = table
+            .iter()
+            .position(|step| step.title == BACKGROUND_GATE)
+            .expect("the gate is a server step");
+        assert_eq!(table[gate].lane, Lane::Foreground);
+        for (index, step) in table.iter().enumerate() {
+            if step.lane == Lane::Background {
+                assert!(gate < index, "{} starts before the gate", step.title);
+            }
+        }
+    }
+
+    #[test]
+    fn background_steps_never_use_sudo_apt_or_the_git_flow() {
+        let runner = FakeRunner::default();
+        let fetcher = FakeFetcher::default();
+        let ctx = crate::install::test_support::ctx_on(Os::Linux, &runner, &fetcher);
+        for profile in [Profile::Dev, Profile::Server] {
+            for step in steps(profile)
+                .iter()
+                .filter(|step| step.lane == Lane::Background)
+            {
+                for action in step.actions {
+                    match action {
+                        Action::Install(tool) => {
+                            assert!(
+                                ["quarto", "tinytex", "gh", "duckdb", "uv"].contains(tool),
+                                "{}: {tool} is not a user-space installer",
+                                step.title
+                            );
+                            let installer = registry::find(tool).unwrap();
+                            for line in installer.plan(&ctx) {
+                                for word in ["sudo", "apt", "dpkg"] {
+                                    assert!(!line.contains(word), "{tool}: {line}");
+                                }
+                            }
+                        }
+                        Action::Run(cmd) => {
+                            assert!(!cmd.sudo, "{}: {}", step.title, cmd.what);
+                            assert!(
+                                !["apt-get", "apt", "dpkg"].contains(&cmd.program),
+                                "{}: {}",
+                                step.title,
+                                cmd.what
+                            );
+                        }
+                        Action::Server(action) => assert!(
+                            matches!(action, server::ServerAction::Rust),
+                            "{}: {action:?} is not user-space",
+                            step.title
+                        ),
+                        Action::GitSetup => panic!("{}: git setup is foreground", step.title),
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn partition_splits_lanes_in_plan_order_with_plan_indices() {
+        let (foreground, background) = partition(steps(Profile::Server));
+        let indices = |lane: &[(usize, Step)]| lane.iter().map(|(i, _)| *i).collect::<Vec<_>>();
+        assert_eq!(indices(&foreground), [0, 1, 3, 4, 7, 8, 9, 13, 14]);
+        assert_eq!(indices(&background), [2, 5, 6, 10, 11, 12]);
+        for (index, step) in foreground.iter().chain(&background) {
+            assert_eq!(step.title, steps(Profile::Server)[*index].title);
+        }
+        let titles: Vec<_> = background.iter().map(|(_, step)| step.title).collect();
+        assert_eq!(titles, SERVER_BACKGROUND);
+    }
+
+    // --- overlapped execution -----------------------------------------------
+
+    /// One non-sudo `fake <arg>` command, announced as `<arg>`.
+    macro_rules! fake {
+        ($arg:literal) => {
+            Action::Run(Cmd {
+                what: $arg,
+                program: "fake",
+                args: &[$arg],
+                sudo: false,
+            })
+        };
+    }
+
+    /// A runner for overlap tests. Every command succeeds and is logged
+    /// when it finishes. A gated command first waits until another
+    /// command has finished; the wait is bounded, and a gate that times
+    /// out fails the command instead of hanging the test.
+    struct GateRunner {
+        gates: Vec<(&'static str, &'static str)>,
+        delays: Vec<(&'static str, Duration)>,
+        panics_on: Option<&'static str>,
+        timeout: Duration,
+        finished: Mutex<Vec<String>>,
+        changed: Condvar,
+    }
+
+    impl GateRunner {
+        fn new(timeout: Duration) -> Self {
+            GateRunner {
+                gates: Vec::new(),
+                delays: Vec::new(),
+                panics_on: None,
+                timeout,
+                finished: Mutex::new(Vec::new()),
+                changed: Condvar::new(),
+            }
+        }
+
+        /// `command` waits until `after` has finished.
+        fn gate(mut self, command: &'static str, after: &'static str) -> Self {
+            self.gates.push((command, after));
+            self
+        }
+
+        /// `command` takes `delay` to run.
+        fn delay(mut self, command: &'static str, delay: Duration) -> Self {
+            self.delays.push((command, delay));
+            self
+        }
+
+        /// `command` panics instead of running.
+        fn panics_on(mut self, command: &'static str) -> Self {
+            self.panics_on = Some(command);
+            self
+        }
+
+        fn finished(&self) -> Vec<String> {
+            self.finished.lock().unwrap().clone()
+        }
+
+        fn finish(&self, entry: String) {
+            self.finished.lock().unwrap().push(entry);
+            self.changed.notify_all();
+        }
+    }
+
+    impl CommandRunner for GateRunner {
+        fn which(&self, _program: &str) -> Option<std::path::PathBuf> {
+            None
+        }
+
+        fn run(&self, program: &str, args: &[&str]) -> anyhow::Result<CommandOutput> {
+            let key = format!("{program} {}", args.join(" "));
+            if self.panics_on == Some(key.as_str()) {
+                panic!("{key} blew up");
+            }
+            if let Some((_, after)) = self.gates.iter().find(|(command, _)| *command == key) {
+                let finished = self.finished.lock().unwrap();
+                let (finished, wait) = self
+                    .changed
+                    .wait_timeout_while(finished, self.timeout, |done| {
+                        !done.iter().any(|entry| entry == after)
+                    })
+                    .unwrap();
+                drop(finished);
+                if wait.timed_out() {
+                    self.finish(format!("{key} (timed out)"));
+                    return Ok(CommandOutput {
+                        success: false,
+                        stdout: String::new(),
+                        stderr: format!("gave up waiting for {after}"),
+                    });
+                }
+            }
+            if let Some((_, delay)) = self.delays.iter().find(|(command, _)| *command == key) {
+                std::thread::sleep(*delay);
+            }
+            self.finish(key);
+            Ok(CommandOutput {
+                success: true,
+                stdout: String::new(),
+                stderr: String::new(),
+            })
+        }
+    }
+
+    /// What a bounded run hands back: each step's title and error, the
+    /// runner's log, and the lines the main thread emitted.
+    struct Outcome {
+        results: Vec<(&'static str, Option<String>)>,
+        log: Vec<String>,
+        output: Vec<String>,
+    }
+
+    impl Outcome {
+        fn failed(&self) -> Vec<&'static str> {
+            self.results
+                .iter()
+                .filter(|(_, error)| error.is_some())
+                .map(|(title, _)| *title)
+                .collect()
+        }
+
+        fn position(&self, entry: &str) -> usize {
+            self.log
+                .iter()
+                .position(|done| done == entry)
+                .unwrap_or_else(|| panic!("{entry} never ran: {:?}", self.log))
+        }
+
+        fn lines_starting(&self, prefix: &str) -> Vec<&str> {
+            self.output
+                .iter()
+                .filter(|line| line.starts_with(prefix))
+                .map(String::as_str)
+                .collect()
+        }
+    }
+
+    /// Run `table` on its own thread with `runner`, capturing the main
+    /// thread's output. A run that has not finished within 30 seconds
+    /// fails the test rather than hanging it.
+    fn run_bounded(table: &'static [Step], runner: GateRunner, overlap: bool) -> Outcome {
+        let (tx, rx) = mpsc::channel();
+        std::thread::spawn(move || {
+            let git_setup = || Ok(());
+            let deps = deps_recording_git(Os::Linux, true, &runner, &PanicFetcher, &git_setup);
+            let (results, transcript) = ui::capture(|| execute(table, &deps, overlap));
+            let _ = tx.send(Outcome {
+                results: results.into_iter().map(|r| (r.title, r.error)).collect(),
+                log: runner.finished(),
+                output: transcript
+                    .lines()
+                    .iter()
+                    .map(|(_, line)| line.clone())
+                    .collect(),
+            });
+        });
+        match rx.recv_timeout(Duration::from_secs(30)) {
+            Ok(outcome) => outcome,
+            Err(mpsc::RecvTimeoutError::Timeout) => panic!("setup execution hung"),
+            Err(mpsc::RecvTimeoutError::Disconnected) => panic!("setup execution panicked"),
+        }
+    }
+
+    /// A background step that can only finish once a later foreground
+    /// step has run: run one step at a time, it times out.
+    const OVERLAP_STEPS: &[Step] = &[
+        Step {
+            title: "foreground first",
+            lane: Lane::Foreground,
+            requires: &[],
+            actions: &[fake!("one")],
+        },
+        Step {
+            title: "background waits",
+            lane: Lane::Background,
+            requires: &[],
+            actions: &[fake!("wait")],
+        },
+        Step {
+            title: "foreground release",
+            lane: Lane::Foreground,
+            requires: &[],
+            actions: &[fake!("release")],
+        },
+    ];
+
+    #[test]
+    fn overlap_runs_a_background_step_while_foreground_steps_run() {
+        let runner = GateRunner::new(Duration::from_secs(10)).gate("fake wait", "fake release");
+        let outcome = run_bounded(OVERLAP_STEPS, runner, true);
+
+        assert_eq!(outcome.failed(), Vec::<&str>::new(), "{:?}", outcome.log);
+        assert!(
+            outcome.position("fake release") < outcome.position("fake wait"),
+            "{:?}",
+            outcome.log
+        );
+    }
+
+    #[test]
+    fn overlap_reports_results_and_headers_in_plan_order() {
+        let runner = GateRunner::new(Duration::from_secs(10)).gate("fake wait", "fake release");
+        let outcome = run_bounded(OVERLAP_STEPS, runner, true);
+
+        let titles: Vec<_> = outcome.results.iter().map(|(title, _)| *title).collect();
+        assert_eq!(
+            titles,
+            ["foreground first", "background waits", "foreground release"]
+        );
+        assert_eq!(outcome.lines_starting("[1/3]"), ["[1/3] foreground first"]);
+        assert_eq!(
+            outcome.lines_starting("[2/3]"),
+            ["[2/3] background waits (ran in the background)"]
+        );
+        assert_eq!(
+            outcome.lines_starting("[3/3]"),
+            ["[3/3] foreground release"]
+        );
+        // The background step's own lines follow its header.
+        let header = outcome
+            .output
+            .iter()
+            .position(|line| line.starts_with("[2/3]"))
+            .unwrap();
+        assert_eq!(
+            outcome.output.get(header + 1).map(String::as_str),
+            Some("wait")
+        );
+    }
+
+    #[test]
+    fn without_overlap_steps_run_one_at_a_time_in_plan_order() {
+        let runner = GateRunner::new(Duration::from_millis(200)).gate("fake wait", "fake release");
+        let outcome = run_bounded(OVERLAP_STEPS, runner, false);
+
+        assert_eq!(
+            outcome.log,
+            ["fake one", "fake wait (timed out)", "fake release"]
+        );
+        assert_eq!(outcome.failed(), ["background waits"]);
+        assert_eq!(outcome.lines_starting("[2/3]"), ["[2/3] background waits"]);
+    }
+
+    const GATED_STEPS: &[Step] = &[
+        Step {
+            title: BACKGROUND_GATE,
+            lane: Lane::Foreground,
+            requires: &[],
+            actions: &[fake!("apt")],
+        },
+        Step {
+            title: "background after the gate",
+            lane: Lane::Background,
+            requires: &[],
+            actions: &[fake!("user")],
+        },
+    ];
+
+    #[test]
+    fn the_background_lane_starts_after_the_system_libraries_step() {
+        let runner =
+            GateRunner::new(Duration::from_secs(10)).delay("fake apt", Duration::from_millis(300));
+        let outcome = run_bounded(GATED_STEPS, runner, true);
+
+        assert_eq!(outcome.log, ["fake apt", "fake user"]);
+    }
+
+    const REQUIRING_STEPS: &[Step] = &[
+        Step {
+            title: "foreground slow",
+            lane: Lane::Foreground,
+            requires: &[],
+            actions: &[fake!("slow")],
+        },
+        Step {
+            title: "background needs foreground",
+            lane: Lane::Background,
+            requires: &["foreground slow"],
+            actions: &[fake!("needs-slow")],
+        },
+        Step {
+            title: "background slow",
+            lane: Lane::Background,
+            requires: &[],
+            actions: &[fake!("bg-slow")],
+        },
+        Step {
+            title: "foreground needs background",
+            lane: Lane::Foreground,
+            requires: &["background slow"],
+            actions: &[fake!("needs-bg")],
+        },
+    ];
+
+    #[test]
+    fn steps_wait_for_their_requirements_across_lanes() {
+        let runner = GateRunner::new(Duration::from_secs(10))
+            .delay("fake slow", Duration::from_millis(300))
+            .delay("fake bg-slow", Duration::from_millis(300));
+        let outcome = run_bounded(REQUIRING_STEPS, runner, true);
+
+        assert_eq!(outcome.failed(), Vec::<&str>::new());
+        assert!(outcome.position("fake slow") < outcome.position("fake needs-slow"));
+        assert!(outcome.position("fake bg-slow") < outcome.position("fake needs-bg"));
+    }
+
+    const PANICKING_STEPS: &[Step] = &[
+        Step {
+            title: "foreground first",
+            lane: Lane::Foreground,
+            requires: &[],
+            actions: &[fake!("one")],
+        },
+        Step {
+            title: "background explodes",
+            lane: Lane::Background,
+            requires: &[],
+            actions: &[fake!("boom")],
+        },
+        Step {
+            title: "background never runs",
+            lane: Lane::Background,
+            requires: &[],
+            actions: &[fake!("two")],
+        },
+        Step {
+            title: "foreground needs background",
+            lane: Lane::Foreground,
+            requires: &["background never runs"],
+            actions: &[fake!("three")],
+        },
+    ];
+
+    #[test]
+    fn a_background_panic_fails_unreported_steps_and_keeps_foreground_results() {
+        let runner = GateRunner::new(Duration::from_secs(10)).panics_on("fake boom");
+        let outcome = run_bounded(PANICKING_STEPS, runner, true);
+
+        let titles: Vec<_> = outcome.results.iter().map(|(title, _)| *title).collect();
+        assert_eq!(
+            titles,
+            [
+                "foreground first",
+                "background explodes",
+                "background never runs",
+                "foreground needs background"
+            ]
+        );
+        assert_eq!(
+            outcome.failed(),
+            ["background explodes", "background never runs"]
+        );
+        for (_, error) in &outcome.results[1..3] {
+            let error = error.as_deref().unwrap();
+            assert!(error.contains("re-run `hpds setup`"), "{error}");
+        }
+        assert_eq!(outcome.log, ["fake one", "fake three"]);
+        assert_eq!(
+            outcome.lines_starting("[2/4]"),
+            ["[2/4] background explodes (ran in the background)"]
+        );
+        assert_eq!(
+            outcome.lines_starting("[3/4]"),
+            ["[3/4] background never runs (ran in the background)"]
+        );
+        assert!(
+            outcome
+                .output
+                .iter()
+                .any(|line| line.contains("hint: re-run `hpds setup`")),
+            "{:?}",
+            outcome.output
+        );
+    }
+
+    // --- overlapped server profile ------------------------------------------
+
+    /// Wraps the server fakes: the command starting with `slow` takes a
+    /// moment, and every command is logged when it finishes.
+    struct SlowRunner {
+        inner: FakeRunner,
+        slow: &'static str,
+    }
+
+    impl CommandRunner for SlowRunner {
+        fn which(&self, program: &str) -> Option<std::path::PathBuf> {
+            self.inner.which(program)
+        }
+
+        fn run(&self, program: &str, args: &[&str]) -> anyhow::Result<CommandOutput> {
+            if format!("{program} {}", args.join(" ")).starts_with(self.slow) {
+                std::thread::sleep(Duration::from_millis(300));
+            }
+            self.inner.run(program, args)
+        }
+    }
+
+    /// Run the whole server profile overlapped, with `slow` delayed, on
+    /// its own thread; a run that has not finished within 30 seconds
+    /// fails the test rather than hanging it.
+    fn run_server_bounded(slow: &'static str) -> Outcome {
+        let (tx, rx) = mpsc::channel();
+        std::thread::spawn(move || {
+            let runner = SlowRunner {
+                inner: server_runner(),
+                slow,
+            };
+            let git_setup = || {
+                runner.inner.record("hpds git setup");
+                Ok(())
+            };
+            let fetcher = FakeFetcher::default().with_latest("0.1.0");
+            let lookup = server_lookup();
+            let mut deps = deps_recording_git(Os::Linux, true, &runner, &fetcher, &git_setup);
+            deps.installer_lookup = &lookup;
+            let (results, transcript) =
+                ui::capture(|| execute(steps(Profile::Server), &deps, true));
+            let _ = tx.send(Outcome {
+                results: results.into_iter().map(|r| (r.title, r.error)).collect(),
+                log: runner.inner.calls(),
+                output: transcript
+                    .lines()
+                    .iter()
+                    .map(|(_, line)| line.clone())
+                    .collect(),
+            });
+        });
+        match rx.recv_timeout(Duration::from_secs(30)) {
+            Ok(outcome) => outcome,
+            Err(mpsc::RecvTimeoutError::Timeout) => panic!("server setup hung"),
+            Err(mpsc::RecvTimeoutError::Disconnected) => panic!("server setup panicked"),
+        }
+    }
+
+    #[test]
+    fn overlapped_server_reports_every_step_once_in_plan_order() {
+        let outcome = run_server_bounded("no command starts with this");
+
+        assert_eq!(
+            outcome.failed(),
+            Vec::<&str>::new(),
+            "{:?}",
+            outcome.results
+        );
+        let table = steps(Profile::Server);
+        let titles: Vec<_> = outcome.results.iter().map(|(title, _)| *title).collect();
+        let planned: Vec<_> = table.iter().map(|step| step.title).collect();
+        assert_eq!(titles, planned);
+        for (index, step) in table.iter().enumerate() {
+            let header = format!("[{}/{}] {}", index + 1, table.len(), step.title);
+            let expected = match step.lane {
+                Lane::Foreground => header.clone(),
+                Lane::Background => format!("{header} (ran in the background)"),
+            };
+            assert_eq!(
+                outcome.lines_starting(&format!("[{}/{}]", index + 1, table.len())),
+                [expected.as_str()],
+                "{:?}",
+                outcome.output
+            );
+        }
+    }
+
+    #[test]
+    fn overlapped_server_enables_code_server_only_after_quarto() {
+        let outcome = run_server_bounded("quarto --version");
+        assert!(
+            outcome.position("quarto --version")
+                < outcome.position("sudo systemctl enable --now code-server@analyst"),
+            "{:?}",
+            outcome.log
+        );
+    }
+
+    #[test]
+    fn overlapped_server_installs_uv_tools_only_after_python() {
+        let outcome = run_server_bounded("sudo sh -c printf");
+        let pip = outcome
+            .log
+            .iter()
+            .position(|call| call.starts_with("sudo sh -c printf"))
+            .expect("pip configured");
+        assert!(pip < outcome.position("uv --version"), "{:?}", outcome.log);
+    }
+
+    #[test]
+    fn overlapped_server_runs_git_defaults_only_after_gh() {
+        let outcome = run_server_bounded("gh --version");
+        assert!(
+            outcome.position("gh --version") < outcome.position("hpds git setup"),
+            "{:?}",
+            outcome.log
+        );
     }
 
     // --- summary ----------------------------------------------------------

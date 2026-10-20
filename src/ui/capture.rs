@@ -34,8 +34,8 @@ pub struct Transcript {
 
 impl Transcript {
     /// Whether nothing was recorded.
-    #[allow(dead_code)] // part of the ui API; background setup work is its caller
-    pub fn is_empty(&self) -> bool {
+    #[cfg(test)]
+    pub(crate) fn is_empty(&self) -> bool {
         self.lines.is_empty()
     }
 
@@ -54,7 +54,9 @@ thread_local! {
 
 /// Whether the calling thread is inside [`capture`].
 pub(crate) fn is_capturing() -> bool {
-    CAPTURE.with(|frames| !frames.borrow().is_empty())
+    CAPTURE
+        .try_with(|frames| !frames.borrow().is_empty())
+        .unwrap_or(false)
 }
 
 /// Run `f` with this thread's hpds output recorded instead of written, and
@@ -63,7 +65,6 @@ pub(crate) fn is_capturing() -> bool {
 /// While capturing, progress bars are hidden and record their notice line,
 /// and prompts fail with an error rather than wait on input nobody can see.
 /// If `f` panics, the capture is closed and its lines are discarded.
-#[allow(dead_code)] // part of the ui API; background setup work is its caller
 pub fn capture<T>(f: impl FnOnce() -> T) -> (T, Transcript) {
     CAPTURE.with(|frames| frames.borrow_mut().push(Vec::new()));
     let frame = OpenFrame;
@@ -75,7 +76,6 @@ pub fn capture<T>(f: impl FnOnce() -> T) -> (T, Transcript) {
 /// Write `transcript` out, each line to the stream it was recorded for, in
 /// the order it was recorded. Inside a capture the lines are recorded into
 /// the enclosing transcript instead.
-#[allow(dead_code)] // part of the ui API; background setup work is its caller
 pub fn replay(transcript: &Transcript) {
     for (stream, line) in &transcript.lines {
         emit(*stream, line);
@@ -83,15 +83,18 @@ pub fn replay(transcript: &Transcript) {
 }
 
 /// Record `line` when this thread is capturing; otherwise write it to
-/// `stream`.
+/// `stream`. During thread teardown, once the capture state is gone, the
+/// line is written directly.
 pub(crate) fn emit(stream: Stream, line: &str) {
-    let recorded = CAPTURE.with(|frames| match frames.borrow_mut().last_mut() {
-        Some(frame) => {
-            frame.push((stream, line.to_string()));
-            true
-        }
-        None => false,
-    });
+    let recorded = CAPTURE
+        .try_with(|frames| match frames.borrow_mut().last_mut() {
+            Some(frame) => {
+                frame.push((stream, line.to_string()));
+                true
+            }
+            None => false,
+        })
+        .unwrap_or(false);
     if !recorded {
         match stream {
             Stream::Stdout => std::println!("{line}"),

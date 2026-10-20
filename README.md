@@ -178,8 +178,11 @@ lab command-line tools. It adds the invoking user to the Docker group, merges
 the managed RStudio and code-server preferences, and enables that user's
 code-server service. Log in again after the run before using Docker without
 `sudo`. The profile does not install Miniconda, perform a blanket system
-upgrade, or reboot the server. `dev` (the default) installs the toolchain on
-your own machine.
+upgrade, or reboot the server. With `--yes`, the user-space installs (Rust,
+Quarto, TinyTeX, gh, DuckDB, and uv with its tools) run on a background thread
+while the system steps run, and each one's output appears under its step header,
+marked as having run in the background, once it finishes. `dev` (the default)
+installs the toolchain on your own machine.
 
 ### Audit a repo
 

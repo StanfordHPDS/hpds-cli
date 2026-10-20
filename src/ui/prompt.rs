@@ -72,7 +72,7 @@ fn capturing_error(prompt: &str) -> anyhow::Error {
     Err::<(), _>(anyhow::anyhow!(
         "cannot ask \"{prompt}\": hpds is running this step in the background"
     ))
-    .hint("re-run without --yes so every step runs in the foreground, or pass the flag that answers this prompt (see --help)")
+    .hint("run this step on its own from an interactive terminal, or pass the flag that answers this prompt (see --help)")
     .unwrap_err()
 }
 

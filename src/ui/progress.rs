@@ -1,8 +1,11 @@
 //! Progress bar wrapper around `indicatif`.
 //!
-//! Bars draw to stderr so they never pollute piped stdout. When stderr is
-//! not a TTY a bar cannot render, so the label is printed once as a plain
-//! notice line instead: long work is never silent.
+//! Bars draw to stderr so they never pollute piped stdout. A bar is hidden
+//! when stderr is not a TTY, where it cannot render, and on a thread that
+//! is capturing its output, where it would draw over the foreground's
+//! lines. A hidden bar stands in with its label as one plain notice line
+//! (recorded in the transcript while capturing): long work is never
+//! silent.
 
 use std::io::IsTerminal;
 
