@@ -89,7 +89,7 @@ mod tests {
             ..ctx_on(Os::Mac, &runner, &fetcher)
         })
         .expect("fetch must succeed");
-        let calls = fetcher.calls.borrow();
+        let calls = fetcher.calls();
         assert_eq!(calls[0].spec.name, "gh");
         assert_eq!(calls[0].version, "2.96.0");
     }
@@ -103,8 +103,8 @@ mod tests {
             ..ctx_on(Os::Linux, &runner, &fetcher)
         })
         .expect("fetch must succeed");
-        assert!(runner.calls.borrow().is_empty());
-        assert_eq!(fetcher.calls.borrow()[0].spec.name, "gh");
+        assert!(runner.calls().is_empty());
+        assert_eq!(fetcher.calls()[0].spec.name, "gh");
     }
 
     #[test]
@@ -116,7 +116,7 @@ mod tests {
             ..ctx_on(Os::Windows, &runner, &fetcher)
         })
         .expect("fetch must succeed");
-        assert_eq!(fetcher.calls.borrow()[0].spec.name, "gh");
+        assert_eq!(fetcher.calls()[0].spec.name, "gh");
     }
 
     #[test]
@@ -129,8 +129,8 @@ mod tests {
                 ..ctx_on(os, &runner, &fetcher)
             };
             Gh.install(&ctx).expect("pinned fetch must succeed");
-            assert!(runner.calls.borrow().is_empty(), "{os:?}");
-            assert_eq!(fetcher.calls.borrow()[0].version, "2.90.0", "{os:?}");
+            assert!(runner.calls().is_empty(), "{os:?}");
+            assert_eq!(fetcher.calls()[0].version, "2.90.0", "{os:?}");
         }
     }
 

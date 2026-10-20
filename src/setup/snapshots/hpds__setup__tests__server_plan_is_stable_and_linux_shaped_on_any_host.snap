@@ -26,11 +26,8 @@ hpds setup --profile server runs these 15 steps:
        merge RStudio preferences: insert_native_pipe_operator=true save_workspace=never load_workspace=never rainbow_parentheses=true rainbow_fenced_divs=true
  10. code-server + extensions
        download the code-server installer to a secure temporary file and run it
-       code-server --install-extension ms-python.python
+       code-server --install-extension ms-python.python --install-extension ms-toolsai.jupyter --install-extension quarto.quarto --install-extension charliermarsh.ruff
        set quarto.path to <home>/.local/bin/quarto and systemctl enable --now code-server@<user>
-       code-server --install-extension ms-toolsai.jupyter
-       code-server --install-extension quarto.quarto
-       code-server --install-extension charliermarsh.ruff
  11. gh
        hpds install gh (latest stable)
  12. duckdb

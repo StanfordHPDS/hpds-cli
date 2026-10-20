@@ -47,9 +47,28 @@ pub struct InstallCtx<'a> {
     /// and sudo steps must not ask a second time.
     pub sudo_approved: Cell<bool>,
     /// Seam for process execution and `PATH` probing.
-    pub runner: &'a dyn CommandRunner,
+    pub runner: &'a (dyn CommandRunner + Sync),
     /// Seam for downloading release binaries onto the user's PATH.
-    pub fetcher: &'a dyn ReleaseFetcher,
+    pub fetcher: &'a (dyn ReleaseFetcher + Sync),
+}
+
+impl<'a> InstallCtx<'a> {
+    /// A copy of this context that shares its seams and has its own
+    /// sudo-approval cell, seeded with this context's current answer.
+    /// The cell is not `Sync`, so each thread (or nested install that
+    /// must not write back to its parent) works from its own copy.
+    pub fn for_thread(&self) -> InstallCtx<'a> {
+        InstallCtx {
+            os: self.os,
+            yes: self.yes,
+            verbose: self.verbose,
+            pin: self.pin.clone(),
+            plan_approved: self.plan_approved,
+            sudo_approved: Cell::new(self.sudo_approved.get()),
+            runner: self.runner,
+            fetcher: self.fetcher,
+        }
+    }
 }
 
 /// One installable tool: how to spot an existing install and how to put it
@@ -110,14 +129,8 @@ fn run_installer_with(
     let explicitly_requested = ctx.pin.is_some();
     let target = installer.resolve_target(ctx)?;
     let resolved_ctx = InstallCtx {
-        os: ctx.os,
-        yes: ctx.yes,
-        verbose: ctx.verbose,
         pin: target.clone(),
-        plan_approved: ctx.plan_approved,
-        sudo_approved: Cell::new(ctx.sudo_approved.get()),
-        runner: ctx.runner,
-        fetcher: ctx.fetcher,
+        ..ctx.for_thread()
     };
     if let Some(found) = installer.detect(&resolved_ctx) {
         match target.as_deref() {
@@ -464,7 +477,7 @@ mod tests {
         let runner = FakeRunner::default();
         assert_eq!(ctx(&runner).probe_version("quarto"), None);
         assert!(
-            runner.calls.borrow().is_empty(),
+            runner.calls().is_empty(),
             "must not run a program that is not on PATH"
         );
     }
@@ -703,9 +716,9 @@ mod tests {
         assert!(out.contains("hint:"), "{out}");
         assert_eq!(installer.install_count(), 0, "nothing may install");
         assert!(
-            runner.calls.borrow().is_empty(),
+            runner.calls().is_empty(),
             "zero commands may run: {:?}",
-            runner.calls.borrow()
+            runner.calls()
         );
     }
 
@@ -754,7 +767,7 @@ mod tests {
         assert!(out.contains("--yes"), "{out}");
         assert!(out.contains("hint:"), "{out}");
         assert_eq!(installer.install_count(), 0, "nothing may install");
-        assert!(runner.calls.borrow().is_empty());
+        assert!(runner.calls().is_empty());
     }
 
     #[test]
@@ -770,7 +783,7 @@ mod tests {
         })
         .expect("a confirmed sudo-only install must run");
         assert_eq!(*asked.borrow(), 1, "one confirmation covers the sudo step");
-        assert_eq!(*runner.calls.borrow(), vec!["sudo faker add release"]);
+        assert_eq!(runner.calls(), vec!["sudo faker add release"]);
     }
 
     #[test]
@@ -783,7 +796,7 @@ mod tests {
         let ctx = approved_ctx(&runner);
         run_installer_with(&installer, &ctx, true, &no_prompt)
             .expect("an approved plan must not re-prompt");
-        assert_eq!(*runner.calls.borrow(), vec!["faker add release"]);
+        assert_eq!(runner.calls(), vec!["faker add release"]);
         assert!(
             !ctx.sudo_approved.get(),
             "a surrounding flow's approval must not silently cover sudo"
@@ -832,7 +845,7 @@ mod tests {
         ctx(&runner)
             .run_step("refreshing package lists", "apt-get", &["update"])
             .expect("step must succeed");
-        assert_eq!(*runner.calls.borrow(), vec!["apt-get update"]);
+        assert_eq!(runner.calls(), vec!["apt-get update"]);
     }
 
     #[test]
@@ -856,10 +869,7 @@ mod tests {
         };
         ctx.run_sudo_step("installing quarto", "apt-get", &["install", "-y", "quarto"])
             .expect("pre-approved sudo step must run");
-        assert_eq!(
-            *runner.calls.borrow(),
-            vec!["sudo apt-get install -y quarto"]
-        );
+        assert_eq!(runner.calls(), vec!["sudo apt-get install -y quarto"]);
     }
 
     #[test]
@@ -871,7 +881,7 @@ mod tests {
         ctx.sudo_approved.set(true);
         ctx.run_sudo_step("refreshing package lists", "apt-get", &["update"])
             .expect("a confirmed plan must cover its sudo steps");
-        assert_eq!(*runner.calls.borrow(), vec!["sudo apt-get update"]);
+        assert_eq!(runner.calls(), vec!["sudo apt-get update"]);
     }
 
     #[test]
@@ -928,6 +938,6 @@ mod tests {
         };
         ctx.run_step("refreshing package lists", "apt-get", &["update"])
             .expect("step must succeed");
-        assert_eq!(*runner.calls.borrow(), vec!["apt-get update"]);
+        assert_eq!(runner.calls(), vec!["apt-get update"]);
     }
 }

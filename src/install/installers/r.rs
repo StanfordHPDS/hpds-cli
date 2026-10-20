@@ -50,14 +50,8 @@ impl Installer for R {
             // into the rig install. The plan approval carries over: this
             // install's confirmed plan already listed the rig steps.
             let rig_ctx = InstallCtx {
-                os: ctx.os,
-                yes: ctx.yes,
-                verbose: ctx.verbose,
                 pin: None,
-                plan_approved: ctx.plan_approved,
-                sudo_approved: ctx.sudo_approved.clone(),
-                runner: ctx.runner,
-                fetcher: ctx.fetcher,
+                ..ctx.for_thread()
             };
             rig.install(&rig_ctx)?;
         }
@@ -106,11 +100,11 @@ mod tests {
             R.install(&ctx_on(os, &runner, &fetcher))
                 .expect("rig add must succeed");
             assert_eq!(
-                *runner.calls.borrow(),
+                runner.calls(),
                 vec!["rig --version", "sudo rig add release"],
                 "{os:?}"
             );
-            assert!(fetcher.calls.borrow().is_empty(), "{os:?}");
+            assert!(fetcher.calls().is_empty(), "{os:?}");
         }
     }
 
@@ -123,10 +117,7 @@ mod tests {
         let fetcher = FakeFetcher::default();
         R.install(&ctx_on(Os::Windows, &runner, &fetcher))
             .expect("rig add must succeed");
-        assert_eq!(
-            *runner.calls.borrow(),
-            vec!["rig --version", "rig add release"]
-        );
+        assert_eq!(runner.calls(), vec!["rig --version", "rig add release"]);
     }
 
     #[test]
@@ -142,7 +133,7 @@ mod tests {
         R.install(&ctx_on(Os::Mac, &runner, &fetcher))
             .expect("rig-then-R install must succeed");
         assert_eq!(
-            *runner.calls.borrow(),
+            runner.calls(),
             vec![
                 "brew tap r-lib/rig",
                 "brew install --cask rig",
@@ -172,7 +163,7 @@ mod tests {
         let fetcher = FakeFetcher::default();
         R.install(&ctx_on(Os::Linux, &runner, &fetcher))
             .expect("rig-then-R install must succeed");
-        let calls = runner.calls.borrow();
+        let calls = runner.calls();
         assert_eq!(calls.len(), 5, "{calls:#?}");
         assert_eq!(calls[3], "sudo apt-get install -y r-rig");
         assert_eq!(calls[4], "sudo rig add release");
@@ -188,7 +179,7 @@ mod tests {
         R.install(&ctx_on(Os::Windows, &runner, &fetcher))
             .expect("rig-then-R install must succeed");
         assert_eq!(
-            *runner.calls.borrow(),
+            runner.calls(),
             vec!["winget install --id posit.rig --exact", "rig add release"]
         );
     }
@@ -205,10 +196,7 @@ mod tests {
             ..ctx_on(Os::Linux, &runner, &fetcher)
         };
         R.install(&ctx).expect("pinned rig add must succeed");
-        assert_eq!(
-            *runner.calls.borrow(),
-            vec!["rig --version", "sudo rig add 4.5.1"]
-        );
+        assert_eq!(runner.calls(), vec!["rig --version", "sudo rig add 4.5.1"]);
     }
 
     #[test]
@@ -227,7 +215,7 @@ mod tests {
         };
         R.install(&ctx).expect("pinned rig-then-R must succeed");
         assert_eq!(
-            *runner.calls.borrow(),
+            runner.calls(),
             vec![
                 "brew tap r-lib/rig",
                 "brew install --cask rig",

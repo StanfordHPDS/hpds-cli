@@ -690,7 +690,7 @@ mod tests {
                 .expect_err("RStudio Server is Linux-only");
             assert!(error.to_string().contains("Linux"), "{error:#}");
             assert!(backend.phases.borrow().is_empty());
-            assert!(runner.calls.borrow().is_empty());
+            assert!(runner.calls().is_empty());
         }
     }
 

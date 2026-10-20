@@ -158,10 +158,10 @@ mod tests {
         Rig.install(&ctx_on(Os::Mac, &runner, &fetcher))
             .expect("brew install must succeed");
         assert_eq!(
-            *runner.calls.borrow(),
+            runner.calls(),
             vec!["brew tap r-lib/rig", "brew install --cask rig"]
         );
-        assert!(fetcher.calls.borrow().is_empty());
+        assert!(fetcher.calls().is_empty());
     }
 
     #[test]
@@ -174,7 +174,7 @@ mod tests {
         let out = render_error(&err, false);
         assert!(out.contains("Homebrew"), "{out}");
         assert!(out.contains("r-lib/rig/releases"), "{out}");
-        assert!(runner.calls.borrow().is_empty());
+        assert!(runner.calls().is_empty());
     }
 
     #[test]
@@ -195,7 +195,7 @@ mod tests {
         let fetcher = FakeFetcher::default();
         Rig.install(&ctx_on(Os::Linux, &runner, &fetcher))
             .expect("apt install must succeed");
-        let calls = runner.calls.borrow();
+        let calls = runner.calls();
         assert_eq!(calls.len(), 4, "{calls:#?}");
         assert_eq!(calls[3], "sudo apt-get install -y r-rig");
     }
@@ -221,7 +221,7 @@ mod tests {
         Rig.install(&ctx_on(Os::Windows, &runner, &fetcher))
             .expect("winget install must succeed");
         assert_eq!(
-            *runner.calls.borrow(),
+            runner.calls(),
             vec!["winget install --id posit.rig --exact"]
         );
     }
@@ -263,6 +263,6 @@ mod tests {
             Rig.plan(&ctx_on(Os::Windows, &runner, &fetcher)),
             vec!["winget install --id posit.rig --exact".to_string()]
         );
-        assert!(runner.calls.borrow().is_empty(), "planning must not run");
+        assert!(runner.calls().is_empty(), "planning must not run");
     }
 }

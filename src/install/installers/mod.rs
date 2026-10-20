@@ -100,17 +100,10 @@ mod runtime_release_tests {
 
     fn fetched_versions(fetcher: &FakeFetcher) -> Vec<String> {
         fetcher
-            .calls
-            .borrow()
+            .calls()
             .iter()
             .map(|call| call.version.clone())
-            .chain(
-                fetcher
-                    .tree_calls
-                    .borrow()
-                    .iter()
-                    .map(|call| call.version.clone()),
-            )
+            .chain(fetcher.tree_calls().iter().map(|call| call.version.clone()))
             .collect()
     }
 
@@ -177,12 +170,8 @@ mod runtime_release_tests {
                     .on_path("winget");
                 let fetcher = FakeFetcher::default().with_latest(latest);
                 let _ = run_installer(installer, &ctx_on(os, &runner, &fetcher));
-                assert_eq!(*fetcher.latest_calls.borrow(), vec![installer.name()]);
-                assert!(
-                    runner.calls.borrow().is_empty(),
-                    "{os:?}/{}",
-                    installer.name()
-                );
+                assert_eq!(fetcher.latest_calls(), vec![installer.name()]);
+                assert!(runner.calls().is_empty(), "{os:?}/{}", installer.name());
                 assert_eq!(
                     fetched_versions(&fetcher),
                     vec![latest],
@@ -213,16 +202,8 @@ mod runtime_release_tests {
                     ..ctx_on(os, &runner, &fetcher)
                 };
                 let _ = run_installer(installer, &ctx);
-                assert!(
-                    fetcher.latest_calls.borrow().is_empty(),
-                    "{}",
-                    installer.name()
-                );
-                assert!(
-                    runner.calls.borrow().is_empty(),
-                    "{os:?}/{}",
-                    installer.name()
-                );
+                assert!(fetcher.latest_calls().is_empty(), "{}", installer.name());
+                assert!(runner.calls().is_empty(), "{os:?}/{}", installer.name());
                 assert_eq!(
                     fetched_versions(&fetcher),
                     vec![pin],
@@ -262,7 +243,7 @@ mod runtime_release_tests {
                     .with_output(&format!("{command} --version"), &output);
                 let fetcher = FakeFetcher::default().with_latest("2.0.0");
                 let _ = run_installer(installer, &ctx_on(Os::Linux, &runner, &fetcher));
-                assert_eq!(*fetcher.latest_calls.borrow(), vec![installer.name()]);
+                assert_eq!(fetcher.latest_calls(), vec![installer.name()]);
                 assert_eq!(
                     fetched_versions(&fetcher).len(),
                     expected_fetches,
@@ -280,7 +261,7 @@ mod runtime_release_tests {
         let fetcher = FakeFetcher::default().with_latest("0.2.0");
         run_installer(&Togi, &ctx_on(Os::Linux, &runner, &fetcher))
             .expect("a newer installed version must be retained");
-        assert!(fetcher.calls.borrow().is_empty());
+        assert!(fetcher.calls().is_empty());
     }
 
     #[test]
@@ -294,8 +275,8 @@ mod runtime_release_tests {
             ..ctx_on(Os::Linux, &runner, &fetcher)
         };
         let _ = run_installer(&Togi, &ctx);
-        assert!(fetcher.latest_calls.borrow().is_empty());
-        assert_eq!(fetcher.calls.borrow()[0].version, "0.2.0");
+        assert!(fetcher.latest_calls().is_empty());
+        assert_eq!(fetcher.calls()[0].version, "0.2.0");
     }
 }
 

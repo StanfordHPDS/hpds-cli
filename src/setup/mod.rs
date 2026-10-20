@@ -76,13 +76,14 @@ struct Cmd {
 /// tests never touch real git config.
 pub struct SetupDeps<'a> {
     pub install: InstallCtx<'a>,
-    pub git_setup: &'a dyn Fn() -> anyhow::Result<()>,
-    pub(crate) installer_lookup:
-        &'a dyn Fn(
-            &str,
-        )
-            -> Result<&'static dyn install::Installer, install::registry::RegistryError>,
-    pub(crate) server_host: &'a dyn server::ServerHost,
+    pub git_setup: &'a (dyn Fn() -> anyhow::Result<()> + Sync),
+    pub(crate) installer_lookup: &'a (
+            dyn Fn(
+        &str,
+    ) -> Result<&'static dyn install::Installer, install::registry::RegistryError>
+                + Sync
+        ),
+    pub(crate) server_host: &'a (dyn server::ServerHost + Sync),
 }
 
 /// How one executed step ended.
@@ -235,30 +236,21 @@ const SERVER_STEPS: &[Step] = &[
         actions: &[
             Action::Server(server::ServerAction::InstallCodeServer),
             Action::Run(Cmd {
-                what: "installing the Python extension",
+                what: "installing the Python, Jupyter, Quarto, and Ruff extensions",
                 program: "code-server",
-                args: &["--install-extension", "ms-python.python"],
+                args: &[
+                    "--install-extension",
+                    "ms-python.python",
+                    "--install-extension",
+                    "ms-toolsai.jupyter",
+                    "--install-extension",
+                    "quarto.quarto",
+                    "--install-extension",
+                    "charliermarsh.ruff",
+                ],
                 sudo: false,
             }),
             Action::Server(server::ServerAction::CodeServer),
-            Action::Run(Cmd {
-                what: "installing the Jupyter extension",
-                program: "code-server",
-                args: &["--install-extension", "ms-toolsai.jupyter"],
-                sudo: false,
-            }),
-            Action::Run(Cmd {
-                what: "installing the Quarto extension",
-                program: "code-server",
-                args: &["--install-extension", "quarto.quarto"],
-                sudo: false,
-            }),
-            Action::Run(Cmd {
-                what: "installing the Ruff extension",
-                program: "code-server",
-                args: &["--install-extension", "charliermarsh.ruff"],
-                sudo: false,
-            }),
         ],
     },
     Step {
@@ -508,7 +500,7 @@ pub fn run_server(
 
 #[cfg(test)]
 mod tests {
-    use std::cell::Cell;
+    use std::sync::atomic::{AtomicBool, Ordering};
 
     use super::*;
     use crate::install::ReleaseFetcher;
@@ -556,8 +548,8 @@ mod tests {
         os: Os,
         yes: bool,
         runner: &'a FakeRunner,
-        fetcher: &'a dyn ReleaseFetcher,
-        git_setup: &'a dyn Fn() -> anyhow::Result<()>,
+        fetcher: &'a (dyn ReleaseFetcher + Sync),
+        git_setup: &'a (dyn Fn() -> anyhow::Result<()> + Sync),
     ) -> SetupDeps<'a> {
         SetupDeps {
             install: InstallCtx {
@@ -600,6 +592,17 @@ mod tests {
             .with_output("rig --version", &probe_fixture("rig.txt"))
             .on_path("togi")
             .with_output("togi --version", &probe_fixture("togi.txt"))
+    }
+
+    // --- thread safety -----------------------------------------------------
+
+    /// Compiles only while the setup dependencies can move to another
+    /// thread, which overlapping steps on a worker thread relies on.
+    #[test]
+    fn setup_dependencies_are_send() {
+        fn assert_send<T: Send>() {}
+        assert_send::<SetupDeps<'static>>();
+        assert_send::<InstallCtx<'static>>();
     }
 
     // --- plans ------------------------------------------------------------
@@ -663,6 +666,19 @@ mod tests {
         ] {
             assert!(text.contains(required), "missing {required}:\n{text}");
         }
+        assert!(
+            text.lines().any(|line| {
+                [
+                    "ms-python.python",
+                    "ms-toolsai.jupyter",
+                    "quarto.quarto",
+                    "charliermarsh.ruff",
+                ]
+                .iter()
+                .all(|id| line.contains(id))
+            }),
+            "one plan line installs all four extensions:\n{text}"
+        );
         let lowercase = text.to_ascii_lowercase();
         for omitted in [
             "miniconda",
@@ -714,7 +730,7 @@ mod tests {
         let runner = runner_with_everything_installed();
         let fetcher = FakeFetcher::default().with_latest("0.1.0");
         let git_setup = || {
-            runner.calls.borrow_mut().push("hpds git setup".to_string());
+            runner.record("hpds git setup");
             Ok(())
         };
         let deps = deps_recording_git(Os::Mac, true, &runner, &fetcher, &git_setup);
@@ -724,7 +740,7 @@ mod tests {
         // Each install step probes its tool in profile order, and the git
         // seam runs last: the full step sequence, seen through the runner.
         assert_eq!(
-            *runner.calls.borrow(),
+            runner.calls(),
             vec![
                 "R --version",
                 "quarto --version",
@@ -737,7 +753,7 @@ mod tests {
             ]
         );
         assert_eq!(
-            *fetcher.latest_calls.borrow(),
+            fetcher.latest_calls(),
             vec!["quarto", "uv", "gh", "togi"],
             "setup resolves each dynamic tool once during execution"
         );
@@ -749,9 +765,9 @@ mod tests {
         // fetcher "downloads" a binary that never lands on PATH), so the
         // gh step fails; every later step must still run.
         let fetcher = FakeFetcher::default().with_latest("0.1.0");
-        let git_ran = Cell::new(false);
+        let git_ran = AtomicBool::new(false);
         let git_setup = || {
-            git_ran.set(true);
+            git_ran.store(true, Ordering::SeqCst);
             Ok(())
         };
         let runner = FakeRunner::default()
@@ -781,11 +797,14 @@ mod tests {
             .map(|r| r.title)
             .collect();
         assert_eq!(failures, vec!["gh"], "only the gh step may fail");
-        assert!(git_ran.get(), "steps after the failure must still run");
         assert!(
-            runner.calls.borrow().iter().any(|c| c == "rig --version"),
+            git_ran.load(Ordering::SeqCst),
+            "steps after the failure must still run"
+        );
+        assert!(
+            runner.calls().iter().any(|c| c == "rig --version"),
             "steps after the failure must still run: {:?}",
-            runner.calls.borrow()
+            runner.calls()
         );
 
         let err = finish(&results, None).expect_err("a failed step fails the run");
@@ -807,9 +826,9 @@ mod tests {
         let out = render_error(&err, false);
         assert!(out.contains("--yes"), "{out}");
         assert!(
-            runner.calls.borrow().is_empty(),
+            runner.calls().is_empty(),
             "zero commands may run: {:?}",
-            runner.calls.borrow()
+            runner.calls()
         );
         assert!(!log.path().join("hpds-setup.log").exists());
     }
@@ -866,10 +885,10 @@ mod tests {
             )
             .on_path("rstudio-server")
             .with_output("rstudio-server version", "2026.09.0+174")
-            .with_output("code-server --install-extension ms-python.python", "")
-            .with_output("code-server --install-extension ms-toolsai.jupyter", "")
-            .with_output("code-server --install-extension quarto.quarto", "")
-            .with_output("code-server --install-extension charliermarsh.ruff", "")
+            .with_output(
+                "code-server --install-extension ms-python.python --install-extension ms-toolsai.jupyter --install-extension quarto.quarto --install-extension charliermarsh.ruff",
+                "",
+            )
             .with_output("uv tool install --upgrade ruff", "")
             .with_output("uv tool install --upgrade sqlfluff", "")
             .with_output("uv tool update-shell", "");
@@ -882,7 +901,7 @@ mod tests {
             .with_output("sudo usermod -aG docker analyst", "")
             .with_output("/verified-download/rustup-init -y --profile default --default-toolchain stable", "");
         let git_setup = || {
-            runner.calls.borrow_mut().push("hpds git setup".to_string());
+            runner.record("hpds git setup");
             Ok(())
         };
         let fetcher = FakeFetcher::default().with_latest("0.1.0");
@@ -903,19 +922,32 @@ mod tests {
         finish(&execute(steps(Profile::Server), &deps), Some(&log_path))
             .expect("all steps succeed");
 
-        let calls = runner.calls.borrow();
+        let calls = runner.calls();
         // System steps ran as the planned commands, under sudo where
         // declared, all through the runner seam.
         assert_eq!(
             calls.first().map(String::as_str),
             Some("sudo apt-get update")
         );
-        assert!(
-            calls
-                .iter()
-                .any(|c| c == "code-server --install-extension charliermarsh.ruff"),
+        // All four extensions install in one code-server invocation, before
+        // the service is enabled.
+        let extension_calls: Vec<usize> = calls
+            .iter()
+            .enumerate()
+            .filter(|(_, c)| c.starts_with("code-server --install-extension"))
+            .map(|(i, _)| i)
+            .collect();
+        assert_eq!(extension_calls.len(), 1, "{calls:?}");
+        assert_eq!(
+            calls[extension_calls[0]],
+            "code-server --install-extension ms-python.python --install-extension ms-toolsai.jupyter --install-extension quarto.quarto --install-extension charliermarsh.ruff",
             "{calls:?}"
         );
+        let enable = calls
+            .iter()
+            .position(|c| c == "sudo systemctl enable --now code-server@analyst")
+            .expect("code-server service enabled");
+        assert!(extension_calls[0] < enable, "{calls:?}");
         assert!(
             calls
                 .iter()

@@ -130,11 +130,11 @@ pub(crate) trait ServerHost {
 }
 
 pub(crate) struct SystemServerHost<'a> {
-    runner: &'a dyn CommandRunner,
+    runner: &'a (dyn CommandRunner + Sync),
 }
 
 impl<'a> SystemServerHost<'a> {
-    pub(crate) fn new(runner: &'a dyn CommandRunner) -> Self {
+    pub(crate) fn new(runner: &'a (dyn CommandRunner + Sync)) -> Self {
         Self { runner }
     }
 }
@@ -716,9 +716,9 @@ pub(crate) fn reconcile_server(
 
 #[cfg(test)]
 mod tests {
-    use std::cell::RefCell;
     use std::collections::BTreeMap;
     use std::path::{Path, PathBuf};
+    use std::sync::Mutex;
 
     use anyhow::Result;
     use serde_json::{Value, json};
@@ -739,36 +739,50 @@ mod tests {
 
     #[derive(Default)]
     struct FakeHost {
-        files: RefCell<BTreeMap<PathBuf, Vec<u8>>>,
-        writes: RefCell<Vec<(PathBuf, Vec<u8>, u32)>>,
-        existing: RefCell<Vec<PathBuf>>,
-        rustup_acquisitions: RefCell<usize>,
+        files: Mutex<BTreeMap<PathBuf, Vec<u8>>>,
+        writes: Mutex<Vec<(PathBuf, Vec<u8>, u32)>>,
+        existing: Vec<PathBuf>,
+        rustup_acquisitions: Mutex<usize>,
         rustup_acquisition_fails: bool,
-        docker_key_acquisitions: RefCell<usize>,
+        docker_key_acquisitions: Mutex<usize>,
         docker_key_acquisition_fails: bool,
     }
 
     impl FakeHost {
         fn with_file(self, path: &str, text: &str) -> Self {
             self.files
-                .borrow_mut()
+                .lock()
+                .unwrap()
                 .insert(PathBuf::from(path), text.as_bytes().to_vec());
             self
         }
 
-        fn with_existing(self, path: &str) -> Self {
-            self.existing.borrow_mut().push(PathBuf::from(path));
+        fn with_existing(mut self, path: &str) -> Self {
+            self.existing.push(PathBuf::from(path));
             self
         }
 
+        /// A snapshot of every file the host holds.
+        fn files(&self) -> BTreeMap<PathBuf, Vec<u8>> {
+            self.files.lock().unwrap().clone()
+        }
+
+        /// Every atomic write, in order: path, bytes, and mode.
+        fn writes(&self) -> Vec<(PathBuf, Vec<u8>, u32)> {
+            self.writes.lock().unwrap().clone()
+        }
+
+        fn rustup_acquisitions(&self) -> usize {
+            *self.rustup_acquisitions.lock().unwrap()
+        }
+
+        fn docker_key_acquisitions(&self) -> usize {
+            *self.docker_key_acquisitions.lock().unwrap()
+        }
+
         fn json(&self, path: &str) -> Value {
-            serde_json::from_slice(
-                self.files
-                    .borrow()
-                    .get(Path::new(path))
-                    .expect("file exists"),
-            )
-            .expect("valid JSON")
+            serde_json::from_slice(self.files().get(Path::new(path)).expect("file exists"))
+                .expect("valid JSON")
         }
     }
 
@@ -783,26 +797,28 @@ mod tests {
         }
 
         fn read(&self, path: &Path) -> Result<Option<Vec<u8>>> {
-            Ok(self.files.borrow().get(path).cloned())
+            Ok(self.files.lock().unwrap().get(path).cloned())
         }
 
         fn exists(&self, path: &Path) -> bool {
-            self.existing.borrow().iter().any(|item| item == path)
-                || self.files.borrow().contains_key(path)
+            self.existing.iter().any(|item| item == path)
+                || self.files.lock().unwrap().contains_key(path)
         }
 
         fn write_atomic(&self, path: &Path, bytes: &[u8], mode: u32) -> Result<()> {
             self.files
-                .borrow_mut()
+                .lock()
+                .unwrap()
                 .insert(path.to_path_buf(), bytes.to_vec());
             self.writes
-                .borrow_mut()
+                .lock()
+                .unwrap()
                 .push((path.to_path_buf(), bytes.to_vec(), mode));
             Ok(())
         }
 
         fn acquire_verified_rustup_init(&self) -> Result<PathBuf> {
-            *self.rustup_acquisitions.borrow_mut() += 1;
+            *self.rustup_acquisitions.lock().unwrap() += 1;
             if self.rustup_acquisition_fails {
                 Err(anyhow::anyhow!("could not acquire verified rustup-init"))
             } else {
@@ -814,7 +830,7 @@ mod tests {
             &self,
             _runner: &dyn crate::install::CommandRunner,
         ) -> Result<Vec<u8>> {
-            *self.docker_key_acquisitions.borrow_mut() += 1;
+            *self.docker_key_acquisitions.lock().unwrap() += 1;
             if self.docker_key_acquisition_fails {
                 Err(anyhow::anyhow!("Docker key download interrupted"))
             } else {
@@ -825,8 +841,7 @@ mod tests {
 
     fn mutation_calls(runner: &FakeRunner) -> Vec<String> {
         runner
-            .calls
-            .borrow()
+            .calls()
             .iter()
             .filter(|call| {
                 [
@@ -860,7 +875,7 @@ mod tests {
 
         reconcile_docker(&host, &runner, DockerState::Absent).expect("install Docker");
 
-        let calls = runner.calls.borrow();
+        let calls = runner.calls();
         let install = calls
             .iter()
             .position(|call| call.contains("docker-ce docker-ce-cli containerd.io"))
@@ -875,8 +890,7 @@ mod tests {
             "{calls:?}"
         );
         let sources = host
-            .files
-            .borrow()
+            .files()
             .get(Path::new("/etc/apt/sources.list.d/docker.sources"))
             .cloned()
             .expect("Docker apt source");
@@ -900,7 +914,7 @@ mod tests {
         let current = FakeRunner::default().with_output("id -nG analyst", "analyst sudo docker");
         reconcile_docker(&host, &current, DockerState::Current).expect("already current");
         assert!(mutation_calls(&current).is_empty());
-        assert!(host.writes.borrow().is_empty());
+        assert!(host.writes().is_empty());
     }
 
     #[test]
@@ -914,7 +928,7 @@ mod tests {
             let runner = FakeRunner::default().with_output("dpkg --print-architecture", arch);
             reconcile_docker(&host, &runner, DockerState::Absent)
                 .expect_err("unsupported Docker host");
-            assert!(host.writes.borrow().is_empty());
+            assert!(host.writes().is_empty());
             assert!(mutation_calls(&runner).is_empty());
         }
     }
@@ -959,15 +973,14 @@ mod tests {
             "",
         );
         reconcile_rust(&host, &runner, RustState::Absent).expect("install stable Rust");
-        assert_eq!(*host.rustup_acquisitions.borrow(), 1);
+        assert_eq!(host.rustup_acquisitions(), 1);
         assert_eq!(
-            *runner.calls.borrow(),
+            runner.calls(),
             ["/verified-download/rustup-init -y --profile default --default-toolchain stable"]
         );
         assert!(
             runner
-                .calls
-                .borrow()
+                .calls()
                 .iter()
                 .all(|call| !call.starts_with("rustup-init "))
         );
@@ -982,8 +995,8 @@ mod tests {
         let runner = FakeRunner::default();
         reconcile_rust(&host, &runner, RustState::Absent)
             .expect_err("failed acquisition stops bootstrap");
-        assert_eq!(*host.rustup_acquisitions.borrow(), 1);
-        assert!(runner.calls.borrow().is_empty());
+        assert_eq!(host.rustup_acquisitions(), 1);
+        assert!(runner.calls().is_empty());
     }
 
     #[test]
@@ -1003,7 +1016,7 @@ mod tests {
             .with_output("rustup default stable", "");
         reconcile_rust(&host, &runner, RustState::Probe).expect("select stable");
         assert_eq!(
-            *runner.calls.borrow(),
+            runner.calls(),
             [
                 "rustup check",
                 "rustup default",
@@ -1024,8 +1037,8 @@ mod tests {
             .with_output("dpkg --print-architecture", "amd64")
             .with_output("sudo install -m 0755 -d /etc/apt/keyrings", "");
         reconcile_docker(&failed, &runner, DockerState::Absent).expect_err("interrupted key");
-        assert!(failed.writes.borrow().is_empty());
-        assert_eq!(*failed.docker_key_acquisitions.borrow(), 1);
+        assert!(failed.writes().is_empty());
+        assert_eq!(failed.docker_key_acquisitions(), 1);
 
         let retry =
             FakeHost::default().with_file("/etc/os-release", "ID=ubuntu\nVERSION_CODENAME=noble\n");
@@ -1036,11 +1049,10 @@ mod tests {
             .with_output("sudo apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin", "")
             .with_output("id -nG analyst", "analyst docker");
         reconcile_docker(&retry, &runner, DockerState::Absent).expect("retry Docker setup");
-        assert_eq!(*retry.docker_key_acquisitions.borrow(), 1);
+        assert_eq!(retry.docker_key_acquisitions(), 1);
         assert!(
             retry
-                .files
-                .borrow()
+                .files()
                 .contains_key(Path::new("/etc/apt/keyrings/docker.asc"))
         );
     }
@@ -1051,10 +1063,9 @@ mod tests {
         reconcile_r_profile(&host).expect("first merge");
         reconcile_r_profile(&host).expect("second merge");
         let text =
-            String::from_utf8(host.files.borrow()[Path::new("/etc/R/Rprofile.site")].clone())
-                .unwrap();
+            String::from_utf8(host.files()[Path::new("/etc/R/Rprofile.site")].clone()).unwrap();
         assert_eq!(text.matches("packagemanager.posit.co").count(), 1);
-        assert_eq!(host.writes.borrow().len(), 1);
+        assert_eq!(host.writes().len(), 1);
     }
 
     #[test]
@@ -1086,14 +1097,10 @@ mod tests {
                 "rainbow_fenced_divs": true
             })
         );
-        assert_eq!(host.writes.borrow().len(), 1);
-        assert_eq!(host.writes.borrow()[0].2, 0o644);
+        assert_eq!(host.writes().len(), 1);
+        assert_eq!(host.writes()[0].2, 0o644);
         merge_rstudio_preferences(&host).expect("second merge");
-        assert_eq!(
-            host.writes.borrow().len(),
-            1,
-            "unchanged file is not rewritten"
-        );
+        assert_eq!(host.writes().len(), 1, "unchanged file is not rewritten");
     }
 
     #[test]
@@ -1101,7 +1108,7 @@ mod tests {
         for text in ["not json", "[]", "null"] {
             let host = FakeHost::default().with_file("/etc/rstudio/rstudio-prefs.json", text);
             merge_rstudio_preferences(&host).expect_err("invalid preferences");
-            assert!(host.writes.borrow().is_empty());
+            assert!(host.writes().is_empty());
         }
     }
 
@@ -1119,15 +1126,15 @@ mod tests {
             host.json(settings),
             json!({"editor.fontSize": 15, "quarto.path": QUARTO})
         );
-        assert_eq!(host.writes.borrow().len(), 1);
+        assert_eq!(host.writes().len(), 1);
         assert_eq!(
-            *runner.calls.borrow(),
+            runner.calls(),
             ["sudo systemctl enable --now code-server@analyst"]
         );
 
         merge_code_server_settings(&host, USER).expect("second settings merge");
         assert_eq!(
-            host.writes.borrow().len(),
+            host.writes().len(),
             1,
             "unchanged settings are not rewritten"
         );
@@ -1138,8 +1145,8 @@ mod tests {
         let host = FakeHost::default();
         let runner = FakeRunner::default();
         reconcile_code_server(&host, &runner).expect_err("managed Quarto launcher is required");
-        assert!(host.writes.borrow().is_empty());
-        assert!(runner.calls.borrow().is_empty());
+        assert!(host.writes().is_empty());
+        assert!(runner.calls().is_empty());
     }
 
     #[test]
@@ -1165,8 +1172,8 @@ mod tests {
         reconcile_server(&host, &first, DockerState::Absent, RustState::Absent)
             .expect("first reconciliation");
 
-        let files_after_first = host.files.borrow().clone();
-        let writes_after_first = host.writes.borrow().len();
+        let files_after_first = host.files();
+        let writes_after_first = host.writes().len();
         let second = FakeRunner::default()
             .with_output("id -nG analyst", "analyst sudo docker")
             .with_output("sudo systemctl enable --now code-server@analyst", "");
@@ -1178,15 +1185,20 @@ mod tests {
         )
         .expect("second reconciliation");
 
-        assert_eq!(*host.files.borrow(), files_after_first);
-        assert_eq!(host.writes.borrow().len(), writes_after_first);
+        assert_eq!(host.files(), files_after_first);
+        assert_eq!(host.writes().len(), writes_after_first);
         assert!(mutation_calls(&second).is_empty());
     }
 
     #[derive(Default)]
     struct PatternRunner {
-        calls: RefCell<Vec<String>>,
+        calls: Mutex<Vec<String>>,
         fail_install: bool,
+    }
+    impl PatternRunner {
+        fn calls(&self) -> Vec<String> {
+            self.calls.lock().unwrap().clone()
+        }
     }
     impl crate::install::CommandRunner for PatternRunner {
         fn which(&self, _program: &str) -> Option<PathBuf> {
@@ -1194,7 +1206,7 @@ mod tests {
         }
         fn run(&self, program: &str, args: &[&str]) -> Result<crate::install::CommandOutput> {
             let command = format!("{program} {}", args.join(" "));
-            self.calls.borrow_mut().push(command);
+            self.calls.lock().unwrap().push(command);
             let fail = self.fail_install
                 && program == "sudo"
                 && args.first() == Some(&"install")
@@ -1217,11 +1229,10 @@ mod tests {
         let host = SystemServerHost::new(&runner);
         host.write_atomic(Path::new("/etc/hpds-test.json"), b"new", 0o644)
             .expect("publish");
-        let calls = runner.calls.borrow();
+        let calls = runner.calls();
         assert!(calls[0].starts_with("sudo install -D -m 0644 "));
         assert!(calls[0].contains("/etc/.hpds-test.json.hpds-"));
         assert!(calls[1].starts_with("sudo mv -f /etc/.hpds-test.json.hpds-"));
-        drop(calls);
 
         let failed = PatternRunner {
             fail_install: true,
@@ -1230,7 +1241,7 @@ mod tests {
         let host = SystemServerHost::new(&failed);
         host.write_atomic(Path::new("/etc/hpds-test.json"), b"replacement", 0o644)
             .expect_err("install failure");
-        let calls = failed.calls.borrow();
+        let calls = failed.calls();
         assert_eq!(calls.len(), 2);
         assert!(calls[0].starts_with("sudo install"));
         assert!(calls[1].starts_with("sudo rm -f"));
@@ -1276,8 +1287,7 @@ mod tests {
 
         let results = execute(&selected, &deps);
         assert!(
-            host.files
-                .borrow()
+            host.files()
                 .contains_key(Path::new("/etc/rstudio/rstudio-prefs.json"))
         );
         let failures: Vec<_> = results
