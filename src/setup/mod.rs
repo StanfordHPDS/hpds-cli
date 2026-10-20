@@ -980,7 +980,7 @@ pub fn run_server(
 #[cfg(test)]
 mod tests {
     use std::sync::atomic::{AtomicBool, Ordering};
-    use std::sync::{Condvar, Mutex, mpsc};
+    use std::sync::{Arc, Condvar, Mutex, mpsc};
     use std::time::Duration;
 
     use super::*;
@@ -1348,6 +1348,11 @@ mod tests {
         broken_sources: Vec<&'static str>,
         /// The third-party apt sources currently registered.
         sources: Mutex<HashSet<&'static str>>,
+        /// Where the first `apt-get update` meets the package downloads.
+        meet: Option<Arc<Rendezvous>>,
+        /// Each package file an `apt-get install` named, and whether it
+        /// was on disk when the install ran.
+        package_files: Mutex<Vec<(String, bool)>>,
     }
 
     impl Sim {
@@ -1407,6 +1412,10 @@ mod tests {
             self.calls.lock().unwrap().clone()
         }
 
+        fn package_files(&self) -> Vec<(String, bool)> {
+            self.package_files.lock().unwrap().clone()
+        }
+
         fn record(&self, call: &str) {
             self.calls.lock().unwrap().push(call.to_string());
         }
@@ -1442,7 +1451,11 @@ mod tests {
                     match word {
                         "docker-ce" => installed.push("docker"),
                         "r-rig" => installed.push("rig"),
-                        RSTUDIO_DEB => installed.push("rstudio-server"),
+                        // The fixed download path, or a private temporary
+                        // file named after it.
+                        w if w.contains("hpds-rstudio-server-sim") && w.ends_with(".deb") => {
+                            installed.push("rstudio-server")
+                        }
                         CODE_SERVER_DEB => installed.push("code-server"),
                         _ => {}
                     }
@@ -1465,6 +1478,18 @@ mod tests {
         fn run(&self, program: &str, args: &[&str]) -> anyhow::Result<CommandOutput> {
             let command = format!("{program} {}", args.join(" "));
             self.record(&command);
+            if command == install::apt_get_command_line(&["update"])
+                && let Some(meet) = &self.meet
+            {
+                meet.arrive(REFRESH);
+            }
+            if command.starts_with(&install::apt_get_command_line(&["install"])) {
+                self.package_files.lock().unwrap().extend(
+                    args.iter()
+                        .filter(|arg| arg.ends_with(".deb"))
+                        .map(|arg| (arg.to_string(), Path::new(arg).exists())),
+                );
+            }
             if command == install::apt_get_command_line(&["update"])
                 && let Some(broken) = self
                     .broken_sources
@@ -1535,7 +1560,15 @@ mod tests {
         existing: Vec<&'static str>,
         docker_key_fails: bool,
         docker_keys: Mutex<usize>,
+        code_server_fails: bool,
+        /// Print a line when the code-server download starts.
+        announce: bool,
+        /// Where the code-server download meets the other downloads and
+        /// the refresh.
+        meet: Option<Arc<Rendezvous>>,
         code_server_downloads: Mutex<usize>,
+        /// The name of the thread each code-server download ran on.
+        code_server_threads: Mutex<Vec<Option<String>>>,
         writes: Mutex<Vec<std::path::PathBuf>>,
     }
 
@@ -1546,6 +1579,10 @@ mod tests {
 
         fn code_server_downloads(&self) -> usize {
             *self.code_server_downloads.lock().unwrap()
+        }
+
+        fn code_server_threads(&self) -> Vec<Option<String>> {
+            self.code_server_threads.lock().unwrap().clone()
         }
 
         fn writes(&self) -> Vec<std::path::PathBuf> {
@@ -1589,6 +1626,19 @@ mod tests {
         }
         fn acquire_code_server_package(&self) -> anyhow::Result<server::CodeServerPackage> {
             *self.code_server_downloads.lock().unwrap() += 1;
+            self.code_server_threads
+                .lock()
+                .unwrap()
+                .push(current_thread_name());
+            if self.announce {
+                ui::println("downloading code-server (simulated)");
+            }
+            if let Some(meet) = &self.meet {
+                meet.arrive(CODE_SERVER_DOWNLOAD);
+            }
+            if self.code_server_fails {
+                return Err(anyhow!("code-server download interrupted"));
+            }
             Ok(server::CodeServerPackage {
                 package: DownloadedPackage::at(CODE_SERVER_DEB.into()),
                 version: "4.141.0".to_string(),
@@ -1602,14 +1652,94 @@ mod tests {
     #[derive(Default)]
     struct SimRstudio {
         download_fails: bool,
+        /// The first download panics instead of returning.
+        first_download_panics: AtomicBool,
         /// Where the download lands, when not [`RSTUDIO_DEB`].
         download_path: Option<std::path::PathBuf>,
+        /// Download into a real private temporary file instead.
+        temporary: bool,
+        /// Print a line when a download starts.
+        announce: bool,
+        /// How long a download takes.
+        delay: Option<Duration>,
+        /// Where the download meets the other download and the refresh.
+        meet: Option<Arc<Rendezvous>>,
         downloads: Mutex<usize>,
+        /// The temporary files the downloads created.
+        created: Mutex<Vec<std::path::PathBuf>>,
+        /// The name of the thread each release lookup ran on.
+        lookup_threads: Mutex<Vec<Option<String>>>,
     }
 
     impl SimRstudio {
         fn downloads(&self) -> usize {
             *self.downloads.lock().unwrap()
+        }
+
+        fn created(&self) -> Vec<std::path::PathBuf> {
+            self.created.lock().unwrap().clone()
+        }
+
+        fn lookup_threads(&self) -> Vec<Option<String>> {
+            self.lookup_threads.lock().unwrap().clone()
+        }
+    }
+
+    fn current_thread_name() -> Option<String> {
+        std::thread::current().name().map(str::to_string)
+    }
+
+    const RSTUDIO_DOWNLOAD: &str = "RStudio Server download";
+    const CODE_SERVER_DOWNLOAD: &str = "code-server download";
+    const REFRESH: &str = "apt-get update";
+
+    /// A meeting point for the two package downloads and the first
+    /// package-list refresh. Each party waits, bounded, until all three
+    /// have arrived, and records whether they did: three parties that
+    /// all met were running at the same time.
+    struct Rendezvous {
+        arrived: Mutex<Vec<&'static str>>,
+        changed: Condvar,
+        met: Mutex<Vec<(&'static str, bool)>>,
+        timeout: Duration,
+    }
+
+    impl Rendezvous {
+        const PARTIES: [&'static str; 3] = [RSTUDIO_DOWNLOAD, CODE_SERVER_DOWNLOAD, REFRESH];
+
+        fn new(timeout: Duration) -> Arc<Self> {
+            Arc::new(Rendezvous {
+                arrived: Mutex::new(Vec::new()),
+                changed: Condvar::new(),
+                met: Mutex::new(Vec::new()),
+                timeout,
+            })
+        }
+
+        /// `party` arrives and waits for the others. A party that has
+        /// already arrived once does not wait again.
+        fn arrive(&self, party: &'static str) {
+            let mut arrived = self.arrived.lock().unwrap();
+            if arrived.contains(&party) {
+                return;
+            }
+            arrived.push(party);
+            self.changed.notify_all();
+            let (arrived, wait) = self
+                .changed
+                .wait_timeout_while(arrived, self.timeout, |arrived| {
+                    !Self::PARTIES.iter().all(|other| arrived.contains(other))
+                })
+                .unwrap();
+            drop(arrived);
+            self.met.lock().unwrap().push((party, !wait.timed_out()));
+        }
+
+        /// Each party and whether it met the others, in party order.
+        fn met(&self) -> Vec<(&'static str, bool)> {
+            let mut met = self.met.lock().unwrap().clone();
+            met.sort_by_key(|(party, _)| Self::PARTIES.iter().position(|known| known == party));
+            met
         }
     }
 
@@ -1620,6 +1750,10 @@ mod tests {
                 .map(|_| RSTUDIO_LATEST.to_string())
         }
         fn latest(&self) -> anyhow::Result<RstudioRelease> {
+            self.lookup_threads
+                .lock()
+                .unwrap()
+                .push(current_thread_name());
             Ok(RstudioRelease {
                 version: RSTUDIO_LATEST.to_string(),
                 filename: "rstudio-server-2026.09.0-174-amd64.deb".to_string(),
@@ -1631,15 +1765,35 @@ mod tests {
         }
         fn download(&self, _release: &RstudioRelease) -> anyhow::Result<DownloadedPackage> {
             *self.downloads.lock().unwrap() += 1;
-            if self.download_fails {
-                Err(anyhow!("RStudio Server download interrupted"))
-            } else {
-                Ok(DownloadedPackage::at(
-                    self.download_path
-                        .clone()
-                        .unwrap_or_else(|| RSTUDIO_DEB.into()),
-                ))
+            if self.announce {
+                ui::println("downloading RStudio Server (simulated)");
             }
+            if let Some(meet) = &self.meet {
+                meet.arrive(RSTUDIO_DOWNLOAD);
+            }
+            if let Some(delay) = self.delay {
+                std::thread::sleep(delay);
+            }
+            if self.first_download_panics.swap(false, Ordering::SeqCst) {
+                panic!("the simulated RStudio Server download blew up");
+            }
+            if self.download_fails {
+                return Err(anyhow!("RStudio Server download interrupted"));
+            }
+            if self.temporary {
+                let file = tempfile::Builder::new()
+                    .prefix("hpds-rstudio-server-sim-")
+                    .suffix(".deb")
+                    .tempfile()
+                    .unwrap();
+                self.created.lock().unwrap().push(file.path().to_path_buf());
+                return Ok(DownloadedPackage::temporary(file));
+            }
+            Ok(DownloadedPackage::at(
+                self.download_path
+                    .clone()
+                    .unwrap_or_else(|| RSTUDIO_DEB.into()),
+            ))
         }
         fn inspect(&self, _ctx: &InstallCtx<'_>, _package: &Path) -> anyhow::Result<String> {
             Ok(format!(
@@ -2282,6 +2436,241 @@ mod tests {
                 apt_install(&base_packages())
             ]
         );
+    }
+
+    /// [`run_sim`] with the run's output captured, as plain lines.
+    fn run_sim_captured(
+        sim: &Sim,
+        host: &SimHost,
+        rstudio: SimRstudio,
+        selected: &[Step],
+    ) -> (Vec<StepResult>, &'static SimRstudio, Vec<String>) {
+        let ((results, rstudio), transcript) =
+            ui::capture(|| run_sim(sim, host, rstudio, selected));
+        let lines = transcript
+            .lines()
+            .iter()
+            .map(|(_, line)| line.clone())
+            .collect();
+        (results, rstudio, lines)
+    }
+
+    /// The position of the only line in `lines` that starts with `prefix`.
+    fn only_line(lines: &[String], prefix: &str) -> usize {
+        let found: Vec<usize> = lines
+            .iter()
+            .enumerate()
+            .filter(|(_, line)| line.starts_with(prefix))
+            .map(|(index, _)| index)
+            .collect();
+        assert_eq!(found.len(), 1, "{prefix}: {lines:#?}");
+        found[0]
+    }
+
+    #[test]
+    fn step_one_downloads_both_packages_while_it_refreshes_the_package_lists() {
+        let meet = Rendezvous::new(Duration::from_secs(10));
+        let sim = Sim {
+            meet: Some(Arc::clone(&meet)),
+            ..Sim::default()
+        };
+        let host = SimHost {
+            meet: Some(Arc::clone(&meet)),
+            ..SimHost::default()
+        };
+        let rstudio = SimRstudio {
+            meet: Some(Arc::clone(&meet)),
+            ..SimRstudio::default()
+        };
+        let (results, _) = run_sim(&sim, &host, rstudio, steps(Profile::Server));
+
+        assert_eq!(
+            meet.met(),
+            [
+                (RSTUDIO_DOWNLOAD, true),
+                (CODE_SERVER_DOWNLOAD, true),
+                (REFRESH, true)
+            ],
+            "the downloads and the refresh must all be under way at once"
+        );
+        assert!(failures(&results).is_empty(), "{:?}", failures(&results));
+        assert_eq!(
+            sim.apt_calls(),
+            [
+                install::apt_get_command_line(&["update"]),
+                apt_install(&merged_packages())
+            ]
+        );
+    }
+
+    #[test]
+    fn package_download_output_follows_step_ones_own_lines_in_plan_order() {
+        let sim = Sim::default();
+        let host = SimHost {
+            announce: true,
+            ..SimHost::default()
+        };
+        // RStudio Server finishes last, yet its lines still come first.
+        let rstudio = SimRstudio {
+            announce: true,
+            delay: Some(Duration::from_millis(300)),
+            ..SimRstudio::default()
+        };
+        let (results, _, lines) = run_sim_captured(&sim, &host, rstudio, steps(Profile::Server));
+
+        assert!(failures(&results).is_empty(), "{:?}", failures(&results));
+        let refresh = only_line(&lines, "refreshing apt package lists");
+        let rstudio = only_line(&lines, "downloading RStudio Server (simulated)");
+        let code_server = only_line(&lines, "downloading code-server (simulated)");
+        let install = only_line(
+            &lines,
+            "installing the system libraries and the selected steps' packages",
+        );
+        assert!(
+            refresh < rstudio && rstudio < code_server && code_server < install,
+            "{lines:#?}"
+        );
+    }
+
+    #[test]
+    fn a_panicking_package_download_drops_only_that_package() {
+        let sim = Sim::default();
+        let rstudio = SimRstudio {
+            first_download_panics: AtomicBool::new(true),
+            ..SimRstudio::default()
+        };
+        let (results, rstudio, lines) =
+            run_sim_captured(&sim, &SimHost::default(), rstudio, steps(Profile::Server));
+
+        assert!(failures(&results).is_empty(), "{:?}", failures(&results));
+        assert_eq!(rstudio.downloads(), 2, "step 1 tried, then RStudio retried");
+        let mut without_rstudio = base_packages();
+        without_rstudio.extend_from_slice(server::DOCKER_PACKAGES);
+        without_rstudio.extend(["r-rig", CODE_SERVER_DEB]);
+        let apt = sim.apt_calls();
+        assert_eq!(apt[1], apt_install(&without_rstudio), "{apt:#?}");
+        assert!(apt.contains(&apt_install(&[RSTUDIO_DEB])), "{apt:#?}");
+        assert!(
+            lines.iter().any(
+                |line| line.contains("could not prepare the RStudio Server package")
+                    && line.contains("RStudio Server will install it itself")
+            ),
+            "{lines:#?}"
+        );
+    }
+
+    #[test]
+    fn a_failed_code_server_download_drops_only_code_server() {
+        let sim = Sim::default();
+        let host = SimHost {
+            code_server_fails: true,
+            ..SimHost::default()
+        };
+        let (results, _) = run_sim(&sim, &host, SimRstudio::default(), steps(Profile::Server));
+
+        let failed = failures(&results);
+        assert_eq!(failed.len(), 1, "{failed:?}");
+        assert_eq!(failed[0].0, "code-server + extensions");
+        assert!(failed[0].1.contains("download interrupted"), "{failed:?}");
+        let mut without_code_server = base_packages();
+        without_code_server.extend_from_slice(server::DOCKER_PACKAGES);
+        without_code_server.extend(["r-rig", RSTUDIO_DEB]);
+        assert_eq!(sim.apt_calls()[1], apt_install(&without_code_server));
+    }
+
+    #[test]
+    fn packages_are_prepared_on_their_own_threads_only_for_selected_steps() {
+        let preparing = |name: &Option<String>| {
+            name.as_deref()
+                .is_some_and(|name| name.starts_with("hpds-prepare-"))
+        };
+
+        let host = SimHost::default();
+        let (_, rstudio) = run_sim(
+            &Sim::default(),
+            &host,
+            SimRstudio::default(),
+            steps(Profile::Server),
+        );
+        assert_eq!(
+            host.code_server_threads(),
+            [Some("hpds-prepare-code-server".to_string())]
+        );
+        assert_eq!(
+            rstudio.lookup_threads().first(),
+            Some(&Some("hpds-prepare-rstudio-server".to_string()))
+        );
+
+        let host = SimHost::default();
+        let (_, rstudio) = run_sim(
+            &Sim::default(),
+            &host,
+            SimRstudio::default(),
+            &server_steps_without(&["RStudio Server"]),
+        );
+        assert_eq!(
+            host.code_server_threads(),
+            [Some("hpds-prepare-code-server".to_string())]
+        );
+        assert!(rstudio.lookup_threads().is_empty());
+
+        let host = SimHost::default();
+        let (_, rstudio) = run_sim(
+            &Sim::default(),
+            &host,
+            SimRstudio::default(),
+            &server_steps_without(&["RStudio Server", "code-server + extensions"]),
+        );
+        assert!(host.code_server_threads().is_empty());
+        assert!(!rstudio.lookup_threads().iter().any(preparing));
+        assert_eq!(rstudio.downloads(), 0);
+    }
+
+    #[test]
+    fn prepared_package_files_last_through_the_install_and_are_removed_after() {
+        let sim = Sim::default();
+        let rstudio = SimRstudio {
+            temporary: true,
+            ..SimRstudio::default()
+        };
+        let (results, rstudio) =
+            run_sim(&sim, &SimHost::default(), rstudio, steps(Profile::Server));
+
+        assert!(failures(&results).is_empty(), "{:?}", failures(&results));
+        let created = rstudio.created();
+        assert!(!created.is_empty());
+        let merged = sim.apt_calls()[1].clone();
+        let prepared = created[0].to_str().unwrap().to_string();
+        assert!(merged.contains(&prepared), "{merged}");
+        assert!(
+            sim.package_files().contains(&(prepared, true)),
+            "{:?}",
+            sim.package_files()
+        );
+        for path in created {
+            assert!(!path.exists(), "{} was left behind", path.display());
+        }
+    }
+
+    #[test]
+    fn prepared_package_files_are_removed_when_the_refresh_fails() {
+        let sim = Sim::default().failing(
+            &install::apt_get_command_line(&["update"]),
+            "E: mirror down",
+        );
+        let rstudio = SimRstudio {
+            temporary: true,
+            ..SimRstudio::default()
+        };
+        let (results, rstudio) =
+            run_sim(&sim, &SimHost::default(), rstudio, steps(Profile::Server));
+
+        assert!(results[0].error.is_some(), "step 1 fails");
+        let created = rstudio.created();
+        assert!(!created.is_empty());
+        for path in created {
+            assert!(!path.exists(), "{} was left behind", path.display());
+        }
     }
 
     #[test]

@@ -17,6 +17,7 @@ pub use capture::{Transcript, capture, replay};
 #[allow(unused_imports)] // consumed only by unit tests today; part of the ui API
 pub use error::render_error;
 pub use error::{HintExt, error};
+pub(crate) use progress::bar_is_live;
 #[allow(unused_imports)] // re-exported for later commands; ui lands before its callers
 pub use progress::progress_bar;
 pub use prompt::{

@@ -2,11 +2,14 @@
 //! transaction, the packages every selected step needs.
 //!
 //! Each step declares its share ([`AptShare`]). The prelude registers the
-//! third-party repositories the selected steps need, downloads and
-//! verifies their package files, refreshes the package lists once, and
-//! runs one `apt-get install` of everything. Anything it cannot prepare is
-//! left out with a warning, and the owning step installs it later through
-//! its own path, where a failure is reported as that step's error.
+//! third-party repositories the selected steps need and refreshes the
+//! package lists once while, on threads of their own, it downloads and
+//! verifies their package files; then it runs one `apt-get install` of
+//! everything. Anything it cannot prepare is left out with a warning, and
+//! the owning step installs it later through its own path, where a
+//! failure is reported as that step's error.
+
+use std::thread::{Scope, ScopedJoinHandle};
 
 use anyhow::anyhow;
 
@@ -98,6 +101,14 @@ impl LocalDeb {
         match self {
             LocalDeb::RstudioServer => "RStudio Server",
             LocalDeb::CodeServer => "code-server",
+        }
+    }
+
+    /// The name of the thread that prepares this package.
+    fn thread_name(self) -> &'static str {
+        match self {
+            LocalDeb::RstudioServer => "hpds-prepare-rstudio-server",
+            LocalDeb::CodeServer => "hpds-prepare-code-server",
         }
     }
 }
@@ -208,49 +219,25 @@ pub(super) fn run(selected: &[Step], deps: &SetupDeps) -> anyhow::Result<Vec<&'s
         .map(|step| step.title)
         .collect();
 
-    let mut registered: Vec<Registered> = Vec::new();
-    for (repo, title) in &plan.repos {
-        if !repo_missing(*repo, deps) {
-            continue;
-        }
-        match register(*repo, deps) {
-            Ok(created) => registered.push(Registered {
-                repo: *repo,
-                created,
-            }),
-            Err(err) => ui::warn(&format!(
-                "could not register the {} apt repository ({err:#}); {title} will install it itself",
-                repo.name()
-            )),
-        }
-    }
-
+    // Each package file is prepared on a thread of its own while this
+    // thread registers the repositories and refreshes the package lists.
     // The files stay on disk until this function returns, after apt has
     // installed them.
-    let mut packages: Vec<DownloadedPackage> = Vec::new();
-    let mut paths = Vec::new();
-    for (deb, title) in &plan.debs {
-        let prepared = prepare(*deb, deps).and_then(|package| match package {
-            Some(package) => {
-                let path = server::absolute_package_path(&package)?;
-                Ok(Some((package, path)))
-            }
-            None => Ok(None),
-        });
-        match prepared {
-            Ok(Some((package, path))) => {
-                packages.push(package);
-                paths.push(path);
-            }
-            Ok(None) => {}
-            Err(err) => ui::warn(&format!(
-                "could not prepare the {} package ({err:#}); {title} will install it itself",
-                deb.name()
-            )),
-        }
-    }
-
-    refresh(deps, &mut registered)?;
+    let (refreshed, registered, packages) = std::thread::scope(|scope| {
+        let preparations: Vec<Preparation> = plan
+            .debs
+            .iter()
+            .map(|(deb, title)| Preparation::start(scope, *deb, title, deps))
+            .collect();
+        let mut registered = register_missing(&plan, deps);
+        let refreshed = refresh(deps, &mut registered);
+        let packages: Vec<(DownloadedPackage, String)> = preparations
+            .into_iter()
+            .filter_map(|preparation| preparation.finish(deps))
+            .collect();
+        (refreshed, registered, packages)
+    });
+    refreshed?;
     let mut extra: Vec<&'static str> = Vec::new();
     for registered in &registered {
         push_unique(&mut extra, registered.repo.packages());
@@ -258,7 +245,7 @@ pub(super) fn run(selected: &[Step], deps: &SetupDeps) -> anyhow::Result<Vec<&'s
 
     let mut merged = plan.base.clone();
     push_unique(&mut merged, &extra);
-    merged.extend(paths.iter().map(String::as_str));
+    merged.extend(packages.iter().map(|(_, path)| path.as_str()));
     if merged.is_empty() {
         return Ok(base_titles);
     }
@@ -285,6 +272,100 @@ pub(super) fn run(selected: &[Step], deps: &SetupDeps) -> anyhow::Result<Vec<&'s
         ))
         .hint("fix the apt error above and rerun server setup; completed steps are idempotent"),
     }
+}
+
+/// Register the repositories in `plan` whose packages still need
+/// installing. One that cannot be registered is left out with a warning.
+fn register_missing(plan: &PreludePlan, deps: &SetupDeps) -> Vec<Registered> {
+    let mut registered = Vec::new();
+    for (repo, title) in &plan.repos {
+        if !repo_missing(*repo, deps) {
+            continue;
+        }
+        match register(*repo, deps) {
+            Ok(created) => registered.push(Registered {
+                repo: *repo,
+                created,
+            }),
+            Err(err) => ui::warn(&format!(
+                "could not register the {} apt repository ({err:#}); {title} will install it itself",
+                repo.name()
+            )),
+        }
+    }
+    registered
+}
+
+/// A verified package file and the path `apt-get` installs it from, or
+/// `None` when the package is current.
+type Prepared = anyhow::Result<Option<(DownloadedPackage, String)>>;
+
+/// One package file being prepared.
+struct Preparation<'scope> {
+    deb: LocalDeb,
+    title: &'static str,
+    /// The thread preparing it, with its output captured; `None` when no
+    /// thread could be started, and the package is prepared on this one
+    /// when it is collected.
+    thread: Option<ScopedJoinHandle<'scope, (Prepared, ui::Transcript)>>,
+}
+
+impl<'scope> Preparation<'scope> {
+    /// Start preparing `deb` on a thread of its own. The preparation only
+    /// probes, downloads, and runs `dpkg-deb`: it never asks for sudo or
+    /// prompts, so capturing its output costs it nothing.
+    fn start<'a: 'scope>(
+        scope: &'scope Scope<'scope, '_>,
+        deb: LocalDeb,
+        title: &'static str,
+        deps: &SetupDeps<'a>,
+    ) -> Self {
+        let thread_deps = deps.for_thread();
+        let thread = std::thread::Builder::new()
+            .name(deb.thread_name().to_string())
+            .spawn_scoped(scope, move || {
+                ui::capture(|| prepare_file(deb, &thread_deps))
+            })
+            .ok();
+        Preparation { deb, title, thread }
+    }
+
+    /// Wait for the package and replay what its preparation printed. A
+    /// package that could not be prepared, including one whose thread
+    /// panicked, is left out with a warning.
+    fn finish(self, deps: &SetupDeps) -> Option<(DownloadedPackage, String)> {
+        let prepared = match self.thread {
+            Some(thread) => match thread.join() {
+                Ok((prepared, transcript)) => {
+                    ui::replay(&transcript);
+                    prepared
+                }
+                // The panic hook has already reported the panic itself.
+                Err(_) => Err(anyhow!("its preparation stopped unexpectedly")),
+            },
+            None => prepare_file(self.deb, deps),
+        };
+        match prepared {
+            Ok(found) => found,
+            Err(err) => {
+                ui::warn(&format!(
+                    "could not prepare the {} package ({err:#}); {} will install it itself",
+                    self.deb.name(),
+                    self.title
+                ));
+                None
+            }
+        }
+    }
+}
+
+/// Prepare `deb` and resolve the path `apt-get` installs it from.
+fn prepare_file(deb: LocalDeb, deps: &SetupDeps) -> Prepared {
+    let Some(package) = prepare(deb, deps)? else {
+        return Ok(None);
+    };
+    let path = server::absolute_package_path(&package)?;
+    Ok(Some((package, path)))
 }
 
 /// A repository the prelude registered in this run.

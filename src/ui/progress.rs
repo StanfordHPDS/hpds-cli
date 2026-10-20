@@ -33,6 +33,11 @@ pub fn progress_bar(len: u64, msg: impl Into<String>) -> ProgressBar {
     )
 }
 
+/// Whether a bar created on the calling thread right now would draw live.
+pub(crate) fn bar_is_live() -> bool {
+    draw_target(std::io::stderr().is_terminal(), is_capturing()) == BarTarget::Stderr
+}
+
 /// Where a new bar draws.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum BarTarget {
