@@ -525,10 +525,7 @@ fn acquire_rustup_init() -> Result<PathBuf> {
         .get(&base)
         .call()
         .context("could not download rustup-init")?;
-    let mut file = tempfile::Builder::new()
-        .prefix("hpds-rustup-init-")
-        .tempfile()
-        .context("could not create a temporary rustup-init file")?;
+    let mut file = stage_rustup_init()?;
     let mut hasher = Sha256::new();
     let mut buffer = [0_u8; 64 * 1024];
     loop {
@@ -554,6 +551,20 @@ fn acquire_rustup_init() -> Result<PathBuf> {
         .keep()
         .context("could not retain verified rustup-init")?;
     Ok(path)
+}
+
+/// Create the temporary file that holds the downloaded rustup-init.
+///
+/// rustup chooses its mode from the file stem of `argv[0]` and runs the
+/// installer only when that stem starts with `rustup-init` or
+/// `rustup-setup`; any other name is treated as a toolchain proxy. The
+/// random suffix appended to this prefix is alphanumeric, so the stem keeps
+/// the prefix.
+fn stage_rustup_init() -> Result<tempfile::NamedTempFile> {
+    tempfile::Builder::new()
+        .prefix("rustup-init-")
+        .tempfile()
+        .context("could not create a temporary rustup-init file")
 }
 
 /// Extract the sha256 digest from a `rustup-init.sha256` file: exactly one
@@ -1280,6 +1291,26 @@ mod tests {
         assert!(text.contains("✓ RStudio preferences"), "{text}");
         let error = finish(&results, None).expect_err("one failed step fails setup");
         assert!(error.to_string().contains("1 of 2"), "{error:#}");
+    }
+
+    /// rustup picks its mode from the file stem of `argv[0]`: only a stem
+    /// starting with `rustup-init` or `rustup-setup` runs the installer, and
+    /// any other unrecognized name is treated as a toolchain proxy.
+    fn rustup_runs_as_installer(path: &Path) -> bool {
+        path.file_stem()
+            .and_then(|stem| stem.to_str())
+            .is_some_and(|stem| stem.starts_with("rustup-init") || stem.starts_with("rustup-setup"))
+    }
+
+    #[test]
+    fn staged_rustup_init_has_a_name_rustup_runs_as_the_installer() {
+        let staged = super::stage_rustup_init().unwrap();
+        let path = staged.path();
+        assert!(
+            rustup_runs_as_installer(path),
+            "rustup would treat `{}` as a toolchain proxy",
+            path.display()
+        );
     }
 
     const RUSTUP_DIGEST: &str = "dda7234360b7f578ca8b0ddcb80145646fa61a67c1720a5abc7051b35c9fcb71";
