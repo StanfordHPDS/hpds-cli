@@ -19,6 +19,7 @@ pub(super) fn release_spec() -> ToolSpec {
         default_version: "latest",
         repo: "astral-sh/uv",
         asset_pattern: "uv-{arch}-{os}.{ext}",
+        legacy_asset: None,
         checksum_pattern: Some("uv-{arch}-{os}.{ext}.sha256"),
     }
 }

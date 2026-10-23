@@ -21,6 +21,7 @@ pub(crate) fn release_spec() -> ToolSpec {
         default_version: "latest",
         repo: "StanfordHPDS/togi",
         asset_pattern: "togi-{arch}-{os}.{ext}",
+        legacy_asset: None,
         checksum_pattern: Some("togi-{arch}-{os}.{ext}.sha256"),
     }
 }
