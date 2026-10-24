@@ -395,7 +395,7 @@ class CodeServerConfigTests(unittest.TestCase):
         listing = "MS-Python.python\nquarto.quarto@1.2.3\n"
         self.assertEqual(
             RUN.missing_extensions(listing, RUN.CODE_SERVER_EXTENSIONS),
-            ["ms-toolsai.jupyter", "charliermarsh.ruff"],
+            ["ms-toolsai.jupyter", "charliermarsh.ruff", "tomoki1207.pdf"],
         )
 
 

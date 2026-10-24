@@ -34,7 +34,7 @@ hpds setup --profile server runs these 15 steps:
        merge RStudio preferences: insert_native_pipe_operator=true save_workspace=never load_workspace=never rainbow_parentheses=true rainbow_fenced_divs=true
  10. code-server + extensions
        if code-server is still missing, download and verify its package as in step 1 and install it with sudo env DEBIAN_FRONTEND=noninteractive NEEDRESTART_SUSPEND=1 apt-get -o DPkg::Lock::Timeout=600 install -y <verified code-server package>
-       code-server --install-extension ms-python.python --install-extension ms-toolsai.jupyter --install-extension quarto.quarto --install-extension charliermarsh.ruff
+       code-server --install-extension ms-python.python --install-extension ms-toolsai.jupyter --install-extension quarto.quarto --install-extension charliermarsh.ruff --install-extension tomoki1207.pdf
        set quarto.path to <home>/.local/bin/quarto and systemctl enable --now code-server@<user>
  11. gh
        hpds install gh (latest stable)

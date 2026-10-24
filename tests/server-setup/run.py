@@ -83,6 +83,7 @@ CODE_SERVER_EXTENSIONS = (
     "ms-toolsai.jupyter",
     "quarto.quarto",
     "charliermarsh.ruff",
+    "tomoki1207.pdf",
 )
 # Where `quarto install tinytex --update-path` may leave tlmgr for a user.
 TLMGR_CANDIDATES = (
