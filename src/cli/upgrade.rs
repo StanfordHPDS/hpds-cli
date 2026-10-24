@@ -218,6 +218,7 @@ fn self_spec() -> ToolSpec {
         default_version: env!("CARGO_PKG_VERSION"),
         repo: REPO,
         asset_pattern: ASSET_PATTERN,
+        legacy_asset: None,
         checksum_pattern: Some(CHECKSUM_PATTERN),
     }
 }

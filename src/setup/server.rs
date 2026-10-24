@@ -70,6 +70,7 @@ const CODE_SERVER: ToolSpec = ToolSpec {
     default_version: "latest",
     repo: "coder/code-server",
     asset_pattern: "code-server_{version}_amd64.deb",
+    legacy_asset: None,
     checksum_pattern: None,
 };
 

@@ -5,25 +5,40 @@
 //! mandatory. Exact pins use their release metadata without a latest lookup.
 
 use crate::install::{InstallCtx, Installer};
-use crate::tools::{Os, ToolSpec};
+use crate::tools::{LegacyAsset, Os, ToolSpec};
 
 use super::{fetch_plan, fetch_to_user_bin};
 
 pub struct DuckDb;
 
-/// The duckdb CLI release archive for one OS: zips on every platform,
-/// `osx-universal` on macOS, Go-style arches elsewhere. duckdb publishes
-/// no per-asset checksums, so the downloader warns and skips verification.
+/// The duckdb CLI release archive for one OS: tarballs from 2.0 on and zips
+/// before, `osx-universal` on macOS, Go-style arches elsewhere. duckdb
+/// publishes no per-asset checksums; GitHub's asset digest verifies the
+/// archive instead.
 pub(super) fn release_spec(os: Os) -> ToolSpec {
+    let (asset_pattern, legacy_pattern) = match os {
+        Os::Mac => (
+            "duckdb-cli-osx-universal.tar.gz",
+            "duckdb_cli-osx-universal.zip",
+        ),
+        Os::Linux => (
+            "duckdb-cli-linux-{alt-arch}.tar.gz",
+            "duckdb_cli-linux-{alt-arch}.zip",
+        ),
+        Os::Windows => (
+            "duckdb-cli-windows-{alt-arch}.tar.gz",
+            "duckdb_cli-windows-{alt-arch}.zip",
+        ),
+    };
     ToolSpec {
         name: "duckdb",
         default_version: "latest",
         repo: "duckdb/duckdb",
-        asset_pattern: match os {
-            Os::Mac => "duckdb_cli-osx-universal.zip",
-            Os::Linux => "duckdb_cli-linux-{alt-arch}.zip",
-            Os::Windows => "duckdb_cli-windows-{alt-arch}.zip",
-        },
+        asset_pattern,
+        legacy_asset: Some(LegacyAsset {
+            before_major: 2,
+            pattern: legacy_pattern,
+        }),
         checksum_pattern: None,
     }
 }
@@ -141,17 +156,61 @@ mod tests {
     #[test]
     fn duckdb_release_assets_resolve_to_the_published_names() {
         let cases = [
-            (Os::Mac, Arch::Aarch64, "duckdb_cli-osx-universal.zip"),
-            (Os::Linux, Arch::X86_64, "duckdb_cli-linux-amd64.zip"),
-            (Os::Linux, Arch::Aarch64, "duckdb_cli-linux-arm64.zip"),
-            (Os::Windows, Arch::X86_64, "duckdb_cli-windows-amd64.zip"),
+            (
+                Os::Mac,
+                Arch::Aarch64,
+                "2.0.0",
+                "duckdb-cli-osx-universal.tar.gz",
+            ),
+            (
+                Os::Linux,
+                Arch::X86_64,
+                "2.0.0",
+                "duckdb-cli-linux-amd64.tar.gz",
+            ),
+            (
+                Os::Linux,
+                Arch::Aarch64,
+                "2.1.3",
+                "duckdb-cli-linux-arm64.tar.gz",
+            ),
+            (
+                Os::Windows,
+                Arch::X86_64,
+                "2.0.0",
+                "duckdb-cli-windows-amd64.tar.gz",
+            ),
+            (
+                Os::Mac,
+                Arch::Aarch64,
+                "1.5.4",
+                "duckdb_cli-osx-universal.zip",
+            ),
+            (
+                Os::Linux,
+                Arch::X86_64,
+                "1.5.4",
+                "duckdb_cli-linux-amd64.zip",
+            ),
+            (
+                Os::Linux,
+                Arch::Aarch64,
+                "1.4.5",
+                "duckdb_cli-linux-arm64.zip",
+            ),
+            (
+                Os::Windows,
+                Arch::X86_64,
+                "1.5.4",
+                "duckdb_cli-windows-amd64.zip",
+            ),
         ];
-        for (os, arch, want) in cases {
+        for (os, arch, version, want) in cases {
             let platform = Platform { os, arch };
             assert_eq!(
-                release_spec(os).asset_name(platform, "1.5.4"),
+                release_spec(os).asset_name(platform, version),
                 want,
-                "{os:?}/{arch:?}"
+                "{os:?}/{arch:?} {version}"
             );
         }
     }

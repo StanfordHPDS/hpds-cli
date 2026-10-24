@@ -24,6 +24,7 @@ pub(super) fn release_spec(os: Os) -> ToolSpec {
             Os::Linux => "quarto-{version}-linux-{alt-arch}.tar.gz",
             Os::Windows => "quarto-{version}-win.zip",
         },
+        legacy_asset: None,
         checksum_pattern: Some("quarto-{version}-checksums.txt"),
     }
 }

@@ -127,7 +127,7 @@ mod runtime_release_tests {
             (
                 include_str!("../../../tests/fixtures/releases/duckdb-latest.json"),
                 duckdb::release_spec(Os::Linux),
-                "1.5.5",
+                "2.0.0",
             ),
             (
                 include_str!("../../../tests/fixtures/releases/quarto-latest.json"),
@@ -160,7 +160,7 @@ mod runtime_release_tests {
             for (installer, latest) in [
                 (&Uv as &dyn Installer, "0.10.1"),
                 (&Gh, "2.97.1"),
-                (&DuckDb, "1.5.5"),
+                (&DuckDb, "2.0.0"),
                 (&Quarto, "1.10.19"),
                 (&Togi, "0.2.0"),
             ] {
@@ -364,6 +364,17 @@ mod online_tests {
         }
         let os = Platform::current().expect("supported platform").os;
         fetch_and_probe(&super::duckdb::release_spec(os), "1.5.4");
+    }
+
+    #[test]
+    #[ignore = "looks up and downloads the latest real duckdb release from GitHub"]
+    fn latest_duckdb_release_downloads_and_runs_in_a_temporary_directory() {
+        let os = Platform::current().expect("supported platform").os;
+        let spec = super::duckdb::release_spec(os);
+        let version = CacheFetcher::new(true)
+            .latest_version(&spec)
+            .expect("resolve latest duckdb release");
+        fetch_and_probe(&spec, &version);
     }
 
     #[test]

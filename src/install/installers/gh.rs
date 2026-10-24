@@ -23,6 +23,7 @@ pub(super) fn release_spec(os: Os) -> ToolSpec {
             Os::Linux => "gh_{version}_linux_{alt-arch}.tar.gz",
             Os::Windows => "gh_{version}_windows_{alt-arch}.zip",
         },
+        legacy_asset: None,
         checksum_pattern: Some("gh_{version}_checksums.txt"),
     }
 }
