@@ -349,7 +349,7 @@ const SERVER_STEPS: &[Step] = &[
         actions: &[
             Action::Server(server::ServerAction::InstallCodeServer),
             Action::Run(Cmd {
-                what: "installing the Python, Jupyter, Quarto, and Ruff extensions",
+                what: "installing the Python, Jupyter, Quarto, Ruff, and PDF viewer extensions",
                 program: "code-server",
                 args: &[
                     "--install-extension",
@@ -360,6 +360,8 @@ const SERVER_STEPS: &[Step] = &[
                     "quarto.quarto",
                     "--install-extension",
                     "charliermarsh.ruff",
+                    "--install-extension",
+                    "tomoki1207.pdf",
                 ],
                 sudo: false,
             }),
@@ -1161,11 +1163,12 @@ mod tests {
                     "ms-toolsai.jupyter",
                     "quarto.quarto",
                     "charliermarsh.ruff",
+                    "tomoki1207.pdf",
                 ]
                 .iter()
                 .all(|id| line.contains(id))
             }),
-            "one plan line installs all four extensions:\n{text}"
+            "one plan line installs all five extensions:\n{text}"
         );
         let lowercase = text.to_ascii_lowercase();
         for omitted in [
@@ -1953,7 +1956,7 @@ mod tests {
             sim.apt_calls().first(),
             Some(&install::apt_get_command_line(&["update"]))
         );
-        // All four extensions install in one code-server invocation, before
+        // All five extensions install in one code-server invocation, before
         // the service is enabled.
         let extension_calls: Vec<usize> = calls
             .iter()
@@ -1964,7 +1967,7 @@ mod tests {
         assert_eq!(extension_calls.len(), 1, "{calls:?}");
         assert_eq!(
             calls[extension_calls[0]],
-            "code-server --install-extension ms-python.python --install-extension ms-toolsai.jupyter --install-extension quarto.quarto --install-extension charliermarsh.ruff",
+            "code-server --install-extension ms-python.python --install-extension ms-toolsai.jupyter --install-extension quarto.quarto --install-extension charliermarsh.ruff --install-extension tomoki1207.pdf",
             "{calls:?}"
         );
         let enable = calls
