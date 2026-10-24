@@ -1141,6 +1141,7 @@ mod tests {
             default_version: "latest",
             repo: "astral-sh/uv",
             asset_pattern: "uv-{arch}-{os}.{ext}",
+            legacy_asset: None,
             checksum_pattern: Some("uv-{arch}-{os}.{ext}.sha256"),
         };
         let path = "/repos/astral-sh/uv/releases/tags/0.10.1";
@@ -1216,7 +1217,7 @@ mod tests {
             (
                 "duckdb",
                 include_str!("../../tests/fixtures/releases/duckdb-latest.json"),
-                "1.5.5",
+                "2.0.0",
             ),
             (
                 "quarto",
@@ -1344,16 +1345,17 @@ mod tests {
             default_version: "1.5.4",
             repo: "duckdb/duckdb",
             asset_pattern: match Platform::current().expect("supported platform").os {
-                crate::tools::Os::Mac => "duckdb_cli-osx-universal.zip",
-                crate::tools::Os::Linux => "duckdb_cli-linux-{alt-arch}.zip",
-                crate::tools::Os::Windows => "duckdb_cli-windows-{alt-arch}.zip",
+                crate::tools::Os::Mac => "duckdb-cli-osx-universal.tar.gz",
+                crate::tools::Os::Linux => "duckdb-cli-linux-{alt-arch}.tar.gz",
+                crate::tools::Os::Windows => "duckdb-cli-windows-{alt-arch}.tar.gz",
             },
+            legacy_asset: None,
             checksum_pattern: None,
         };
-        let archive = spec.asset_name(Platform::current().expect("supported platform"), "1.5.5");
+        let archive = spec.asset_name(Platform::current().expect("supported platform"), "2.0.0");
         for digest in [None, Some("sha256:not-hex")] {
             let err = resolve_fixture(
-                published_body("v1.5.5", vec![asset(&archive, digest)]),
+                published_body("v2.0.0", vec![asset(&archive, digest)]),
                 &spec,
             )
             .expect_err("DuckDB requires GitHub's archive digest");
@@ -1379,30 +1381,31 @@ mod tests {
     ) -> (anyhow::Result<PathBuf>, tempfile::TempDir, ToolCache) {
         use std::collections::HashMap;
 
-        use crate::tools::test_support::{FixtureServer, zip_with};
+        use crate::tools::test_support::{FixtureServer, targz_with};
         use crate::tools::{Arch, Os};
 
         let spec = ToolSpec {
             name: "duckdb",
             default_version: "1.5.4",
             repo: "duckdb/duckdb",
-            asset_pattern: "duckdb_cli-linux-{alt-arch}.zip",
+            asset_pattern: "duckdb-cli-linux-{alt-arch}.tar.gz",
+            legacy_asset: None,
             checksum_pattern: None,
         };
         let platform = Platform {
             os: Os::Linux,
             arch: Arch::X86_64,
         };
-        let archive_name = spec.asset_name(platform, "1.5.5");
-        let archive = zip_with("duckdb", b"fake duckdb");
+        let archive_name = spec.asset_name(platform, "2.0.0");
+        let archive = targz_with("duckdb", b"fake duckdb");
         let digest = digest_for(&archive);
-        let archive_path = format!("/duckdb/duckdb/releases/download/v1.5.5/{archive_name}");
+        let archive_path = format!("/duckdb/duckdb/releases/download/v2.0.0/{archive_name}");
         let archive_server = FixtureServer::serve(HashMap::from([(archive_path.clone(), archive)]));
         let metadata = serde_json::json!({
-            "tag_name": "v1.5.5",
+            "tag_name": "v2.0.0",
             "draft": false,
             "prerelease": false,
-            "published_at": "2026-09-30T12:00:00Z",
+            "published_at": "2026-10-21T12:49:12Z",
             "assets": [{
                 "name": archive_name,
                 "browser_download_url": format!("{}{archive_path}", archive_server.base_url),
@@ -1437,8 +1440,8 @@ mod tests {
 
         assert!(rendered.contains("digest"), "{rendered}");
         assert!(rendered.contains("does not match"), "{rendered}");
-        assert!(!cache.tool_dir("duckdb", "1.5.5").exists());
-        assert!(!cache.manifest_path("duckdb", "1.5.5").exists());
+        assert!(!cache.tool_dir("duckdb", "2.0.0").exists());
+        assert!(!cache.manifest_path("duckdb", "2.0.0").exists());
     }
 
     #[test]
@@ -1450,7 +1453,7 @@ mod tests {
         let binary = result.expect("matching GitHub digest must install");
 
         assert!(binary.is_file(), "{}", binary.display());
-        let manifest_path = cache.manifest_path("duckdb", "1.5.5");
+        let manifest_path = cache.manifest_path("duckdb", "2.0.0");
         let manifest: Value = serde_json::from_str(
             &std::fs::read_to_string(&manifest_path).expect("published manifest"),
         )
@@ -1478,6 +1481,7 @@ mod tests {
             default_version: "latest",
             repo: "duckdb/duckdb",
             asset_pattern: "duckdb_cli-linux-{alt-arch}.zip",
+            legacy_asset: None,
             checksum_pattern: None,
         };
         let binary = cache.binary_path("duckdb", "1.5.5", platform);
@@ -1520,6 +1524,7 @@ mod tests {
             default_version: "latest",
             repo: "duckdb/duckdb",
             asset_pattern: "duckdb_cli-linux-{alt-arch}.zip",
+            legacy_asset: None,
             checksum_pattern: None,
         };
         let binary = cache.binary_path("duckdb", "1.5.5", platform);

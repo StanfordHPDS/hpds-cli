@@ -22,7 +22,7 @@ pub use download::{Downloader, InstallContext};
 #[cfg(test)]
 pub(crate) use manifest::Manifest;
 pub use platform::{Os, Platform};
-pub use spec::ToolSpec;
+pub use spec::{LegacyAsset, ToolSpec};
 
 // `Arch` only appears in platform-matrix unit tests; production code
 // always goes through `Platform::current()`.

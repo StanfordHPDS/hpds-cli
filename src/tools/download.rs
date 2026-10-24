@@ -856,6 +856,7 @@ mod tests {
             default_version: "1.2.3",
             repo: "example/tool",
             asset_pattern: "tool-{version}-{arch}-{os}.{ext}",
+            legacy_asset: None,
             checksum_pattern: Some("tool-{version}-{arch}-{os}.{ext}.sha256"),
         }
     }
@@ -1523,6 +1524,7 @@ mod online_tests {
             default_version: versions::UV,
             repo: "astral-sh/uv",
             asset_pattern: "uv-{arch}-{os}.{ext}",
+            legacy_asset: None,
             checksum_pattern: Some("uv-{arch}-{os}.{ext}.sha256"),
         };
         let ctx = InstallContext {
