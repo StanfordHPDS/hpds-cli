@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import importlib.util
+import re
 from pathlib import Path
 import tempfile
 import unittest
@@ -12,6 +13,21 @@ SPEC = importlib.util.spec_from_file_location("container_runtime_run", MODULE_PA
 assert SPEC is not None and SPEC.loader is not None
 RUN = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(RUN)
+
+
+# Docker image references: lowercase components joined by single separators.
+TAG = re.compile(r"^[a-z0-9]+(?:(?:[._]|__|-+)[a-z0-9]+)*$")
+
+
+class RunIdTests(unittest.TestCase):
+    def test_temporary_directory_names_always_give_valid_tags(self) -> None:
+        for suffix in ["_a1ep4jv", "abc_def", "A1B2__", "-x-", "zz9", "___"]:
+            run_id = RUN.make_run_id(3667, f"hpds-container-runtime-{suffix}")
+            tag = f"hpds-container-runtime-{run_id}-python-version"
+            self.assertRegex(tag, TAG, suffix)
+
+    def test_run_ids_keep_the_pid_and_the_directory_suffix(self) -> None:
+        self.assertEqual(RUN.make_run_id(42, "hpds-container-runtime-ab_c1"), "42-abc1")
 
 
 class PublishedHpdsSelectionTests(unittest.TestCase):

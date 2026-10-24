@@ -55,6 +55,14 @@ def materialize_cellar(project: Path) -> None:
         archive.add(source, arcname="vendored")
 
 
+def make_run_id(pid: int, temporary_name: str) -> str:
+    """Identify one run in image tags. Docker allows only lowercase letters
+    and digits between separators, and temporary directory names can contain
+    underscores, so only the suffix's letters and digits are kept."""
+    suffix = re.sub(r"[^a-z0-9]", "", temporary_name.rsplit("-", 1)[-1].lower())
+    return f"{pid}-{suffix}" if suffix else str(pid)
+
+
 def stable_version(value: str) -> str:
     if re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", value) is None:
         raise argparse.ArgumentTypeError("version must have the form X.Y.Z")
@@ -338,7 +346,7 @@ def main() -> int:
     try:
         with tempfile.TemporaryDirectory(prefix="hpds-container-runtime-") as temporary:
             temporary_root = Path(temporary)
-            run_id = f"{os.getpid()}-{temporary_root.name.rsplit('-', 1)[-1].lower()}"
+            run_id = make_run_id(os.getpid(), temporary_root.name)
             for name, language in fixture_specs:
                 project = temporary_root / name
                 shutil.copytree(FIXTURES / name, project)
