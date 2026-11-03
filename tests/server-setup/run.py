@@ -5,7 +5,8 @@ The container stands in for a newly created Ubuntu 24.04 VM: systemd is PID 1
 and a passwordless-sudo user, `nero`, runs setup with the environment an ssh
 login gives it. After setup, every component the server profile installs is
 smoke-tested as that user, and setup is run a second time to confirm that
-completed steps are idempotent.
+completed steps are idempotent. Each run's terminal output is checked for one
+line per step, and its section of `~/hpds-setup.log` for the full record.
 
 The server profile is x86_64 only, and its systemd services do not start under
 emulation, so the full run needs an x86_64 Linux host with Docker.
@@ -49,12 +50,27 @@ LOGIN_ENV = {
 }
 
 IMAGE_TAG = "hpds-server-setup:local"
-SETUP_LOG = "/tmp/hpds-setup.log"
+# Setup appends each run to this log in the user's home directory, under a
+# header line of its own.
+SETUP_LOG = f"{HOME}/hpds-setup.log"
+LOG_HEADER = "=== hpds setup --profile server ==="
 SETUP_COMMAND = ["hpds", "setup", "--profile", "server", "--yes"]
 PLAN_COMMAND = ["hpds", "setup", "--plan", "--profile", "server"]
-# The line step 1 prints before its one `apt-get update`; a retry after a
+# The line the log holds before each `apt-get update`; a retry after a
 # failed refresh announces itself differently.
 REFRESH_ANNOUNCEMENT = "refreshing apt package lists (needs sudo)"
+# A fresh machine refreshes the package lists twice: once in the system
+# updates step, and once more after the system libraries step adds the
+# Docker and rig sources. A second run finds those sources in place and the lists
+# fresh, so only the system updates refresh them.
+FIRST_RUN_REFRESHES = 2
+RERUN_REFRESHES = 1
+# Next steps the terminal may list beyond the git identity warnings, such
+# as gh's login, Docker group membership, and a pending reboot. A run that
+# needs more is printing more than one line per step.
+NEXT_STEPS_ALLOWANCE = 8
+# A failed step's error lines are indented this far under its step line.
+FAILURE_INDENT = " " * 8
 # hpds downloads the code-server package itself; this host serves the
 # upstream install script it no longer runs.
 CODE_SERVER_SCRIPT_HOST = "code-server.dev"
@@ -129,8 +145,41 @@ class SummaryEntry:
     text: str
 
 
-# Lines `hpds setup` prints straight after its summary.
-SUMMARY_TERMINATORS = ("summary written to ", "setup complete", "error:")
+def log_sections(text: str) -> list[str]:
+    """The runs a setup log holds, oldest first, each from its header line.
+
+    Text before the first header belongs to no run and is dropped.
+    """
+    sections: list[list[str]] = []
+    for line in text.splitlines():
+        if line.rstrip() == LOG_HEADER:
+            sections.append([])
+        if sections:
+            sections[-1].append(line)
+    return ["\n".join(lines) + "\n" for lines in sections]
+
+
+def last_log_section(text: str) -> str:
+    """The most recent run in a setup log.
+
+    Raises ValueError when the log holds no run header.
+    """
+    sections = log_sections(text)
+    if not sections:
+        raise ValueError(f"the setup log has no `{LOG_HEADER}` header")
+    return sections[-1]
+
+
+# Lines `hpds setup` writes straight after its summary, besides the tally:
+# `setup complete` ends a verbose run.
+SUMMARY_TERMINATORS = ("setup complete", "error:")
+TALLY = re.compile(r"(All \d+|\d+ of \d+) steps? succeeded\..*")
+
+
+def ends_summary(line: str) -> bool:
+    """True for a line that follows the summary rather than continuing it."""
+    text = line.strip()
+    return text.startswith(SUMMARY_TERMINATORS) or TALLY.fullmatch(text) is not None
 
 
 def parse_summary(text: str) -> list[SummaryEntry]:
@@ -152,11 +201,7 @@ def parse_summary(text: str) -> list[SummaryEntry]:
             entries.append(SummaryEntry(True, line[4:].strip()))
         elif line.startswith("  ✗ "):
             entries.append(SummaryEntry(False, line[4:].strip()))
-        elif (
-            entries
-            and not entries[-1].ok
-            and not line.lstrip().startswith(SUMMARY_TERMINATORS)
-        ):
+        elif entries and not entries[-1].ok and not ends_summary(line):
             last = entries[-1]
             entries[-1] = SummaryEntry(False, f"{last.text}\n{line.rstrip()}")
         else:
@@ -228,39 +273,139 @@ def summary_order_problems(
     ]
 
 
+BACKGROUND_SUFFIX = " (ran in the background)"
 HEADER = re.compile(r"\[(\d+)/(\d+)\] (.+?)( \(ran in the background\))?")
+STEP_LINE = re.compile(r"\[(\d+)/(\d+)\] (.+) ([✓✗])")
+
+
+def numbered_problems(
+    lines: list[tuple[int, int, str, str]], expected: list[str], what: str
+) -> list[str]:
+    """Every way `(number, count, title, line)` entries stray from the plan.
+
+    Each planned step must appear exactly once, with its own title and the
+    plan's step count.
+    """
+    total = len(expected)
+    seen: dict[int, int] = {}
+    problems: list[str] = []
+    for number, count, title, line in lines:
+        if count != total:
+            problems.append(f"{what} counts {count} steps, the plan {total}: {line}")
+        if not 1 <= number <= total:
+            problems.append(f"{what} numbers a step outside the plan: {line}")
+            continue
+        seen[number] = seen.get(number, 0) + 1
+        if title != expected[number - 1]:
+            problems.append(
+                f"{what} {number} names {title!r}, the plan {expected[number - 1]!r}"
+            )
+    for number in range(1, total + 1):
+        times = seen.get(number, 0)
+        if times != 1:
+            problems.append(f"step {number} has {times} {what}s, expected 1")
+    return problems
 
 
 def header_problems(text: str, expected: list[str]) -> list[str]:
     """Every way the `[n/N] title` step headers in `text` stray from the plan.
 
-    Each planned step must be introduced exactly once, with its own title
+    The log introduces each planned step exactly once, with its own title
     and the plan's step count. A step that ran on the background lane may
-    carry the ` (ran in the background)` suffix.
+    carry the ` (ran in the background)` suffix. Step lines, which end in
+    a ✓ or ✗ mark, are not headers.
     """
-    total = len(expected)
-    seen: dict[int, int] = {}
-    problems: list[str] = []
+    headers: list[tuple[int, int, str, str]] = []
     for line in text.splitlines():
-        match = HEADER.fullmatch(line.rstrip())
+        stripped = line.rstrip()
+        if STEP_LINE.fullmatch(stripped) is not None:
+            continue
+        match = HEADER.fullmatch(stripped)
+        if match is not None:
+            headers.append(
+                (int(match.group(1)), int(match.group(2)), match.group(3), line)
+            )
+    return numbered_problems(headers, expected, "header")
+
+
+def step_line_problems(text: str, expected: list[str]) -> list[str]:
+    """Every way the `[n/N] title ✓` step lines in `text` stray from the plan.
+
+    Each planned step must have exactly one step line, with its own title
+    and the plan's step count, and every step line must carry ✓.
+    """
+    steps: list[tuple[int, int, str, str]] = []
+    failed: list[str] = []
+    for line in text.splitlines():
+        match = STEP_LINE.fullmatch(line.rstrip())
         if match is None:
             continue
-        number, count, title = int(match.group(1)), int(match.group(2)), match.group(3)
-        if count != total:
-            problems.append(f"header counts {count} steps, the plan {total}: {line}")
-        if not 1 <= number <= total:
-            problems.append(f"header numbers a step outside the plan: {line}")
-            continue
-        seen[number] = seen.get(number, 0) + 1
-        if title != expected[number - 1]:
-            problems.append(
-                f"header {number} names {title!r}, the plan {expected[number - 1]!r}"
-            )
-    for number in range(1, total + 1):
-        times = seen.get(number, 0)
-        if times != 1:
-            problems.append(f"step {number} has {times} headers, expected 1")
+        steps.append((int(match.group(1)), int(match.group(2)), match.group(3), line))
+        if match.group(4) != "✓":
+            failed.append(f"step line marks a failure: {line.rstrip()}")
+    return numbered_problems(steps, expected, "step line") + failed
+
+
+def terminal_noise(text: str) -> list[str]:
+    """The lines a compact terminal should not show: step headers without a
+    result mark, and the background marker, both of which belong in the log.
+    """
+    noise: list[str] = []
+    for line in text.splitlines():
+        stripped = line.rstrip()
+        if BACKGROUND_SUFFIX.strip() in stripped:
+            noise.append(f"background marker on the terminal: {stripped}")
+        elif (
+            HEADER.fullmatch(stripped) is not None
+            and STEP_LINE.fullmatch(stripped) is None
+        ):
+            noise.append(f"step header on the terminal: {stripped}")
+    return noise
+
+
+def next_steps(text: str) -> list[str]:
+    """The `  - ` items listed under the last `Next steps:` line."""
+    items: list[str] = []
+    listing = False
+    for line in text.splitlines():
+        if line.rstrip() == "Next steps:":
+            items, listing = [], True
+        elif listing and line.startswith("  - "):
+            items.append(line[4:].rstrip())
+        else:
+            listing = False
+    return items
+
+
+def identity_warning_problems(terminal: str, log: str) -> list[str]:
+    """Each git identity warning missing from the terminal's next steps or
+    from the log's `warning:` lines."""
+    listed = next_steps(terminal)
+    logged = [line for line in log.splitlines() if line.startswith("warning: ")]
+    problems: list[str] = []
+    for warning in IDENTITY_WARNINGS:
+        if not any(warning in item for item in listed):
+            problems.append(f"the terminal's next steps lack {warning!r}")
+        if not any(warning in line for line in logged):
+            problems.append(f"the log has no warning line with {warning!r}")
     return problems
+
+
+def terminal_line_budget(steps: int) -> int:
+    """The most lines a compact run may print for `steps` steps: one per
+    step, the opening line, the tally, `Next steps:` and its allowance.
+    """
+    return steps + 3 + len(IDENTITY_WARNINGS) + NEXT_STEPS_ALLOWANCE
+
+
+def terminal_line_count(text: str) -> int:
+    """The non-blank terminal lines that count against the budget. A failed
+    step's indented error lines are left to the summary check."""
+    return sum(
+        1
+        for line in text.splitlines()
+        if line.strip() and not line.startswith(FAILURE_INDENT)
+    )
 
 
 def count_lines(text: str, wanted: str) -> int:
@@ -513,46 +658,86 @@ class Checks:
             detail += f"\n{status.text}\n{journal.text}"
         self.record(name, active.code == 0, detail, required=required)
 
-    def setup_summary(self, name: str, expected: list[str], run_output: Output) -> None:
-        log = self.container.exec(["cat", SETUP_LOG])
+    def setup_summary(self, name: str, expected: list[str], run: SetupRun) -> None:
+        """Check the summary in the run's log section: every planned step ✓."""
         problems: list[str] = []
-        if run_output.code != 0:
-            problems.append(f"setup exited {run_output.code}")
-        if log.code != 0:
-            problems.append(f"{SETUP_LOG} is missing: {log.text.strip()}")
+        if run.output.code != 0:
+            problems.append(f"setup exited {run.output.code}")
+        if run.log_problem:
+            problems.append(run.log_problem)
         else:
-            entries = parse_summary(log.text)
+            entries = parse_summary(run.log)
             problems += summary_problems(expected, entries)
             problems += summary_order_problems(expected, entries)
         detail = "\n".join(problems)
         if problems:
-            detail += f"\n\nsetup output:\n{run_output.text}"
+            detail += f"\n\nsetup output:\n{run.output.text}"
         self.record(name, not problems, detail)
 
     def setup_output(
         self, prefix: str, expected: list[str], run: SetupRun, *, first: bool
     ) -> None:
-        """Check what a setup run printed, and report how long it took."""
-        text = run.output.text
-        problems = header_problems(text, expected)
+        """Check what a setup run printed and logged, and report how long it took."""
+        terminal = run.output.text
+        problems = step_line_problems(terminal, expected) + terminal_noise(terminal)
         self.record(
-            f"{prefix}: one header per step",
+            f"{prefix}: one step line per step",
             not problems,
-            "\n".join(problems) + f"\n\nsetup output:\n{text}",
+            "\n".join(problems) + f"\n\nsetup output:\n{terminal}",
         )
-        if first:
-            count = count_lines(text, REFRESH_ANNOUNCEMENT)
-            self.record(
-                f"{prefix}: one apt refresh",
-                count == 1,
-                f"{REFRESH_ANNOUNCEMENT!r} appears {count} time(s)\n\nsetup output:\n{text}",
+
+        budget = terminal_line_budget(len(expected))
+        used = terminal_line_count(terminal)
+        self.record(
+            f"{prefix}: terminal line budget",
+            used <= budget,
+            f"the terminal shows {used} lines, over the budget of {budget}"
+            f"\n\nsetup output:\n{terminal}",
+            note=f"{used}/{budget} lines",
+        )
+
+        sections = 1 if first else 2
+        if run.log_problem:
+            log_problems = [run.log_problem]
+        else:
+            log_problems = header_problems(run.log, expected) + step_line_problems(
+                run.log, expected
             )
-        mentions = lines_mentioning(text, CODE_SERVER_SCRIPT_HOST)
+            if run.sections != sections:
+                log_problems.append(
+                    f"{SETUP_LOG} holds {run.sections} run section(s), expected {sections}"
+                )
+        self.record(
+            f"{prefix}: log records every step",
+            not log_problems,
+            "\n".join(log_problems) + f"\n\n{SETUP_LOG}, last run:\n{run.log}",
+        )
+
+        refreshes = FIRST_RUN_REFRESHES if first else RERUN_REFRESHES
+        count = count_lines(run.log, REFRESH_ANNOUNCEMENT)
+        self.record(
+            f"{prefix}: apt refresh count",
+            not run.log_problem and count == refreshes,
+            run.log_problem
+            or f"{REFRESH_ANNOUNCEMENT!r} appears {count} time(s) in the log, "
+            f"expected {refreshes}\n\n{SETUP_LOG}, last run:\n{run.log}",
+        )
+
+        # The log holds every command's output, which may mention the host
+        # for unrelated reasons, so only the logged command lines count.
+        logged_commands = "\n".join(
+            line for line in run.log.splitlines() if line.startswith("$ ")
+        )
+        mentions = lines_mentioning(terminal, CODE_SERVER_SCRIPT_HOST) + (
+            lines_mentioning(logged_commands, CODE_SERVER_SCRIPT_HOST)
+        )
         self.record(
             f"{prefix}: no code-server install script",
             not mentions,
-            f"the output mentions {CODE_SERVER_SCRIPT_HOST}:\n" + "\n".join(mentions),
+            f"the output or log mentions {CODE_SERVER_SCRIPT_HOST}:\n"
+            + "\n".join(mentions),
         )
+
         took = format_seconds(run.seconds)
         within = not first or run.seconds <= FIRST_RUN_BUDGET
         self.record(
@@ -588,7 +773,7 @@ class Checks:
         )
 
 
-def smoke_checks(checks: Checks, first_run: Output) -> None:
+def smoke_checks(checks: Checks, first_run: SetupRun) -> None:
     c = checks.container
 
     # Docker Engine. The packages' postinst starts dockerd, which depends on
@@ -707,13 +892,17 @@ def smoke_checks(checks: Checks, first_run: Output) -> None:
         'f="$(git config --global core.excludesFile)" && test -n "$f" && cat "$f"',
         expect=VACCINATE_MARKER,
     )
-    absent_warnings = [
-        warning for warning in IDENTITY_WARNINGS if warning not in first_run.text
-    ]
+    # A pending reboot or other next steps may be listed too; only the
+    # identity warnings are required.
+    identity = (
+        [first_run.log_problem]
+        if first_run.log_problem
+        else identity_warning_problems(first_run.output.text, first_run.log)
+    )
     checks.record(
         "git: missing identity warnings",
-        not absent_warnings,
-        f"setup output lacks {absent_warnings}",
+        not identity,
+        "\n".join(identity) + f"\n\nsetup output:\n{first_run.output.text}",
     )
 
 
@@ -759,18 +948,38 @@ def install_hpds(docker: str, container: Container, binary: Path) -> None:
 
 @dataclass(frozen=True)
 class SetupRun:
+    # What the run printed on the terminal.
     output: Output
     seconds: float
+    # The run's own section of the setup log, from its header line.
+    log: str = ""
+    # How many run sections the whole log holds.
+    sections: int = 0
+    # Why the log could not be read or split, if it could not.
+    log_problem: str = ""
+
+
+def read_setup_log(text: str, code: int) -> tuple[str, int, str]:
+    """The last run section of the log, the number of sections, and a
+    problem when `cat` failed (`code`) or the log holds no run."""
+    if code != 0:
+        return "", 0, f"{SETUP_LOG} is missing: {text.strip()}"
+    try:
+        return last_log_section(text), len(log_sections(text)), ""
+    except ValueError as error:
+        return "", 0, f"{SETUP_LOG}: {error}"
 
 
 def run_setup(container: Container, timeout: float, label: str) -> SetupRun:
-    """Run setup once, timing it and printing the time on a line of its own."""
-    container.exec(["rm", "-f", SETUP_LOG], root=True)
+    """Run setup once, timing it and printing the time on a line of its own,
+    then read its section of the log, which each run appends to."""
     start = time.monotonic()
     output = container.exec(SETUP_COMMAND, timeout=timeout, stream=True)
     seconds = time.monotonic() - start
     print(f"{label} took {format_seconds(seconds)}", flush=True)
-    return SetupRun(output, seconds)
+    log = container.exec(["cat", SETUP_LOG])
+    section, sections, problem = read_setup_log(log.text, log.code)
+    return SetupRun(output, seconds, section, sections, problem)
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -871,11 +1080,11 @@ def main(argv: list[str] | None = None) -> int:
             return finish(checks)
 
         first = run_setup(container, args.setup_timeout, "setup")
-        checks.setup_summary("setup: every step succeeds", titles, first.output)
+        checks.setup_summary("setup: every step succeeds", titles, first)
         checks.setup_output("setup", titles, first, first=True)
-        smoke_checks(checks, first.output)
+        smoke_checks(checks, first)
         second = run_setup(container, args.rerun_timeout, "setup again")
-        checks.setup_summary("setup again: every step succeeds", titles, second.output)
+        checks.setup_summary("setup again: every step succeeds", titles, second)
         checks.setup_output("setup again", titles, second, first=False)
         return finish(checks)
     finally:
