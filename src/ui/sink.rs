@@ -126,6 +126,24 @@ pub fn with_log_path<T>(path: Option<PathBuf>, f: impl FnOnce() -> T) -> T {
     f()
 }
 
+/// Open a fresh log, `hpds-setup.log` in a new temp dir, as the calling
+/// thread's log. The dir lives as long as the returned guard.
+#[cfg(test)]
+pub(crate) fn temp_log() -> (tempfile::TempDir, PathBuf) {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("hpds-setup.log");
+    open_log(&path).unwrap();
+    (dir, path)
+}
+
+/// Close the calling thread's log and return what `path` holds, or the
+/// empty string when nothing was written.
+#[cfg(test)]
+pub(crate) fn read_log(path: &Path) -> String {
+    close_log();
+    std::fs::read_to_string(path).unwrap_or_default()
+}
+
 /// Append `line` to the calling thread's open log, if any.
 ///
 /// A write that fails after the log was opened (a full disk, a file

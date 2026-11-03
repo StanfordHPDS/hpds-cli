@@ -24,6 +24,9 @@ use anyhow::anyhow;
 pub use fetch::{CacheFetcher, ReleaseFetcher};
 pub(crate) use fetch::{ReleaseAsset, latest_release_asset};
 pub(crate) use runner::command_failure;
+pub(crate) use runner::logged_output;
+#[cfg(test)]
+pub(crate) use runner::shell_word;
 pub use runner::{CommandOutput, CommandRunner, LoggingRunner, SystemRunner};
 
 use crate::tools::Os;

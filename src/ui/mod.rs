@@ -28,6 +28,8 @@ use sink::Report;
 pub(crate) use sink::is_compact;
 pub use sink::{ReportKind, close_log, compact, open_log, take_reports};
 pub use sink::{log_path, with_log_path};
+#[cfg(test)]
+pub(crate) use sink::{read_log, temp_log};
 
 #[allow(unused_imports)] // consumed only by unit tests today; part of the ui API
 pub use error::render_error;
@@ -401,18 +403,6 @@ mod tests {
 
     fn transcript_lines(transcript: &Transcript) -> Vec<(Stream, String)> {
         transcript.lines()
-    }
-
-    fn temp_log() -> (tempfile::TempDir, std::path::PathBuf) {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("hpds-setup.log");
-        open_log(&path).unwrap();
-        (dir, path)
-    }
-
-    fn read_log(path: &std::path::Path) -> String {
-        close_log();
-        std::fs::read_to_string(path).unwrap_or_default()
     }
 
     #[test]

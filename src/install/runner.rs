@@ -56,11 +56,7 @@ impl CommandRunner for SystemRunner {
             .args(args)
             .output()
             .with_context(|| format!("could not run `{program}`"))?;
-        Ok(CommandOutput {
-            success: output.status.success(),
-            stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
-            stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
-        })
+        Ok(CommandOutput::from(&output))
     }
 }
 
@@ -85,20 +81,73 @@ impl CommandRunner for LoggingRunner<'_> {
     }
 
     fn run(&self, program: &str, args: &[&str]) -> anyhow::Result<CommandOutput> {
-        ui::log_detail(&format!("$ {}", shell_line(program, args)));
-        let output = match self.inner.run(program, args) {
-            Ok(output) => output,
-            Err(err) => {
-                ui::log_detail(&format!("failed to start: {err:#}"));
-                return Err(err);
-            }
-        };
-        let status = if output.success { "success" } else { "failed" };
-        ui::log_detail(&format!("status: {status}"));
-        log_block("stdout", &output.stdout);
-        log_block("stderr", &output.stderr);
-        Ok(output)
+        log_command_start(program, args);
+        let result = self.inner.run(program, args);
+        match &result {
+            Ok(output) => log_command_outcome(Ok(output)),
+            Err(err) => log_command_outcome(Err(err)),
+        }
+        result
     }
+}
+
+impl From<&std::process::Output> for CommandOutput {
+    /// A finished process's output, with stdout and stderr decoded as
+    /// lossy UTF-8.
+    fn from(output: &std::process::Output) -> Self {
+        Self {
+            success: output.status.success(),
+            stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
+            stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
+        }
+    }
+}
+
+/// Write the opening line of a command's log block, `$ program args`, with
+/// each word shell-quoted as in [`shell_line`]. Shared by [`LoggingRunner`]
+/// and every other place that spawns a process directly, so all command
+/// blocks in the log read the same.
+pub(crate) fn log_command_start<S: AsRef<OsStr>>(program: &str, args: &[S]) {
+    let words: Vec<String> = args
+        .iter()
+        .map(|arg| arg.as_ref().to_string_lossy().into_owned())
+        .collect();
+    let words: Vec<&str> = words.iter().map(String::as_str).collect();
+    ui::log_detail(&format!("$ {}", shell_line(program, &words)));
+}
+
+/// Write the rest of a command's log block: on `Ok`, `status: success` or
+/// `status: failed` followed by its `stdout:` and `stderr:` blocks (each
+/// omitted when whitespace-only); on `Err`, the spawn error as
+/// `failed to start: {err:#}`.
+pub(crate) fn log_command_outcome(outcome: Result<&CommandOutput, &dyn std::fmt::Display>) {
+    match outcome {
+        Ok(output) => {
+            let status = if output.success { "success" } else { "failed" };
+            ui::log_detail(&format!("status: {status}"));
+            log_block("stdout", &output.stdout);
+            log_block("stderr", &output.stderr);
+        }
+        Err(err) => ui::log_detail(&format!("failed to start: {err:#}")),
+    }
+}
+
+/// Spawn `command`, wait for it, and log it as a command block via
+/// [`log_command_start`] and [`log_command_outcome`]: `program` and `args`
+/// name it in the `$` line and must match what `command` was built with.
+/// The output, or the raw spawn error, is returned unchanged.
+pub(crate) fn logged_output<S: AsRef<OsStr>>(
+    program: &str,
+    args: &[S],
+    command: &mut std::process::Command,
+) -> std::io::Result<std::process::Output> {
+    log_command_start(program, args);
+    let result = command.output();
+    match &result {
+        Ok(output) => log_command_outcome(Ok(&CommandOutput::from(output))),
+        Err(err) => log_command_outcome(Err(err)),
+    }
+    result
 }
 
 /// Log `text` under a `label:` line with each line indented two spaces;
@@ -155,7 +204,7 @@ fn shell_line(program: &str, args: &[&str]) -> String {
 
 /// One shell word: bare for `[A-Za-z0-9-_./=:,+@%]`, else single-quoted with
 /// each `'` written as `'\''`. The empty word is `''`.
-fn shell_word(word: &str) -> String {
+pub(crate) fn shell_word(word: &str) -> String {
     let bare = !word.is_empty()
         && word
             .chars()
@@ -401,19 +450,7 @@ mod tests {
         use super::super::*;
         use crate::install::test_support::FakeRunner;
         use crate::ui;
-        use std::path::Path;
-
-        fn temp_log() -> (tempfile::TempDir, PathBuf) {
-            let dir = tempfile::tempdir().unwrap();
-            let path = dir.path().join("hpds-setup.log");
-            ui::open_log(&path).unwrap();
-            (dir, path)
-        }
-
-        fn read_log(path: &Path) -> String {
-            ui::close_log();
-            std::fs::read_to_string(path).unwrap_or_default()
-        }
+        use crate::ui::{read_log, temp_log};
 
         #[test]
         fn is_send_and_sync_so_it_can_serve_the_background_lane() {
@@ -658,6 +695,100 @@ mod tests {
                  status: failed\n\
                  stderr:\n\
                  \x20 error: offline\n"
+            );
+        }
+
+        /// The log-only lines `f` writes, as recorded inside a capture.
+        fn captured_lines(f: impl FnOnce()) -> Vec<String> {
+            let ((), transcript) = ui::capture(f);
+            transcript
+                .entries()
+                .iter()
+                .flat_map(|line| line.message.lines().map(str::to_string).collect::<Vec<_>>())
+                .collect()
+        }
+
+        #[test]
+        fn shared_helpers_write_the_same_block_as_the_logging_runner() {
+            let stdout = "info: syncing\r\ninfo: done\n";
+            let stderr = "warning: it's slow\n";
+            let fake = FakeRunner::default().with_failure_output(
+                "rustup update stable channel",
+                stdout,
+                stderr,
+            );
+            let logging = LoggingRunner::new(&fake);
+            let from_runner = captured_lines(|| {
+                logging
+                    .run("rustup", &["update", "stable channel"])
+                    .unwrap();
+            });
+            let output = super::failed(stdout, stderr);
+            let from_helpers = captured_lines(|| {
+                log_command_start("rustup", &["update", "stable channel"]);
+                log_command_outcome(Ok(&output));
+            });
+            assert_eq!(
+                from_runner,
+                [
+                    "$ rustup update 'stable channel'",
+                    "status: failed",
+                    "stdout:",
+                    "  info: syncing",
+                    "  info: done",
+                    "stderr:",
+                    "  warning: it's slow",
+                ]
+            );
+            assert_eq!(from_helpers, from_runner);
+        }
+
+        #[test]
+        fn shared_helpers_log_a_successful_command_with_os_string_args() {
+            let output = CommandOutput {
+                success: true,
+                stdout: "\n".to_string(),
+                stderr: String::new(),
+            };
+            let path = std::ffi::OsString::from("/home/analyst/.gitignore");
+            let lines = captured_lines(|| {
+                log_command_start(
+                    "git",
+                    &[
+                        OsStr::new("config"),
+                        OsStr::new("--global"),
+                        OsStr::new("core.excludesFile"),
+                        path.as_os_str(),
+                    ],
+                );
+                log_command_outcome(Ok(&output));
+            });
+            assert_eq!(
+                lines,
+                [
+                    "$ git config --global core.excludesFile /home/analyst/.gitignore",
+                    "status: success",
+                ]
+            );
+        }
+
+        #[test]
+        fn shared_helpers_log_a_spawn_error_with_its_causes() {
+            let err = anyhow::Error::new(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                "permission denied",
+            ))
+            .context("could not run `git`");
+            let (_dir, path) = temp_log();
+            let ((), written) = ui::tap_terminal(|| {
+                log_command_start("git", &["init"]);
+                log_command_outcome(Err(&err));
+            });
+            assert!(written.is_empty(), "written was: {written:?}");
+            assert_eq!(
+                read_log(&path),
+                "$ git init\n\
+                 failed to start: could not run `git`: permission denied\n"
             );
         }
 

@@ -22,6 +22,7 @@ use std::process::{Command, Output};
 
 use anyhow::Context;
 
+use crate::install::logged_output;
 use crate::ui::{self, HintExt};
 
 /// The lab's GitHub organization, used when `--org` is not given.
@@ -298,12 +299,19 @@ fn gh_create_args(target: &str, visibility: Visibility) -> Vec<String> {
 /// Run `gh` with `args`, capturing output. A missing binary is a distinct,
 /// actionable error.
 fn gh(cwd: &Path, args: &[&str]) -> anyhow::Result<Output> {
-    match Command::new(super::gh_program())
-        .args(args)
-        .current_dir(cwd)
-        .output()
-    {
+    gh_with(&super::gh_program(), cwd, args)
+}
+
+/// [`gh`] with the `gh` executable given, so tests choose it without
+/// touching the environment. The command block is logged.
+fn gh_with(program: &std::ffi::OsStr, cwd: &Path, args: &[&str]) -> anyhow::Result<Output> {
+    match logged_output(
+        &program.to_string_lossy(),
+        args,
+        Command::new(program).args(args).current_dir(cwd),
+    ) {
         Ok(out) => Ok(out),
+        Err(err) if !cwd.exists() => missing_cwd(err, "gh", args, cwd),
         Err(err) if err.kind() == io::ErrorKind::NotFound => Err(anyhow::anyhow!(
             "the GitHub CLI (`gh`) is not installed or not on PATH"
         ))
@@ -312,11 +320,25 @@ fn gh(cwd: &Path, args: &[&str]) -> anyhow::Result<Output> {
     }
 }
 
-/// Run `git` with `args`, capturing output. A missing binary is a distinct,
-/// actionable error.
+/// The failure for a spawn that failed because `cwd` does not exist, naming
+/// the directory instead of blaming the program.
+fn missing_cwd(err: io::Error, program: &str, args: &[&str], cwd: &Path) -> anyhow::Result<Output> {
+    Err(err)
+        .context(format!(
+            "could not run `{program} {}` in {}: the directory does not exist",
+            args.join(" "),
+            cwd.display()
+        ))
+        .hint("check the path, then re-run `hpds repo create`")
+}
+
+/// Run `git` with `args` in `cwd`, capturing output and logging the command
+/// block. A missing binary and a missing `cwd` are distinct, actionable
+/// errors.
 fn git(cwd: &Path, args: &[&str]) -> anyhow::Result<Output> {
-    match Command::new("git").args(args).current_dir(cwd).output() {
+    match logged_output("git", args, Command::new("git").args(args).current_dir(cwd)) {
         Ok(out) => Ok(out),
+        Err(err) if !cwd.exists() => missing_cwd(err, "git", args, cwd),
         Err(err) if err.kind() == io::ErrorKind::NotFound => {
             Err(anyhow::anyhow!("`git` is not installed or not on PATH"))
                 .hint("install git from https://git-scm.com/, then re-run `hpds repo create`")
@@ -457,6 +479,136 @@ mod tests {
                 );
             }
             other => panic!("expected NestedInside, got {other:?}"),
+        }
+    }
+
+    mod logging {
+        use super::super::*;
+        use crate::install::shell_word;
+        use crate::ui::{read_log, temp_log};
+
+        #[test]
+        fn a_successful_git_call_logs_its_command_and_output() {
+            let tmp = tempfile::tempdir().unwrap();
+            let (_log_dir, log) = temp_log();
+            let (result, written) = ui::tap_terminal(|| git(tmp.path(), &["init"]));
+            assert!(result.unwrap().status.success());
+            assert!(written.is_empty(), "written was: {written:?}");
+            let logged = read_log(&log);
+            assert!(
+                logged.starts_with("$ git init\nstatus: success\nstdout:\n  "),
+                "log was: {logged:?}"
+            );
+        }
+
+        #[test]
+        fn a_failing_git_call_logs_its_stderr_and_returns_the_output_unchanged() {
+            let tmp = tempfile::tempdir().unwrap();
+            let (_log_dir, log) = temp_log();
+            let (result, written) = ui::tap_terminal(|| {
+                git(
+                    tmp.path(),
+                    &["rev-parse", "--verify", "refs/heads/hpds missing"],
+                )
+            });
+            let out = result.unwrap();
+            assert!(!out.status.success());
+            assert!(written.is_empty(), "written was: {written:?}");
+            let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
+            assert!(!stderr.trim().is_empty(), "git must explain the failure");
+            let mut expected = format!(
+                "$ git rev-parse --verify {}\nstatus: failed\nstderr:\n",
+                shell_word("refs/heads/hpds missing")
+            );
+            for line in stderr.lines() {
+                expected.push_str(&format!("  {line}\n"));
+            }
+            assert_eq!(read_log(&log), expected);
+        }
+
+        #[test]
+        fn a_spawn_error_is_logged_and_returned_unchanged() {
+            let tmp = tempfile::tempdir().unwrap();
+            let missing = tmp.path().join("missing");
+            let (_log_dir, log) = temp_log();
+            let (result, written) =
+                ui::tap_terminal(|| git(&missing, &["rev-parse", "--show-toplevel"]));
+            assert!(written.is_empty(), "written was: {written:?}");
+            result.expect_err("a missing working directory must fail to start");
+            let logged = read_log(&log);
+            assert!(
+                logged.starts_with("$ git rev-parse --show-toplevel\nfailed to start: "),
+                "log was: {logged:?}"
+            );
+            assert_eq!(logged.lines().count(), 2, "log was: {logged:?}");
+        }
+
+        #[test]
+        fn a_missing_working_directory_is_named_instead_of_blaming_git() {
+            let tmp = tempfile::tempdir().unwrap();
+            let missing = tmp.path().join("missing");
+            let (result, _) = ui::capture(|| git(&missing, &["init"]));
+            let err = result.expect_err("a missing working directory must fail");
+            let rendered = crate::ui::render_error(&err, false);
+            assert!(
+                rendered.contains(&format!(
+                    "could not run `git init` in {}: the directory does not exist",
+                    missing.display()
+                )),
+                "rendered was: {rendered}"
+            );
+            assert!(
+                rendered.contains("hint: check the path, then re-run `hpds repo create`"),
+                "rendered was: {rendered}"
+            );
+            assert!(
+                !rendered.contains("not installed"),
+                "rendered was: {rendered}"
+            );
+        }
+
+        #[test]
+        fn a_missing_working_directory_is_named_instead_of_blaming_gh() {
+            let tmp = tempfile::tempdir().unwrap();
+            let missing = tmp.path().join("missing");
+            let (result, _) =
+                ui::capture(|| gh_with(std::ffi::OsStr::new("git"), &missing, &["repo", "view"]));
+            let err = result.expect_err("a missing working directory must fail");
+            let rendered = crate::ui::render_error(&err, false);
+            assert!(
+                rendered.contains(&format!(
+                    "could not run `gh repo view` in {}: the directory does not exist",
+                    missing.display()
+                )),
+                "rendered was: {rendered}"
+            );
+            assert!(
+                rendered.contains("hint: check the path, then re-run `hpds repo create`"),
+                "rendered was: {rendered}"
+            );
+            assert!(
+                !rendered.contains("not installed"),
+                "rendered was: {rendered}"
+            );
+        }
+
+        #[test]
+        fn a_gh_spawn_error_is_logged() {
+            let tmp = tempfile::tempdir().unwrap();
+            let gh = tmp.path().join("no-such-gh");
+            let (_log_dir, log) = temp_log();
+            let (result, written) =
+                ui::tap_terminal(|| gh_with(gh.as_os_str(), tmp.path(), &["repo", "view", "a b"]));
+            assert!(written.is_empty(), "written was: {written:?}");
+            result.expect_err("a missing gh must fail to start");
+            let logged = read_log(&log);
+            let start = format!(
+                "$ {} repo view {}\nfailed to start: ",
+                shell_word(&gh.to_string_lossy()),
+                shell_word("a b")
+            );
+            assert!(logged.starts_with(&start), "log was: {logged:?}");
+            assert_eq!(logged.lines().count(), 2, "log was: {logged:?}");
         }
     }
 

@@ -346,9 +346,7 @@ fn pop_frame() -> Vec<Line> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ui::sink::{Report, ReportKind, close_log, compact, open_log, take_reports};
-    use std::fs;
-    use std::path::{Path, PathBuf};
+    use crate::ui::sink::{Report, ReportKind, compact, read_log, take_reports, temp_log};
 
     fn line(stream: Stream, text: &str) -> (Stream, String) {
         (stream, text.to_string())
@@ -365,20 +363,6 @@ mod tests {
 
     fn err(text: &str) {
         say(LineKind::Notice, text);
-    }
-
-    /// Open a fresh log in a new temp dir; the dir lives as long as the
-    /// returned guard.
-    fn temp_log() -> (tempfile::TempDir, PathBuf) {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("hpds-setup.log");
-        open_log(&path).unwrap();
-        (dir, path)
-    }
-
-    fn read_log(path: &Path) -> String {
-        close_log();
-        fs::read_to_string(path).unwrap_or_default()
     }
 
     /// One line of each terminal kind, styled with color codes, plus a
