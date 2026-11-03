@@ -34,7 +34,7 @@ pub(crate) fn describe(action: &ServerAction) -> &'static str {
             "merge RStudio preferences: insert_native_pipe_operator=true save_workspace=never load_workspace=never rainbow_parentheses=true rainbow_fenced_divs=true"
         }
         ServerAction::InstallCodeServer => {
-            "if code-server is still missing, download and verify its package as in step 1 and install it with sudo env DEBIAN_FRONTEND=noninteractive NEEDRESTART_SUSPEND=1 apt-get -o DPkg::Lock::Timeout=600 install -y <verified code-server package>"
+            "if code-server is still missing, download and verify its package as in step 2 and install it with sudo env DEBIAN_FRONTEND=noninteractive NEEDRESTART_SUSPEND=1 apt-get -o DPkg::Lock::Timeout=600 install -y <verified code-server package>"
         }
         ServerAction::CodeServer => {
             "set quarto.path to <home>/.local/bin/quarto and systemctl enable --now code-server@<user>"
@@ -250,7 +250,15 @@ pub(crate) trait ServerHost {
     fn acquire_verified_rustup_init(&self) -> Result<PathBuf>;
     fn acquire_docker_key(&self, runner: &dyn CommandRunner) -> Result<Vec<u8>>;
     fn acquire_code_server_package(&self) -> Result<CodeServerPackage>;
+    /// The marker file whose presence means a reboot is pending to finish
+    /// installed package updates.
+    fn reboot_required_path(&self) -> PathBuf {
+        PathBuf::from(REBOOT_REQUIRED)
+    }
 }
+
+/// Where Ubuntu marks that a reboot is pending to finish package updates.
+pub(crate) const REBOOT_REQUIRED: &str = "/var/run/reboot-required";
 
 pub(crate) struct SystemServerHost<'a> {
     runner: &'a (dyn CommandRunner + Sync),

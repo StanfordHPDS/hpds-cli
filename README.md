@@ -178,13 +178,15 @@ The supported way to provision a lab server is:
 $ hpds setup --profile server --yes
 ```
 
-The Linux-only server profile installs the official Docker Engine packages,
-stable Rust, R, Python, Quarto, TinyTeX, RStudio Server, code-server, and the
+The Linux-only server profile first applies pending Ubuntu updates
+(`apt-get update` and `apt-get upgrade`), then installs the official Docker
+Engine packages, stable Rust, R, Python, Quarto, TinyTeX, RStudio Server, code-server, and the
 lab command-line tools. It adds the invoking user to the Docker group, merges
 the managed RStudio and code-server preferences, and enables that user's
 code-server service. Log in again after the run before using Docker without
-`sudo`. The profile does not install Miniconda, perform a blanket system
-upgrade, or reboot the server. With `--yes`, the user-space installs (Rust,
+`sudo`. When the updates leave a reboot pending, setup says so under its next
+steps; it never reboots the server itself. The profile does not install
+Miniconda. With `--yes`, the user-space installs (Rust,
 Quarto, TinyTeX, gh, DuckDB, and uv with its tools) run on a background thread
 while the system steps run. Each one's output appears under its step header,
 marked as having run in the background, at the first step boundary after it

@@ -20,6 +20,7 @@
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Condvar, Mutex, MutexGuard, PoisonError, mpsc};
 
 use anyhow::anyhow;
@@ -82,7 +83,11 @@ enum Lane {
     Background,
 }
 
-/// The server profile's first step, which installs every selected step's
+/// The server profile's first step, which brings the installed system
+/// packages up to date (see [`Action::SystemUpdates`]).
+const SYSTEM_UPDATES: &str = "system updates (apt upgrade)";
+
+/// The server profile's second step, which installs every selected step's
 /// apt packages in one transaction (see [`Action::AptPrelude`]).
 const SYSTEM_LIBRARIES: &str = "system libraries (apt)";
 
@@ -107,6 +112,10 @@ enum Action {
     StepPackages(&'static str),
     /// Reconcile one typed server-host concern without shell evaluation.
     Server(server::ServerAction),
+    /// Refresh the package lists and upgrade the installed packages, then
+    /// warn when the host reports that a reboot is pending. hpds never
+    /// reboots on its own.
+    SystemUpdates,
 }
 
 /// A planned external command: announced, logged at `-v`, and executed
@@ -249,11 +258,11 @@ const PYTHON_PACKAGES: &[&str] = &["python3", "python3-pip", "python3-venv"];
 /// dev profile installs. Every external command is a static plan run
 /// through the runner seam; nothing shells out behind the plan's back.
 ///
-/// The first step installs every selected step's apt packages in one
-/// transaction (each step's `apt` share); the steps that own those
-/// packages keep their own install paths, which find the packages
-/// installed and do nothing, or install them when the first step could
-/// not.
+/// The first step brings the installed packages up to date. The second
+/// installs every selected step's apt packages in one transaction (each
+/// step's `apt` share); the steps that own those packages keep their own
+/// install paths, which find the packages installed and do nothing, or
+/// install them when the second step could not.
 ///
 /// The background lane holds the steps that touch only the invoking
 /// user's files and never use sudo, apt, or a prompt under `--yes`. The
@@ -264,6 +273,13 @@ const PYTHON_PACKAGES: &[&str] = &["python3", "python3-pip", "python3-venv"];
 /// other background steps download over TLS with hpds's own client or
 /// rustup's, so they start right away.
 const SERVER_STEPS: &[Step] = &[
+    Step {
+        title: SYSTEM_UPDATES,
+        lane: Lane::Foreground,
+        requires: &[],
+        apt: AptShare::None,
+        actions: &[Action::SystemUpdates],
+    },
     Step {
         title: SYSTEM_LIBRARIES,
         lane: Lane::Foreground,
@@ -495,7 +511,51 @@ fn describe(step: &Step, action: &Action, all: &[Step]) -> Vec<String> {
             }]
         }
         Action::Server(action) => vec![server::describe(action).to_string()],
+        Action::SystemUpdates => vec![
+            install::apt_get_command_line(&["update"]),
+            install::apt_get_command_line(UPGRADE_ARGS),
+            format!(
+                "if {} exists afterwards: warn that a reboot is pending (hpds never reboots)",
+                server::REBOOT_REQUIRED
+            ),
+        ],
     }
+}
+
+/// The `apt-get upgrade` arguments: keep a locally changed configuration
+/// file and take the package's default for any other, so dpkg never
+/// prompts.
+const UPGRADE_ARGS: &[&str] = &[
+    "-o",
+    "Dpkg::Options::=--force-confdef",
+    "-o",
+    "Dpkg::Options::=--force-confold",
+    "upgrade",
+    "-y",
+];
+
+/// The warning raised when the host reports a pending reboot after the
+/// system updates.
+const REBOOT_PENDING: &str = "a reboot is pending to finish the system updates; run `sudo reboot`";
+
+/// Refresh the package lists and upgrade the installed packages, recording
+/// in `run` that the lists are fresh once the refresh succeeds. A failed
+/// refresh skips the upgrade. Whether or not the upgrade succeeds, a
+/// pending reboot is reported as a warning; hpds never reboots on its own.
+fn system_updates(deps: &SetupDeps, run: &Run) -> anyhow::Result<()> {
+    deps.install
+        .run_apt_step("refreshing apt package lists", &["update"])?;
+    run.mark_lists_refreshed();
+    let upgraded = deps
+        .install
+        .run_apt_step("upgrading the installed packages", UPGRADE_ARGS);
+    if deps
+        .server_host
+        .exists(&deps.server_host.reboot_required_path())
+    {
+        ui::warn(REBOOT_PENDING);
+    }
+    upgraded.map(|_| ())
 }
 
 /// Reduce the full step list to what should actually run: `--yes` takes
@@ -643,11 +703,13 @@ impl Render {
     }
 }
 
-/// What every step of one run shares: the selected steps, and the steps
-/// whose own apt packages the apt prelude has installed.
+/// What every step of one run shares: the selected steps, the steps
+/// whose own apt packages the apt prelude has installed, and whether the
+/// system updates have refreshed the package lists.
 struct Run<'s> {
     selected: &'s [Step],
     covered: Mutex<HashSet<&'static str>>,
+    lists_refreshed: AtomicBool,
 }
 
 impl<'s> Run<'s> {
@@ -655,7 +717,18 @@ impl<'s> Run<'s> {
         Run {
             selected,
             covered: Mutex::new(HashSet::new()),
+            lists_refreshed: AtomicBool::new(false),
         }
+    }
+
+    /// Record that the system updates refreshed the package lists.
+    fn mark_lists_refreshed(&self) {
+        self.lists_refreshed.store(true, Ordering::SeqCst);
+    }
+
+    /// Whether the system updates refreshed the package lists in this run.
+    fn lists_refreshed(&self) -> bool {
+        self.lists_refreshed.load(Ordering::SeqCst)
     }
 
     /// Record that the apt prelude installed these steps' packages.
@@ -1006,7 +1079,7 @@ fn run_actions(step: &Step, deps: &SetupDeps, run: &Run) -> anyhow::Result<()> {
                 }
             }
             Action::AptPrelude => {
-                let covered = prelude::run(run.selected, deps)?;
+                let covered = prelude::run(run.selected, deps, run.lists_refreshed())?;
                 run.cover(covered);
             }
             Action::StepPackages(name) => {
@@ -1026,6 +1099,7 @@ fn run_actions(step: &Step, deps: &SetupDeps, run: &Run) -> anyhow::Result<()> {
             Action::Server(action) => {
                 server::run(action, deps.server_host, deps.install.runner)?;
             }
+            Action::SystemUpdates => system_updates(deps, run)?,
         }
     }
     Ok(())
@@ -1423,7 +1497,14 @@ mod tests {
         fn acquire_code_server_package(&self) -> anyhow::Result<server::CodeServerPackage> {
             Err(anyhow!("this host downloads nothing"))
         }
+        fn reboot_required_path(&self) -> std::path::PathBuf {
+            // Never the real marker, so a pending reboot on the machine
+            // running the tests cannot leak into them.
+            NO_REBOOT_MARKER.into()
+        }
     }
+    /// A reboot marker path that exists on no machine.
+    const NO_REBOOT_MARKER: &str = "/nonexistent/hpds-test/reboot-required";
     static NO_SERVER_HOST: NoServerHost = NoServerHost;
 
     /// `SetupDeps` on `os` whose git-setup seam records itself in the
@@ -1585,9 +1666,11 @@ mod tests {
         for omitted in [
             "miniconda",
             "conda",
-            "apt upgrade",
             "dist-upgrade",
-            "reboot",
+            "full-upgrade",
+            "sudo reboot",
+            "systemctl reboot",
+            "shutdown",
         ] {
             assert!(
                 !lowercase.contains(omitted),
@@ -2020,6 +2103,9 @@ mod tests {
         /// The name of the thread each code-server download ran on.
         code_server_threads: Mutex<Vec<Option<String>>>,
         writes: Mutex<Vec<std::path::PathBuf>>,
+        /// The reboot marker to check, when not [`NO_REBOOT_MARKER`]: a
+        /// real file in the tests that want a pending reboot.
+        reboot_required: Option<std::path::PathBuf>,
     }
 
     impl SimHost {
@@ -2054,7 +2140,9 @@ mod tests {
             NoServerHost.read(path)
         }
         fn exists(&self, path: &Path) -> bool {
-            self.existing.iter().any(|file| Path::new(file) == path) || NoServerHost.exists(path)
+            self.existing.iter().any(|file| Path::new(file) == path)
+                || NoServerHost.exists(path)
+                || (self.reboot_required.as_deref() == Some(path) && path.exists())
         }
         fn write_atomic(&self, path: &Path, _bytes: &[u8], _mode: u32) -> anyhow::Result<()> {
             self.writes.lock().unwrap().push(path.to_path_buf());
@@ -2093,6 +2181,11 @@ mod tests {
                 package: DownloadedPackage::at(CODE_SERVER_DEB.into()),
                 version: "4.141.0".to_string(),
             })
+        }
+        fn reboot_required_path(&self) -> std::path::PathBuf {
+            self.reboot_required
+                .clone()
+                .unwrap_or_else(|| NoServerHost.reboot_required_path())
         }
     }
 
@@ -2292,6 +2385,13 @@ mod tests {
             .collect()
     }
 
+    /// The server profile without its system-updates step, so the apt
+    /// prelude makes the run's first package-list refresh, as it does
+    /// whenever that step is not selected.
+    fn prelude_steps() -> Vec<Step> {
+        server_steps_without(&[SYSTEM_UPDATES])
+    }
+
     /// Run `selected` against the simulated server, one step at a time,
     /// with the git flow recorded in the simulation's call log.
     fn run_sim(
@@ -2468,7 +2568,7 @@ mod tests {
             assert!(left_out(&plan), "{title}: {plan:?}");
         }
 
-        let only_libraries = prelude::prelude_plan(&steps(Profile::Server)[..1]);
+        let only_libraries = prelude::prelude_plan(&prelude_steps()[..1]);
         assert_eq!(only_libraries.base, APT_SYSTEM_LIBRARIES);
         assert!(only_libraries.repos.is_empty() && only_libraries.debs.is_empty());
         assert_eq!(
@@ -2485,8 +2585,7 @@ mod tests {
     fn a_fresh_server_installs_everything_in_one_update_and_one_install() {
         let sim = Sim::default();
         let host = SimHost::default();
-        let (results, rstudio) =
-            run_sim(&sim, &host, SimRstudio::default(), steps(Profile::Server));
+        let (results, rstudio) = run_sim(&sim, &host, SimRstudio::default(), &prelude_steps());
 
         assert!(failures(&results).is_empty(), "{:?}", failures(&results));
         assert_eq!(
@@ -2596,12 +2695,7 @@ mod tests {
     fn step_one_alone_installs_only_the_system_libraries() {
         let sim = Sim::default();
         let host = SimHost::default();
-        let (results, rstudio) = run_sim(
-            &sim,
-            &host,
-            SimRstudio::default(),
-            &steps(Profile::Server)[..1],
-        );
+        let (results, rstudio) = run_sim(&sim, &host, SimRstudio::default(), &prelude_steps()[..1]);
         assert!(failures(&results).is_empty(), "{:?}", failures(&results));
         assert_eq!(
             sim.apt_calls(),
@@ -2621,7 +2715,7 @@ mod tests {
             docker_key_fails: true,
             ..SimHost::default()
         };
-        let (results, _) = run_sim(&sim, &host, SimRstudio::default(), steps(Profile::Server));
+        let (results, _) = run_sim(&sim, &host, SimRstudio::default(), &prelude_steps());
 
         let failed = failures(&results);
         assert_eq!(failed.len(), 1, "{failed:?}");
@@ -2643,8 +2737,7 @@ mod tests {
             download_fails: true,
             ..SimRstudio::default()
         };
-        let (results, rstudio) =
-            run_sim(&sim, &SimHost::default(), rstudio, steps(Profile::Server));
+        let (results, rstudio) = run_sim(&sim, &SimHost::default(), rstudio, &prelude_steps());
 
         let failed = failures(&results);
         assert_eq!(failed.len(), 1, "{failed:?}");
@@ -2665,7 +2758,7 @@ mod tests {
             &sim,
             &SimHost::default(),
             SimRstudio::default(),
-            steps(Profile::Server),
+            &prelude_steps(),
         );
 
         assert!(failures(&results).is_empty(), "{:?}", failures(&results));
@@ -2695,7 +2788,7 @@ mod tests {
             &sim,
             &SimHost::default(),
             SimRstudio::default(),
-            steps(Profile::Server),
+            &prelude_steps(),
         );
 
         let step_one = results[0].error.as_deref().expect("step 1 fails");
@@ -2710,7 +2803,7 @@ mod tests {
             &sim,
             &SimHost::default(),
             SimRstudio::default(),
-            steps(Profile::Server),
+            &prelude_steps(),
         );
 
         // Both of this run's sources come out, since apt does not say which
@@ -2756,7 +2849,7 @@ mod tests {
             &sim,
             &SimHost::default(),
             SimRstudio::default(),
-            steps(Profile::Server),
+            &prelude_steps(),
         );
 
         let failed: Vec<_> = failures(&results)
@@ -2800,7 +2893,7 @@ mod tests {
             &sim,
             &SimHost::default(),
             SimRstudio::default(),
-            steps(Profile::Server),
+            &prelude_steps(),
         );
 
         let step_one = results[0].error.as_deref().expect("step 1 fails");
@@ -2818,7 +2911,7 @@ mod tests {
             existing: vec![DOCKER_SOURCES],
             ..SimHost::default()
         };
-        let (results, _) = run_sim(&sim, &host, SimRstudio::default(), steps(Profile::Server));
+        let (results, _) = run_sim(&sim, &host, SimRstudio::default(), &prelude_steps());
 
         assert!(
             results[0].error.is_some(),
@@ -2844,7 +2937,7 @@ mod tests {
             ))),
             ..SimRstudio::default()
         };
-        let (results, _) = run_sim(&sim, &SimHost::default(), rstudio, steps(Profile::Server));
+        let (results, _) = run_sim(&sim, &SimHost::default(), rstudio, &prelude_steps());
 
         let failed: Vec<_> = failures(&results)
             .into_iter()
@@ -2862,7 +2955,7 @@ mod tests {
         let sim = Sim::default();
         let host = SimHost::default();
         let (_, transcript) =
-            ui::capture(|| run_sim(&sim, &host, SimRstudio::default(), steps(Profile::Server)));
+            ui::capture(|| run_sim(&sim, &host, SimRstudio::default(), &prelude_steps()));
         let lines: Vec<_> = transcript
             .lines()
             .iter()
@@ -2891,7 +2984,7 @@ mod tests {
         // restarts it once R is installed.
         let sim = Sim::default();
         let host = SimHost::default();
-        let (results, _) = run_sim(&sim, &host, systemd_rstudio(), steps(Profile::Server));
+        let (results, _) = run_sim(&sim, &host, systemd_rstudio(), &prelude_steps());
 
         assert!(failures(&results).is_empty(), "{:?}", failures(&results));
         let calls = sim.calls();
@@ -2916,7 +3009,7 @@ mod tests {
         let sim = Sim::provisioned();
         *sim.rstudio_active.lock().unwrap() = true;
         let host = SimHost::default();
-        let (results, _) = run_sim(&sim, &host, systemd_rstudio(), steps(Profile::Server));
+        let (results, _) = run_sim(&sim, &host, systemd_rstudio(), &prelude_steps());
 
         assert!(failures(&results).is_empty(), "{:?}", failures(&results));
         let calls = sim.calls();
@@ -2970,7 +3063,7 @@ mod tests {
             rstudio_never_starts: true,
             ..Sim::default()
         };
-        let (error, lines) = rstudio_failure(&sim, steps(Profile::Server));
+        let (error, lines) = rstudio_failure(&sim, &prelude_steps());
 
         assert!(error.contains("rstudio-server"), "{error}");
         assert!(
@@ -2995,8 +3088,7 @@ mod tests {
     fn rstudio_step_without_systemd_installs_and_passes_as_before() {
         let sim = Sim::default();
         let host = SimHost::default();
-        let (results, rstudio) =
-            run_sim(&sim, &host, SimRstudio::default(), steps(Profile::Server));
+        let (results, rstudio) = run_sim(&sim, &host, SimRstudio::default(), &prelude_steps());
 
         assert!(failures(&results).is_empty(), "{:?}", failures(&results));
         assert_eq!(rstudio.downloads(), 1);
@@ -3031,8 +3123,7 @@ mod tests {
     fn a_rerun_downloads_nothing_already_installed() {
         let sim = Sim::provisioned();
         let host = SimHost::default();
-        let (results, rstudio) =
-            run_sim(&sim, &host, SimRstudio::default(), steps(Profile::Server));
+        let (results, rstudio) = run_sim(&sim, &host, SimRstudio::default(), &prelude_steps());
 
         assert!(failures(&results).is_empty(), "{:?}", failures(&results));
         assert_eq!(rstudio.downloads(), 0);
@@ -3092,7 +3183,7 @@ mod tests {
             meet: Some(Arc::clone(&meet)),
             ..SimRstudio::default()
         };
-        let (results, _) = run_sim(&sim, &host, rstudio, steps(Profile::Server));
+        let (results, _) = run_sim(&sim, &host, rstudio, &prelude_steps());
 
         assert_eq!(
             meet.met(),
@@ -3126,7 +3217,7 @@ mod tests {
             delay: Some(Duration::from_millis(300)),
             ..SimRstudio::default()
         };
-        let (results, _, lines) = run_sim_captured(&sim, &host, rstudio, steps(Profile::Server));
+        let (results, _, lines) = run_sim_captured(&sim, &host, rstudio, &prelude_steps());
 
         assert!(failures(&results).is_empty(), "{:?}", failures(&results));
         let refresh = only_line(&lines, "refreshing apt package lists");
@@ -3150,7 +3241,7 @@ mod tests {
             ..SimRstudio::default()
         };
         let (results, _, lines) =
-            run_sim_captured(&sim, &SimHost::default(), rstudio, steps(Profile::Server));
+            run_sim_captured(&sim, &SimHost::default(), rstudio, &prelude_steps());
 
         assert!(failures(&results).is_empty(), "{:?}", failures(&results));
         let refresh = only_line(&lines, "refreshing apt package lists");
@@ -3172,7 +3263,7 @@ mod tests {
             ..SimRstudio::default()
         };
         let (results, rstudio, lines) =
-            run_sim_captured(&sim, &SimHost::default(), rstudio, steps(Profile::Server));
+            run_sim_captured(&sim, &SimHost::default(), rstudio, &prelude_steps());
 
         assert!(failures(&results).is_empty(), "{:?}", failures(&results));
         assert_eq!(rstudio.downloads(), 2, "step 1 tried, then RStudio retried");
@@ -3198,7 +3289,7 @@ mod tests {
             code_server_fails: true,
             ..SimHost::default()
         };
-        let (results, _) = run_sim(&sim, &host, SimRstudio::default(), steps(Profile::Server));
+        let (results, _) = run_sim(&sim, &host, SimRstudio::default(), &prelude_steps());
 
         let failed = failures(&results);
         assert_eq!(failed.len(), 1, "{failed:?}");
@@ -3222,7 +3313,7 @@ mod tests {
             &Sim::default(),
             &host,
             SimRstudio::default(),
-            steps(Profile::Server),
+            &prelude_steps(),
         );
         assert_eq!(
             host.code_server_threads(),
@@ -3265,8 +3356,7 @@ mod tests {
             temporary: true,
             ..SimRstudio::default()
         };
-        let (results, rstudio) =
-            run_sim(&sim, &SimHost::default(), rstudio, steps(Profile::Server));
+        let (results, rstudio) = run_sim(&sim, &SimHost::default(), rstudio, &prelude_steps());
 
         assert!(failures(&results).is_empty(), "{:?}", failures(&results));
         let created = rstudio.created();
@@ -3294,8 +3384,7 @@ mod tests {
             temporary: true,
             ..SimRstudio::default()
         };
-        let (results, rstudio) =
-            run_sim(&sim, &SimHost::default(), rstudio, steps(Profile::Server));
+        let (results, rstudio) = run_sim(&sim, &SimHost::default(), rstudio, &prelude_steps());
 
         assert!(results[0].error.is_some(), "step 1 fails");
         let created = rstudio.created();
@@ -3310,13 +3399,13 @@ mod tests {
         let text = plan(Profile::Server);
         assert!(!text.contains("install.sh"), "{text}");
         assert!(!text.contains("code-server.dev"), "{text}");
-        let step_one: Vec<&str> = text
+        let prelude_lines: Vec<&str> = text
             .lines()
-            .skip_while(|line| !line.ends_with("1. system libraries (apt)"))
+            .skip_while(|line| !line.ends_with("2. system libraries (apt)"))
             .skip(1)
-            .take_while(|line| !line.ends_with("2. Docker Engine"))
+            .take_while(|line| !line.ends_with("3. Docker Engine"))
             .collect();
-        let merged = step_one
+        let merged = prelude_lines
             .iter()
             .find(|line| line.contains("install -y build-essential"))
             .expect("merged install line");
@@ -3330,13 +3419,371 @@ mod tests {
             assert!(merged.contains(package), "{package}: {merged}");
         }
         assert_eq!(
-            step_one
+            prelude_lines
                 .iter()
-                .filter(|line| line.ends_with("apt-get -o DPkg::Lock::Timeout=600 update"))
+                .filter(|line| line.contains("apt-get -o DPkg::Lock::Timeout=600 update"))
                 .count(),
             1,
-            "{step_one:#?}"
+            "{prelude_lines:#?}"
         );
+    }
+
+    // --- system updates -------------------------------------------------------
+
+    /// The package-list refresh, exactly as the system-updates step and the
+    /// apt prelude run it.
+    const REFRESH_LINE: &str = "sudo env DEBIAN_FRONTEND=noninteractive NEEDRESTART_SUSPEND=1 \
+                                apt-get -o DPkg::Lock::Timeout=600 update";
+
+    /// The upgrade, exactly as the system-updates step runs it: keep a
+    /// locally changed configuration file and take the package's default
+    /// for any other, so dpkg never prompts.
+    const UPGRADE_LINE: &str = "sudo env DEBIAN_FRONTEND=noninteractive NEEDRESTART_SUSPEND=1 \
+                                apt-get -o DPkg::Lock::Timeout=600 \
+                                -o Dpkg::Options::=--force-confdef \
+                                -o Dpkg::Options::=--force-confold upgrade -y";
+
+    /// The warning a pending reboot raises after the upgrade.
+    const REBOOT_PENDING: &str =
+        "a reboot is pending to finish the system updates; run `sudo reboot`";
+
+    /// The server steps titled in `titles`, in plan order.
+    fn server_steps_titled(titles: &[&str]) -> Vec<Step> {
+        let selected: Vec<Step> = steps(Profile::Server)
+            .iter()
+            .filter(|step| titles.contains(&step.title))
+            .copied()
+            .collect();
+        assert_eq!(selected.len(), titles.len(), "unknown title in {titles:?}");
+        selected
+    }
+
+    /// Every call that would restart or power off the host.
+    fn reboot_calls(sim: &Sim) -> Vec<String> {
+        sim.calls()
+            .into_iter()
+            .filter(|call| {
+                call.split_whitespace()
+                    .any(|word| ["reboot", "shutdown", "poweroff"].contains(&word))
+            })
+            .collect()
+    }
+
+    #[test]
+    fn system_updates_is_the_first_server_step_and_runs_in_the_foreground() {
+        let step = steps(Profile::Server)[0];
+        assert_eq!(step.title, "system updates (apt upgrade)");
+        assert_eq!(step.title, SYSTEM_UPDATES);
+        assert_eq!(step.lane, Lane::Foreground);
+        assert!(step.requires.is_empty(), "{:?}", step.requires);
+        assert_eq!(step.apt, AptShare::None);
+        assert!(matches!(step.actions, [Action::SystemUpdates]));
+        assert_eq!(steps(Profile::Server).len(), 16);
+        assert!(
+            steps(Profile::Dev)
+                .iter()
+                .all(|step| step.title != SYSTEM_UPDATES
+                    && !step
+                        .actions
+                        .iter()
+                        .any(|action| matches!(action, Action::SystemUpdates))),
+            "the dev profile never upgrades the system"
+        );
+    }
+
+    #[test]
+    fn the_server_plan_lists_the_system_update_commands_first() {
+        let text = plan(Profile::Server);
+        let expected = format!(
+            "hpds setup --profile server runs these 16 steps:\n\
+             \x20 1. system updates (apt upgrade)\n\
+             \x20      {REFRESH_LINE}\n\
+             \x20      {UPGRADE_LINE}\n\
+             \x20      if /var/run/reboot-required exists afterwards: warn that a reboot is pending (hpds never reboots)\n\
+             \x20 2. system libraries (apt)\n"
+        );
+        assert!(text.starts_with(&expected), "{text}");
+    }
+
+    #[test]
+    fn system_updates_refresh_then_upgrade_through_the_apt_policy() {
+        let sim = Sim::default();
+        let (results, _) = run_sim(
+            &sim,
+            &SimHost::default(),
+            SimRstudio::default(),
+            &server_steps_titled(&[SYSTEM_UPDATES]),
+        );
+
+        assert!(failures(&results).is_empty(), "{:?}", failures(&results));
+        assert_eq!(
+            install::apt_get_command_line(&[
+                "-o",
+                "Dpkg::Options::=--force-confdef",
+                "-o",
+                "Dpkg::Options::=--force-confold",
+                "upgrade",
+                "-y"
+            ]),
+            UPGRADE_LINE
+        );
+        assert_eq!(sim.calls(), [REFRESH_LINE, UPGRADE_LINE]);
+        assert_eq!(reboot_calls(&sim), Vec::<String>::new());
+    }
+
+    #[test]
+    fn the_prelude_does_not_refresh_again_after_system_updates_refreshed() {
+        let sim = Sim::default();
+        let (results, _) = run_sim(
+            &sim,
+            &SimHost::default(),
+            SimRstudio::default(),
+            &server_steps_titled(&[SYSTEM_UPDATES, SYSTEM_LIBRARIES]),
+        );
+
+        assert!(failures(&results).is_empty(), "{:?}", failures(&results));
+        assert_eq!(
+            sim.apt_calls(),
+            [
+                REFRESH_LINE.to_string(),
+                UPGRADE_LINE.to_string(),
+                apt_install(APT_SYSTEM_LIBRARIES)
+            ],
+            "the lists system updates refreshed are current for the prelude"
+        );
+    }
+
+    #[test]
+    fn a_rerun_of_the_whole_server_profile_refreshes_the_lists_once() {
+        // Every repository is registered and every package installed, so
+        // the prelude adds no apt source and needs no refresh of its own.
+        let sim = Sim::provisioned();
+        let (results, _) = run_sim(
+            &sim,
+            &SimHost::default(),
+            SimRstudio::default(),
+            steps(Profile::Server),
+        );
+
+        assert!(failures(&results).is_empty(), "{:?}", failures(&results));
+        let apt = sim.apt_calls();
+        assert_eq!(
+            apt.iter().filter(|call| *call == REFRESH_LINE).count(),
+            1,
+            "{apt:#?}"
+        );
+        assert_eq!(apt[..2], [REFRESH_LINE, UPGRADE_LINE], "{apt:#?}");
+        assert_eq!(reboot_calls(&sim), Vec::<String>::new());
+    }
+
+    #[test]
+    fn the_prelude_refreshes_again_when_it_adds_apt_sources_after_system_updates() {
+        // A fresh server: the prelude registers the Docker and rig
+        // repositories, whose package lists the first refresh never saw.
+        let sim = Sim::default();
+        let (results, _) = run_sim(
+            &sim,
+            &SimHost::default(),
+            SimRstudio::default(),
+            steps(Profile::Server),
+        );
+
+        assert!(failures(&results).is_empty(), "{:?}", failures(&results));
+        let apt = sim.apt_calls();
+        assert_eq!(
+            apt,
+            [
+                REFRESH_LINE.to_string(),
+                UPGRADE_LINE.to_string(),
+                REFRESH_LINE.to_string(),
+                apt_install(&merged_packages())
+            ],
+            "{apt:#?}"
+        );
+        let calls = sim.calls();
+        let registered = calls
+            .iter()
+            .position(|call| call == "sudo install -m 0755 -d /etc/apt/keyrings")
+            .unwrap_or_else(|| panic!("the Docker repository is registered: {calls:#?}"));
+        let second_refresh = calls
+            .iter()
+            .enumerate()
+            .filter(|(_, call)| *call == REFRESH_LINE)
+            .map(|(index, _)| index)
+            .nth(1)
+            .unwrap_or_else(|| panic!("a second refresh: {calls:#?}"));
+        assert!(registered < second_refresh, "{calls:#?}");
+    }
+
+    #[test]
+    fn without_system_updates_the_prelude_refreshes_as_before() {
+        let sim = Sim::provisioned();
+        let (results, _) = run_sim(
+            &sim,
+            &SimHost::default(),
+            SimRstudio::default(),
+            &prelude_steps(),
+        );
+
+        assert!(failures(&results).is_empty(), "{:?}", failures(&results));
+        let apt = sim.apt_calls();
+        assert_eq!(apt.first().map(String::as_str), Some(REFRESH_LINE));
+        assert_eq!(
+            apt.iter().filter(|call| *call == REFRESH_LINE).count(),
+            1,
+            "{apt:#?}"
+        );
+        assert!(!apt.iter().any(|call| call.contains("upgrade")), "{apt:#?}");
+    }
+
+    #[test]
+    fn a_failed_upgrade_fails_only_its_own_step() {
+        let sim = Sim::default().failing(UPGRADE_LINE, "E: dpkg was interrupted");
+        let (results, _) = run_sim(
+            &sim,
+            &SimHost::default(),
+            SimRstudio::default(),
+            &server_steps_titled(&[SYSTEM_UPDATES, SYSTEM_LIBRARIES]),
+        );
+
+        let failed = failures(&results);
+        assert_eq!(failed.len(), 1, "{failed:?}");
+        assert_eq!(failed[0].0, SYSTEM_UPDATES);
+        assert!(
+            failed[0].1.contains("E: dpkg was interrupted"),
+            "{failed:?}"
+        );
+        assert_eq!(
+            sim.apt_calls(),
+            [
+                REFRESH_LINE.to_string(),
+                UPGRADE_LINE.to_string(),
+                apt_install(APT_SYSTEM_LIBRARIES)
+            ],
+            "the refresh succeeded, so the prelude adds no refresh of its own"
+        );
+    }
+
+    #[test]
+    fn a_failed_refresh_skips_the_upgrade_and_leaves_the_prelude_its_own_refresh() {
+        let sim = Sim::default().failing(REFRESH_LINE, "E: mirror down");
+        let (results, _) = run_sim(
+            &sim,
+            &SimHost::default(),
+            SimRstudio::default(),
+            &server_steps_titled(&[SYSTEM_UPDATES, SYSTEM_LIBRARIES]),
+        );
+
+        let failed = failures(&results);
+        assert!(
+            failed
+                .iter()
+                .any(|(title, error)| *title == SYSTEM_UPDATES && error.contains("E: mirror down")),
+            "{failed:?}"
+        );
+        let apt = sim.apt_calls();
+        assert!(!apt.iter().any(|call| call == UPGRADE_LINE), "{apt:#?}");
+        assert_eq!(
+            apt.iter().filter(|call| *call == REFRESH_LINE).count(),
+            2,
+            "the prelude still tries its own refresh: {apt:#?}"
+        );
+    }
+
+    /// Run the system-updates step alone against a host whose reboot
+    /// marker is `marker`, returning the step's results, the simulation,
+    /// and what the run printed.
+    fn run_system_updates(marker: std::path::PathBuf) -> (Vec<StepResult>, Sim, Vec<String>) {
+        let sim = Sim::default();
+        let host = SimHost {
+            reboot_required: Some(marker),
+            ..SimHost::default()
+        };
+        let ((results, _), transcript) = ui::capture(|| {
+            run_sim(
+                &sim,
+                &host,
+                SimRstudio::default(),
+                &server_steps_titled(&[SYSTEM_UPDATES]),
+            )
+        });
+        let lines = transcript
+            .lines()
+            .iter()
+            .map(|(_, line)| line.clone())
+            .collect();
+        (results, sim, lines)
+    }
+
+    #[test]
+    fn a_pending_reboot_is_reported_after_the_upgrade_and_never_performed() {
+        let dir = tempfile::tempdir().unwrap();
+        let marker = dir.path().join("reboot-required");
+        std::fs::write(&marker, "*** System restart required ***\n").unwrap();
+
+        let (results, sim, lines) = run_system_updates(marker);
+
+        assert!(failures(&results).is_empty(), "{:?}", failures(&results));
+        let warnings: Vec<&String> = lines
+            .iter()
+            .filter(|line| line.contains(REBOOT_PENDING))
+            .collect();
+        assert_eq!(warnings.len(), 1, "{lines:#?}");
+        assert!(warnings[0].starts_with("warning: "), "{lines:#?}");
+        assert_eq!(sim.calls(), [REFRESH_LINE, UPGRADE_LINE]);
+        assert_eq!(reboot_calls(&sim), Vec::<String>::new());
+    }
+
+    #[test]
+    fn no_reboot_marker_means_no_reboot_warning() {
+        let dir = tempfile::tempdir().unwrap();
+        let (results, sim, lines) = run_system_updates(dir.path().join("reboot-required"));
+
+        assert!(failures(&results).is_empty(), "{:?}", failures(&results));
+        assert!(
+            !lines.iter().any(|line| line.contains("reboot")),
+            "{lines:#?}"
+        );
+        assert_eq!(reboot_calls(&sim), Vec::<String>::new());
+    }
+
+    #[test]
+    fn a_pending_reboot_reaches_the_compact_next_steps() {
+        let dir = tempfile::tempdir().unwrap();
+        let marker = dir.path().join("reboot-required");
+        std::fs::write(&marker, "*** System restart required ***\n").unwrap();
+        let sim = Sim::default();
+        let host = SimHost {
+            reboot_required: Some(marker),
+            ..SimHost::default()
+        };
+        let git_setup = || Ok(());
+        let fetcher = FakeFetcher::default();
+        let runner = LoggingRunner::new(&sim);
+        let mut deps = deps_recording_git(Os::Linux, true, &runner, &fetcher, &git_setup);
+        deps.server_host = &host;
+        let log_path = dir.path().join("hpds-setup.log");
+
+        let run = run_logged(
+            Profile::Server,
+            &server_steps_titled(&[SYSTEM_UPDATES]),
+            &deps,
+            true,
+            &log_path,
+        );
+
+        assert!(run.result.is_ok(), "{:?}", run.result);
+        assert!(
+            run.terminal.ends_with(&format!(
+                "[1/1] system updates (apt upgrade) ✓\n\
+                 All 1 step succeeded. Details: <LOG>\n\
+                 Next steps:\n\
+                 \x20 - {REBOOT_PENDING}"
+            )),
+            "{}",
+            run.terminal
+        );
+        assert_eq!(reboot_calls(&sim), Vec::<String>::new());
     }
 
     // --- lanes and requirements ---------------------------------------------
@@ -3418,7 +3865,8 @@ mod tests {
             .map(|step| step.title)
             .collect();
         assert_eq!(waiting, ["tinytex"]);
-        assert_eq!(steps(Profile::Server)[0].title, SYSTEM_LIBRARIES);
+        assert_eq!(steps(Profile::Server)[0].title, SYSTEM_UPDATES);
+        assert_eq!(steps(Profile::Server)[1].title, SYSTEM_LIBRARIES);
     }
 
     #[test]
@@ -3464,6 +3912,9 @@ mod tests {
                             step.title
                         ),
                         Action::GitSetup => panic!("{}: git setup is foreground", step.title),
+                        Action::SystemUpdates => {
+                            panic!("{}: system updates use apt", step.title)
+                        }
                     }
                 }
             }
@@ -3544,8 +3995,8 @@ mod tests {
     fn partition_splits_lanes_in_plan_order_with_plan_indices() {
         let (foreground, background) = partition(steps(Profile::Server));
         let indices = |lane: &[(usize, Step)]| lane.iter().map(|(i, _)| *i).collect::<Vec<_>>();
-        assert_eq!(indices(&foreground), [0, 1, 3, 4, 7, 8, 9, 13, 14]);
-        assert_eq!(indices(&background), [2, 5, 6, 10, 11, 12]);
+        assert_eq!(indices(&foreground), [0, 1, 2, 4, 5, 8, 9, 10, 14, 15]);
+        assert_eq!(indices(&background), [3, 6, 7, 11, 12, 13]);
         for (index, step) in foreground.iter().chain(&background) {
             assert_eq!(step.title, steps(Profile::Server)[*index].title);
         }

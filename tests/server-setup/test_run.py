@@ -33,7 +33,7 @@ def snapshot_body() -> str:
 class PlanParsingTests(unittest.TestCase):
     def test_parses_the_recorded_server_plan(self) -> None:
         titles = RUN.parse_plan(snapshot_body())
-        self.assertEqual(titles[0], "system libraries (apt)")
+        self.assertEqual(titles[0], "system updates (apt upgrade)")
         self.assertEqual(titles[-1], "git defaults")
         self.assertIn("R + CRAN/PPM repositories", titles)
         self.assertIn("code-server + extensions", titles)
