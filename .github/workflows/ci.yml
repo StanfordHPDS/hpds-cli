@@ -65,7 +65,8 @@ jobs:
         run: cargo test --features online-tests
   container-runtime:
     name: container runtime (Linux)
-    runs-on: ubuntu-latest
+    # Apptainer image extraction fails on the Ubuntu 26.04 runner image.
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable

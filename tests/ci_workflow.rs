@@ -212,7 +212,7 @@ fn ci_runs_the_explicit_container_runtime_harness_on_linux() {
         .expect("CI has a container-runtime job");
     assert_eq!(
         job.get("runs-on").and_then(|value| value.as_str()),
-        Some("ubuntu-latest")
+        Some("ubuntu-24.04")
     );
     assert_ne!(
         job.get("continue-on-error"),
