@@ -3,7 +3,7 @@
 
 use std::fmt;
 
-use super::{ERROR_STYLE, HINT_STYLE, Stream, emit, paint, stderr_colors};
+use super::{ERROR_STYLE, HINT_STYLE, LineKind, emit, paint, stderr_colors};
 
 /// A remediation hint riding along an error chain, attached via
 /// [`HintExt::hint`].
@@ -103,7 +103,11 @@ pub fn render_error(err: &anyhow::Error, use_color: bool) -> String {
 
 /// Print `err` to stderr in the standard `hpds` error format.
 pub fn error(err: &anyhow::Error) {
-    emit(Stream::Stderr, &render_error(err, stderr_colors()));
+    emit(
+        LineKind::Error,
+        &render_error(err, false),
+        &render_error(err, stderr_colors()),
+    );
 }
 
 #[cfg(test)]

@@ -4,22 +4,38 @@
 //! helpers degrade gracefully: color is dropped when `NO_COLOR` is set, when
 //! `TERM=dumb`, or when the stream is not a TTY, and progress bars hide
 //! themselves on non-TTY stderr. Human-facing lines can be captured per
-//! thread and replayed later (see [`fn@capture`]).
+//! thread and replayed later (see [`fn@capture`]). Every human-facing line
+//! can also be appended to a log file, and a compact mode keeps
+//! informational lines off the terminal (see [`open_log`] and
+//! [`fn@compact`]).
 
 mod capture;
 mod error;
 mod progress;
 mod prompt;
+mod sink;
 
-use capture::{Stream, emit};
+#[cfg(test)]
+pub(crate) use capture::Stream;
+#[cfg(test)]
+pub(crate) use capture::tap_terminal;
+use capture::{LineKind, emit};
 pub use capture::{Transcript, capture, replay};
+#[allow(unused_imports)]
+// part of the ui API for setup's compact output; no caller outside tests yet
+pub use sink::{
+    CompactGuard, Report, ReportKind, close_log, compact, log_path, open_log, take_reports,
+};
 
 #[allow(unused_imports)] // consumed only by unit tests today; part of the ui API
 pub use error::render_error;
 pub use error::{HintExt, error};
 pub(crate) use progress::bar_is_live;
-#[allow(unused_imports)] // re-exported for later commands; ui lands before its callers
+#[allow(unused_imports)] // re-exported for later commands; no caller outside tests yet
 pub use progress::progress_bar;
+#[allow(unused_imports)]
+// part of the ui API for setup's compact output; no caller outside tests yet
+pub use progress::{Spinner, spinner};
 pub use prompt::{
     can_prompt, confirm, multiselect_all, multiselect_with_defaults, select, set_non_interactive,
     text,
@@ -141,15 +157,42 @@ fn render_warn(msg: &str, use_color: bool) -> String {
     format!("{} {msg}", paint(WARN_STYLE, "warning:", use_color))
 }
 
-/// Print an unstyled informational line to stdout. Suppressed by `--quiet`.
+/// Print an unstyled informational line to stdout. Suppressed on the
+/// terminal by `--quiet`; still written to the log.
 pub fn println(msg: &str) {
     info_line(msg, is_quiet());
 }
 
 fn info_line(msg: &str, quiet: bool) {
-    if !quiet {
-        emit(Stream::Stdout, msg);
-    }
+    emit(visible_or_detail(LineKind::Info, quiet), msg, msg);
+}
+
+/// `kind`, or a log-only line under `--quiet`.
+fn visible_or_detail(kind: LineKind, quiet: bool) -> LineKind {
+    if quiet { LineKind::Detail } else { kind }
+}
+
+/// Print a status line to stdout: one of the few lines that stay on the
+/// terminal in compact mode, such as a setup step's result or a run's
+/// closing tally. Written to the log as well. Unlike a warning it is never
+/// kept as a [`Report`]. Suppressed on the terminal by `--quiet`, like
+/// [`fn@println`]; still written to the log.
+#[allow(dead_code)] // part of the ui API for setup's compact output; no caller outside tests yet
+pub fn status(msg: &str) {
+    status_line(msg, is_quiet());
+}
+
+fn status_line(msg: &str, quiet: bool) {
+    emit(visible_or_detail(LineKind::Status, quiet), msg, msg);
+}
+
+/// Write a line to the log only; it never reaches the terminal. Inside
+/// [`fn@capture`] it is recorded with the other lines and written to the
+/// log, in order, when the transcript is replayed. Without an open log the
+/// line is dropped.
+#[allow(dead_code)] // part of the ui API for logging command output; no caller outside tests yet
+pub fn log_detail(text: &str) {
+    emit(LineKind::Detail, text, text);
 }
 
 /// Print machine-readable output (`--format json`) to stdout. Never
@@ -159,15 +202,23 @@ pub fn data(msg: &str) {
     std::println!("{msg}");
 }
 
-/// Print a green `✓`-prefixed success line to stdout. Suppressed by
-/// `--quiet`.
+/// Print a green `✓`-prefixed success line to stdout. Suppressed on the
+/// terminal by `--quiet`; still written to the log.
 pub fn success(msg: &str) {
     success_line(msg, is_quiet());
 }
 
 fn success_line(msg: &str, quiet: bool) {
-    if !quiet {
-        emit(Stream::Stdout, &render_success(msg, stdout_colors()));
+    if quiet {
+        // Log-only, so the message carries the `✓` the log would show.
+        let plain = render_success(msg, false);
+        emit(LineKind::Detail, &plain, &plain);
+    } else {
+        emit(
+            LineKind::Success,
+            msg,
+            &render_success(msg, stdout_colors()),
+        );
     }
 }
 
@@ -175,7 +226,7 @@ fn success_line(msg: &str, quiet: bool) {
 /// warnings flag conditions the user likely needs to act on, so they stay
 /// visible alongside errors.
 pub fn warn(msg: &str) {
-    emit(Stream::Stderr, &render_warn(msg, stderr_colors()));
+    emit(LineKind::Warning, msg, &render_warn(msg, stderr_colors()));
 }
 
 #[cfg(test)]
@@ -333,6 +384,215 @@ mod tests {
     }
 
     fn transcript_lines(transcript: &Transcript) -> Vec<(Stream, String)> {
-        transcript.lines().to_vec()
+        transcript.lines()
+    }
+
+    fn temp_log() -> (tempfile::TempDir, std::path::PathBuf) {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("hpds-setup.log");
+        open_log(&path).unwrap();
+        (dir, path)
+    }
+
+    fn read_log(path: &std::path::Path) -> String {
+        close_log();
+        std::fs::read_to_string(path).unwrap_or_default()
+    }
+
+    #[test]
+    fn log_detail_goes_to_the_log_and_never_the_terminal() {
+        let (_dir, path) = temp_log();
+        let ((), written) = tap_terminal(|| {
+            info_line("[1/15] system libraries (apt)", false);
+            log_detail("$ apt-get install -y libcurl4-openssl-dev");
+            log_detail("exit status: 0");
+        });
+        assert_eq!(
+            written,
+            vec![(Stream::Stdout, "[1/15] system libraries (apt)".to_string())]
+        );
+        assert_eq!(
+            read_log(&path),
+            "[1/15] system libraries (apt)\n\
+             $ apt-get install -y libcurl4-openssl-dev\n\
+             exit status: 0\n"
+        );
+    }
+
+    #[test]
+    fn log_detail_is_recorded_in_a_capture_and_replays_in_order() {
+        let ((), transcript) = capture(|| {
+            info_line("stable Rust", false);
+            log_detail("$ rustup toolchain install stable");
+            warn("rustup is already installed");
+        });
+        let messages: Vec<_> = transcript
+            .entries()
+            .iter()
+            .map(|l| l.message.clone())
+            .collect();
+        assert_eq!(
+            messages,
+            [
+                "stable Rust",
+                "$ rustup toolchain install stable",
+                "rustup is already installed",
+            ]
+        );
+        let (_dir, path) = temp_log();
+        let _compact = compact();
+        replay(&transcript);
+        assert_eq!(
+            read_log(&path),
+            "stable Rust\n\
+             $ rustup toolchain install stable\n\
+             warning: rustup is already installed\n"
+        );
+    }
+
+    #[test]
+    fn quiet_lines_stay_off_the_terminal_but_reach_the_log() {
+        let (_dir, path) = temp_log();
+        let ((), written) = tap_terminal(|| {
+            info_line("installing quarto", true);
+            success_line("quarto installed", true);
+            warn("still shown under quiet");
+        });
+        assert_eq!(written.len(), 1, "written was: {written:?}");
+        assert!(written[0].1.contains("still shown under quiet"));
+        assert_eq!(
+            read_log(&path),
+            "installing quarto\n\
+             ✓ quarto installed\n\
+             warning: still shown under quiet\n"
+        );
+    }
+
+    #[test]
+    fn compact_helpers_report_warnings_and_errors_with_plain_messages() {
+        let (_dir, path) = temp_log();
+        let _compact = compact();
+        let ((), written) = tap_terminal(|| {
+            info_line("installing gh", false);
+            success_line("gh installed", false);
+            warn("gh is installed but not logged in to GitHub; run `gh auth login`");
+            error(
+                &Err::<(), _>(anyhow::anyhow!("code-server failed"))
+                    .hint("rerun server setup")
+                    .unwrap_err(),
+            );
+        });
+        assert!(written.is_empty(), "written was: {written:?}");
+        assert_eq!(
+            take_reports(),
+            vec![
+                Report {
+                    kind: ReportKind::Warning,
+                    message: "gh is installed but not logged in to GitHub; run `gh auth login`"
+                        .to_string(),
+                },
+                Report {
+                    kind: ReportKind::Error,
+                    message: "error: code-server failed\nhint: rerun server setup".to_string(),
+                },
+            ]
+        );
+        assert_eq!(
+            read_log(&path),
+            "installing gh\n\
+             ✓ gh installed\n\
+             warning: gh is installed but not logged in to GitHub; run `gh auth login`\n\
+             error: code-server failed\n\
+             hint: rerun server setup\n"
+        );
+    }
+
+    #[test]
+    fn verbose_helpers_print_as_today_and_keep_no_reports() {
+        let ((), written) = tap_terminal(|| {
+            info_line("installing gh", false);
+            warn("careful");
+        });
+        // The warning's color depends on the process-wide color choice,
+        // which another test may change concurrently, so only its stream
+        // and text are checked.
+        assert_eq!(written.len(), 2, "written was: {written:?}");
+        assert_eq!(written[0], (Stream::Stdout, "installing gh".to_string()));
+        assert_eq!(written[1].0, Stream::Stderr);
+        assert!(
+            written[1].1.contains("warning:"),
+            "written was: {written:?}"
+        );
+        assert!(written[1].1.contains("careful"), "written was: {written:?}");
+        assert!(take_reports().is_empty());
+    }
+
+    #[test]
+    fn status_lines_reach_the_terminal_and_the_log_in_compact_mode() {
+        let (_dir, path) = temp_log();
+        let _compact = compact();
+        let ((), written) = tap_terminal(|| {
+            status_line("hpds setup --profile server: 15 steps.", false);
+            info_line("[1/15] system libraries (apt)", false);
+            status_line("[1/15] system libraries (apt) ✓", false);
+        });
+        assert_eq!(
+            written,
+            vec![
+                (
+                    Stream::Stdout,
+                    "hpds setup --profile server: 15 steps.".to_string()
+                ),
+                (
+                    Stream::Stdout,
+                    "[1/15] system libraries (apt) ✓".to_string()
+                ),
+            ]
+        );
+        assert!(take_reports().is_empty());
+        assert_eq!(
+            read_log(&path),
+            "hpds setup --profile server: 15 steps.\n\
+             [1/15] system libraries (apt)\n\
+             [1/15] system libraries (apt) ✓\n"
+        );
+    }
+
+    #[test]
+    fn status_lines_reach_the_terminal_outside_compact_mode() {
+        let ((), written) = tap_terminal(|| status_line("14 of 15 steps succeeded.", false));
+        assert_eq!(
+            written,
+            vec![(Stream::Stdout, "14 of 15 steps succeeded.".to_string())]
+        );
+    }
+
+    #[test]
+    fn status_is_recorded_in_a_capture_and_replays_to_the_terminal() {
+        let ((), transcript) = capture(|| {
+            log_detail("$ code-server --version");
+            status_line("[10/15] code-server + extensions ✓", false);
+        });
+        let kinds: Vec<_> = transcript.entries().iter().map(|l| l.kind).collect();
+        assert_eq!(kinds, [LineKind::Detail, LineKind::Status]);
+        let _compact = compact();
+        let ((), written) = tap_terminal(|| replay(&transcript));
+        assert_eq!(
+            written,
+            vec![(
+                Stream::Stdout,
+                "[10/15] code-server + extensions ✓".to_string()
+            )]
+        );
+        assert!(take_reports().is_empty());
+    }
+
+    #[test]
+    fn quiet_status_lines_stay_off_the_terminal_but_reach_the_log() {
+        let (_dir, path) = temp_log();
+        let _compact = compact();
+        let ((), written) = tap_terminal(|| status_line("[2/15] Docker Engine ✓", true));
+        assert!(written.is_empty(), "written was: {written:?}");
+        assert_eq!(read_log(&path), "[2/15] Docker Engine ✓\n");
     }
 }

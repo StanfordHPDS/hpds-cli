@@ -14,6 +14,7 @@ use anyhow::Context;
 
 use super::HintExt;
 use super::capture::is_capturing;
+use super::progress::suspend_spinner;
 
 static NON_INTERACTIVE: AtomicBool = AtomicBool::new(false);
 
@@ -76,29 +77,30 @@ fn capturing_error(prompt: &str) -> anyhow::Error {
     .unwrap_err()
 }
 
+/// Run a prompt `f` with the calling thread's spinner, if any, suspended so
+/// the prompt is not drawn over. Every prompt wrapper asks through this.
+fn with_prompt<T>(f: impl FnOnce() -> T) -> T {
+    suspend_spinner(f)
+}
+
 /// Ask for a line of text; `default` is used when the user just hits enter.
 pub fn text(prompt: &str, default: &str) -> anyhow::Result<String> {
     ensure_interactive(prompt)?;
-    inquire::Text::new(prompt)
-        .with_default(default)
-        .prompt()
+    with_prompt(|| inquire::Text::new(prompt).with_default(default).prompt())
         .with_context(|| format!("could not read an answer to \"{prompt}\""))
 }
 
 /// Ask a yes/no question. `default` is used as the highlighted answer.
 pub fn confirm(prompt: &str, default: bool) -> anyhow::Result<bool> {
     ensure_interactive(prompt)?;
-    inquire::Confirm::new(prompt)
-        .with_default(default)
-        .prompt()
+    with_prompt(|| inquire::Confirm::new(prompt).with_default(default).prompt())
         .with_context(|| format!("could not read an answer to \"{prompt}\""))
 }
 
 /// Ask the user to pick exactly one of `options`.
 pub fn select<T: Display>(prompt: &str, options: Vec<T>) -> anyhow::Result<T> {
     ensure_interactive(prompt)?;
-    inquire::Select::new(prompt, options)
-        .prompt()
+    with_prompt(|| inquire::Select::new(prompt, options).prompt())
         .with_context(|| format!("could not read an answer to \"{prompt}\""))
 }
 
@@ -110,26 +112,48 @@ pub fn multiselect_with_defaults<T: Display>(
     default_indices: &[usize],
 ) -> anyhow::Result<Vec<T>> {
     ensure_interactive(prompt)?;
-    inquire::MultiSelect::new(prompt, options)
-        .with_default(default_indices)
-        .prompt()
-        .with_context(|| format!("could not read an answer to \"{prompt}\""))
+    with_prompt(|| {
+        inquire::MultiSelect::new(prompt, options)
+            .with_default(default_indices)
+            .prompt()
+    })
+    .with_context(|| format!("could not read an answer to \"{prompt}\""))
 }
 
 /// Ask the user to pick any number of `options`, with every option
 /// pre-selected: an opt-out checklist (deselect what you don't want).
 pub fn multiselect_all<T: Display>(prompt: &str, options: Vec<T>) -> anyhow::Result<Vec<T>> {
     ensure_interactive(prompt)?;
-    inquire::MultiSelect::new(prompt, options)
-        .with_all_selected_by_default()
-        .prompt()
-        .with_context(|| format!("could not read an answer to \"{prompt}\""))
+    with_prompt(|| {
+        inquire::MultiSelect::new(prompt, options)
+            .with_all_selected_by_default()
+            .prompt()
+    })
+    .with_context(|| format!("could not read an answer to \"{prompt}\""))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::ui::render_error;
+
+    #[test]
+    fn prompts_suspend_the_active_spinner() {
+        let term = indicatif::InMemoryTerm::new(24, 80);
+        let target = indicatif::ProgressDrawTarget::term_like(Box::new(term.clone()));
+        let _spinner =
+            crate::ui::progress::new_spinner("[1/15] system libraries (apt)".into(), target);
+        let before = term.contents();
+        assert!(
+            before.contains("[1/15] system libraries (apt)"),
+            "the spinner must be drawn before the prompt, drawn was: {before:?}"
+        );
+        let during = with_prompt(|| term.contents());
+        assert!(
+            !during.contains("[1/15] system libraries (apt)"),
+            "the spinner must not draw over a prompt, drawn was: {during:?}"
+        );
+    }
 
     #[test]
     fn interactive_when_stdin_is_a_tty_and_flag_unset() {

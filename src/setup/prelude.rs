@@ -537,11 +537,8 @@ mod tests {
             )
         });
         assert_eq!(thread, None);
-        let lines: Vec<&str> = transcript
-            .lines()
-            .iter()
-            .map(|(_, line)| line.as_str())
-            .collect();
+        let recorded = transcript.lines();
+        let lines: Vec<&str> = recorded.iter().map(|(_, line)| line.as_str()).collect();
         assert_eq!(lines.len(), 1, "{lines:#?}");
         assert!(
             lines[0].contains(
