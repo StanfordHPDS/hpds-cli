@@ -75,6 +75,8 @@ fn server_plan_covers_complete_provisioning_without_legacy_extras() {
         "RStudio preferences",
         "code-server@<user>",
         "quarto.path",
+        "system updates (apt upgrade)",
+        "--force-confdef -o Dpkg::Options::=--force-confold upgrade -y",
     ] {
         assert!(output.contains(required), "missing {required}: {output}");
     }
@@ -82,9 +84,11 @@ fn server_plan_covers_complete_provisioning_without_legacy_extras() {
     for omitted in [
         "miniconda",
         "conda",
-        "apt upgrade",
         "dist-upgrade",
-        "reboot",
+        "full-upgrade",
+        "sudo reboot",
+        "systemctl reboot",
+        "shutdown",
     ] {
         assert!(
             !lowercase.contains(omitted),

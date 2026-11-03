@@ -2,50 +2,54 @@
 source: src/setup/mod.rs
 expression: "plan(Profile::Server)"
 ---
-hpds setup --profile server runs these 15 steps:
-  1. system libraries (apt)
+hpds setup --profile server runs these 16 steps:
+  1. system updates (apt upgrade)
+       sudo env DEBIAN_FRONTEND=noninteractive NEEDRESTART_SUSPEND=1 apt-get -o DPkg::Lock::Timeout=600 update
+       sudo env DEBIAN_FRONTEND=noninteractive NEEDRESTART_SUSPEND=1 apt-get -o DPkg::Lock::Timeout=600 -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold upgrade -y
+       if /var/run/reboot-required exists afterwards: warn that a reboot is pending (hpds never reboots)
+  2. system libraries (apt)
        for Docker Engine, unless installed: register the Docker apt repository download.docker.com/linux/ubuntu with its signing key in /etc/apt/keyrings/docker.asc
        for R + CRAN/PPM repositories, unless installed: sudo curl -L https://rig.r-pkg.org/deb/rig.gpg -o /etc/apt/trusted.gpg.d/rig.gpg
        for R + CRAN/PPM repositories, unless installed: register the rig apt repository in /etc/apt/sources.list.d/rig.list (sudo)
        for RStudio Server, unless the installed version is current: download the latest stable RStudio Server amd64 package from Posit and verify its Debian package identity with dpkg-deb
        for code-server + extensions, unless code-server is installed: download the latest code-server amd64 package from github.com/coder/code-server releases, check it against GitHub's sha256 digest, and verify its Debian package identity with dpkg-deb
-       sudo env DEBIAN_FRONTEND=noninteractive NEEDRESTART_SUSPEND=1 apt-get -o DPkg::Lock::Timeout=600 update
+       sudo env DEBIAN_FRONTEND=noninteractive NEEDRESTART_SUSPEND=1 apt-get -o DPkg::Lock::Timeout=600 update (unless system updates (apt upgrade) refreshed the lists and this run added no apt sources)
        if the refresh fails: remove the apt sources this run added and refresh again (their steps then install their own packages)
        sudo env DEBIAN_FRONTEND=noninteractive NEEDRESTART_SUSPEND=1 apt-get -o DPkg::Lock::Timeout=600 install -y build-essential ca-certificates curl gnupg libcurl4-openssl-dev libfontconfig1-dev libfreetype6-dev libfribidi-dev libgit2-dev libharfbuzz-dev libjpeg-dev libpng-dev libssl-dev libtiff5-dev libxml2-dev unixodbc-dev zlib1g-dev python3 python3-pip python3-venv docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin r-rig <verified rstudio-server package> <verified code-server package>
        if that install fails: sudo env DEBIAN_FRONTEND=noninteractive NEEDRESTART_SUSPEND=1 apt-get -o DPkg::Lock::Timeout=600 install -y build-essential ca-certificates curl gnupg libcurl4-openssl-dev libfontconfig1-dev libfreetype6-dev libfribidi-dev libgit2-dev libharfbuzz-dev libjpeg-dev libpng-dev libssl-dev libtiff5-dev libxml2-dev unixodbc-dev zlib1g-dev python3 python3-pip python3-venv (the other steps then install their own packages)
-  2. Docker Engine
+  3. Docker Engine
        if Docker Engine is still missing, install it from download.docker.com/linux/ubuntu (docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin); add <user> to the docker group
-  3. stable Rust
+  4. stable Rust
        install or update stable Rust with verified rustup
-  4. R + CRAN/PPM repositories
+  5. R + CRAN/PPM repositories
        hpds install r
        ensure the Posit Package Manager CRAN repository line is present once
-  5. Python + PPM pip configuration
+  6. Python + PPM pip configuration
        sudo env DEBIAN_FRONTEND=noninteractive NEEDRESTART_SUSPEND=1 apt-get -o DPkg::Lock::Timeout=600 install -y python3 python3-pip python3-venv (unless system libraries (apt) installed them)
        sudo sh -c printf '[global]\nindex-url = https://packagemanager.posit.co/pypi/latest/simple\n' > /etc/pip.conf
-  6. quarto
+  7. quarto
        hpds install quarto (latest stable)
-  7. tinytex
+  8. tinytex
        hpds install tinytex
-  8. RStudio Server
+  9. RStudio Server
        hpds install rstudio-server (latest stable)
        if systemd runs this host and rstudio-server is not active: sudo systemctl reset-failed rstudio-server; sudo systemctl restart rstudio-server
-  9. RStudio preferences
+ 10. RStudio preferences
        merge RStudio preferences: insert_native_pipe_operator=true save_workspace=never load_workspace=never rainbow_parentheses=true rainbow_fenced_divs=true
- 10. code-server + extensions
-       if code-server is still missing, download and verify its package as in step 1 and install it with sudo env DEBIAN_FRONTEND=noninteractive NEEDRESTART_SUSPEND=1 apt-get -o DPkg::Lock::Timeout=600 install -y <verified code-server package>
+ 11. code-server + extensions
+       if code-server is still missing, download and verify its package as in step 2 and install it with sudo env DEBIAN_FRONTEND=noninteractive NEEDRESTART_SUSPEND=1 apt-get -o DPkg::Lock::Timeout=600 install -y <verified code-server package>
        code-server --install-extension ms-python.python --install-extension ms-toolsai.jupyter --install-extension quarto.quarto --install-extension charliermarsh.ruff --install-extension tomoki1207.pdf
        set quarto.path to <home>/.local/bin/quarto and systemctl enable --now code-server@<user>
- 11. gh
+ 12. gh
        hpds install gh (latest stable)
- 12. duckdb
+ 13. duckdb
        hpds install duckdb (latest stable)
- 13. uv + ruff + sqlfluff
+ 14. uv + ruff + sqlfluff
        hpds install uv (latest stable)
        uv tool install --upgrade ruff
        uv tool install --upgrade sqlfluff
        uv tool update-shell
- 14. rig
+ 15. rig
        hpds install rig
- 15. git defaults
+ 16. git defaults
        hpds git setup

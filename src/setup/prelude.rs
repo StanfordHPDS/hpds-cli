@@ -1,4 +1,4 @@
-//! The apt prelude: the server profile's first step installs, in one apt
+//! The apt prelude: the server profile's second step installs, in one apt
 //! transaction, the packages every selected step needs.
 //!
 //! Each step declares its share ([`AptShare`]). The prelude registers the
@@ -13,7 +13,7 @@ use std::thread::{Scope, ScopedJoinHandle};
 
 use anyhow::anyhow;
 
-use super::{SetupDeps, Step, server};
+use super::{SYSTEM_UPDATES, SetupDeps, Step, server};
 use crate::install::installers::rig;
 use crate::install::{self, DownloadedPackage};
 use crate::ui::{self, HintExt};
@@ -183,7 +183,14 @@ pub(super) fn describe(all: &[Step]) -> Vec<String> {
             deb.plan()
         ));
     }
-    lines.push(install::apt_get_command_line(&["update"]));
+    let refresh = install::apt_get_command_line(&["update"]);
+    if all.iter().any(|step| step.title == SYSTEM_UPDATES) {
+        lines.push(format!(
+            "{refresh} (unless {SYSTEM_UPDATES} refreshed the lists and this run added no apt sources)"
+        ));
+    } else {
+        lines.push(refresh);
+    }
     if !plan.repos.is_empty() {
         lines.push(
             "if the refresh fails: remove the apt sources this run added and refresh again (their steps then install their own packages)"
@@ -208,10 +215,17 @@ pub(super) fn describe(all: &[Step]) -> Vec<String> {
 }
 
 /// Run the prelude for `selected`, returning the titles of the steps
-/// whose [`AptShare::Packages`] it installed. Fails only when the package
-/// lists cannot be refreshed even without this run's repositories, or
-/// when the install of the distribution packages alone fails.
-pub(super) fn run(selected: &[Step], deps: &SetupDeps) -> anyhow::Result<Vec<&'static str>> {
+/// whose [`AptShare::Packages`] it installed. `lists_fresh` says the
+/// package lists were already refreshed in this run; the prelude then
+/// refreshes them only when it registers an apt repository. Fails only
+/// when the package lists cannot be refreshed even without this run's
+/// repositories, or when the install of the distribution packages alone
+/// fails.
+pub(super) fn run(
+    selected: &[Step],
+    deps: &SetupDeps,
+    lists_fresh: bool,
+) -> anyhow::Result<Vec<&'static str>> {
     let plan = prelude_plan(selected);
     let base_titles: Vec<&'static str> = selected
         .iter()
@@ -230,7 +244,11 @@ pub(super) fn run(selected: &[Step], deps: &SetupDeps) -> anyhow::Result<Vec<&'s
             .map(|(deb, title)| Preparation::start(scope, *deb, title, deps))
             .collect();
         let mut registered = register_missing(&plan, deps);
-        let refreshed = refresh(deps, &mut registered);
+        let refreshed = if lists_fresh && registered.is_empty() {
+            Ok(())
+        } else {
+            refresh(deps, &mut registered)
+        };
         let running: Vec<&str> = preparations
             .iter()
             .filter(|preparation| preparation.is_running())
@@ -329,10 +347,11 @@ impl<'scope> Preparation<'scope> {
         deps: &SetupDeps<'a>,
     ) -> Self {
         let thread_deps = deps.for_thread();
+        let log_path = ui::log_path();
         let spawned = std::thread::Builder::new()
             .name(deb.thread_name().to_string())
             .spawn_scoped(scope, move || {
-                ui::capture(|| prepare_file(deb, &thread_deps))
+                ui::with_log_path(log_path, || ui::capture(|| prepare_file(deb, &thread_deps)))
             });
         Preparation {
             deb,
@@ -537,11 +556,8 @@ mod tests {
             )
         });
         assert_eq!(thread, None);
-        let lines: Vec<&str> = transcript
-            .lines()
-            .iter()
-            .map(|(_, line)| line.as_str())
-            .collect();
+        let recorded = transcript.lines();
+        let lines: Vec<&str> = recorded.iter().map(|(_, line)| line.as_str()).collect();
         assert_eq!(lines.len(), 1, "{lines:#?}");
         assert!(
             lines[0].contains(

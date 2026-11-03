@@ -23,7 +23,11 @@ use anyhow::anyhow;
 
 pub use fetch::{CacheFetcher, ReleaseFetcher};
 pub(crate) use fetch::{ReleaseAsset, latest_release_asset};
-pub use runner::{CommandOutput, CommandRunner, SystemRunner};
+pub(crate) use runner::command_failure;
+pub(crate) use runner::logged_output;
+#[cfg(test)]
+pub(crate) use runner::shell_word;
+pub use runner::{CommandOutput, CommandRunner, LoggingRunner, SystemRunner};
 
 use crate::tools::Os;
 use crate::ui::{self, HintExt};
@@ -357,16 +361,27 @@ impl InstallCtx<'_> {
         what: &str,
         commands: &[&[&str]],
     ) -> anyhow::Result<()> {
-        ui::println(&format!("{what} (needs sudo)"));
-        for command in commands {
-            ui::println(&format!("  will run: sudo {}", command.join(" ")));
+        let approved = self.yes || self.sudo_approved.get();
+        let mut lines = vec![format!("{what} (needs sudo)")];
+        lines.extend(
+            commands
+                .iter()
+                .map(|command| format!("  will run: sudo {}", command.join(" "))),
+        );
+        for line in &lines {
+            if approved {
+                ui::println(line);
+            } else {
+                // A prompt is about to ask about these commands, so they
+                // reach the terminal whatever compact mode or `--quiet`
+                // would hide, and the log keeps them as well.
+                ui::log_detail(line);
+                ui::report(line);
+            }
         }
-        approve_sudo(
-            what,
-            self.yes || self.sudo_approved.get(),
-            std::io::stdin().is_terminal(),
-            |prompt| ui::confirm(prompt, true),
-        )
+        approve_sudo(what, approved, std::io::stdin().is_terminal(), |prompt| {
+            ui::confirm(prompt, true)
+        })
     }
 
     /// Run `sudo <args>` that [`Self::approve_sudo_commands`] already
@@ -400,10 +415,12 @@ impl InstallCtx<'_> {
         self.sudo_step(what, "env", &env_args, program)
     }
 
-    /// Echo the underlying command when `-v` is on.
+    /// Echo the underlying command on the terminal when `-v` is on. The
+    /// echo is kept out of the log: setup's [`LoggingRunner`] already
+    /// writes every command it runs there.
     fn log_command(&self, program: &str, args: &[&str]) {
         if self.verbose {
-            ui::println(&format!("$ {program} {}", args.join(" ")));
+            ui::echo(&format!("$ {program} {}", args.join(" ")));
         }
     }
 }
@@ -519,21 +536,19 @@ fn approve_sudo(
 }
 
 /// Turn a finished process into an error when it exited nonzero, carrying
-/// whatever the process said on stderr (or stdout as a fallback).
+/// the tail of what the process said (see [`command_failure`]). When a log
+/// is open (see [`ui::log_path`]) the error already names it as the place
+/// for the full output, so the hint only says to fix and re-run; otherwise
+/// it suggests `-v`.
 fn ensure_step_success(program: &str, out: CommandOutput) -> anyhow::Result<CommandOutput> {
     if out.success {
         return Ok(out);
     }
-    let detail = match out.stderr.trim() {
-        "" => out.stdout.trim().to_string(),
-        stderr => stderr.to_string(),
+    let hint = match ui::log_path() {
+        Some(_) => "fix the reported problem and re-run setup",
+        None => "re-run with -v to see the exact commands hpds ran",
     };
-    let message = if detail.is_empty() {
-        format!("`{program}` failed")
-    } else {
-        format!("`{program}` failed: {detail}")
-    };
-    Err(anyhow!(message)).hint("re-run with -v to see the exact commands hpds ran")
+    Err(command_failure(&format!("`{program}` failed"), &out)).hint(hint)
 }
 
 /// Pull the first version-shaped token (`1.8.27`, `v2.95.0`, ...) out of a
@@ -1094,6 +1109,213 @@ mod tests {
         assert!(out.contains("hint:"), "{out}");
     }
 
+    /// `count` numbered lines (`<label> line 01`, ...), with a blank line
+    /// after every third so blank lines are seen not to count.
+    fn numbered_lines(label: &str, count: usize) -> String {
+        let mut text = String::new();
+        for n in 1..=count {
+            text.push_str(&format!("{label} line {n:02}\n"));
+            if n % 3 == 0 {
+                text.push_str("   \n");
+            }
+        }
+        text
+    }
+
+    #[test]
+    fn a_sudo_prompt_shows_what_it_approves_in_compact_mode() {
+        // Keeps the test from waiting on a prompt when cargo test runs
+        // with a terminal attached to stdin.
+        ui::set_non_interactive(true);
+        let runner = FakeRunner::default();
+        let ctx = ctx(&runner);
+        let _compact = ui::compact();
+        let (result, written) = ui::tap_terminal(|| {
+            ctx.approve_sudo_commands(
+                "installing R via rig",
+                &[&["installer", "-pkg", "rig.pkg", "-target", "/"]],
+            )
+        });
+        assert_eq!(
+            written,
+            vec![
+                (
+                    ui::Stream::Stdout,
+                    "installing R via rig (needs sudo)".to_string()
+                ),
+                (
+                    ui::Stream::Stdout,
+                    "  will run: sudo installer -pkg rig.pkg -target /".to_string()
+                ),
+            ]
+        );
+        let err = result.expect_err("nobody can answer the prompt");
+        let out = render_error(&err, false);
+        if std::io::stdin().is_terminal() {
+            assert!(out.contains("non-interactively"), "{out}");
+        } else {
+            assert!(out.contains("non-interactive session"), "{out}");
+        }
+        assert!(runner.calls().is_empty(), "{:?}", runner.calls());
+    }
+
+    #[test]
+    fn a_pre_approved_sudo_step_keeps_its_commands_off_a_compact_terminal() {
+        let runner = FakeRunner::default();
+        let mut ctx = ctx(&runner);
+        ctx.yes = true;
+        let _compact = ui::compact();
+        let (result, written) = ui::tap_terminal(|| {
+            ctx.approve_sudo_commands("installing R via rig", &[&["installer", "-pkg", "rig.pkg"]])
+        });
+        assert!(result.is_ok(), "{result:?}");
+        assert!(written.is_empty(), "{written:?}");
+    }
+
+    fn failing_apt_update(runner: &FakeRunner) -> String {
+        let err = ctx(runner)
+            .run_step("refreshing package lists", "apt-get", &["update"])
+            .expect_err("step must fail");
+        render_error(&err, false)
+    }
+
+    #[test]
+    fn step_failure_keeps_only_the_last_ten_nonempty_stderr_lines() {
+        let runner =
+            FakeRunner::default().with_failure("apt-get update", &numbered_lines("stderr", 15));
+        let out = failing_apt_update(&runner);
+        for n in 1..=5 {
+            assert!(!out.contains(&format!("stderr line {n:02}")), "{out}");
+        }
+        for n in 6..=15 {
+            assert!(out.contains(&format!("stderr line {n:02}")), "{out}");
+        }
+        assert!(out.contains("(last 10 of 15 lines)"), "{out}");
+        assert!(out.contains("re-run with -v"), "{out}");
+    }
+
+    #[test]
+    fn step_failure_with_ten_lines_or_fewer_keeps_them_all_without_a_note() {
+        let runner =
+            FakeRunner::default().with_failure("apt-get update", &numbered_lines("stderr", 10));
+        let out = failing_apt_update(&runner);
+        for n in 1..=10 {
+            assert!(out.contains(&format!("stderr line {n:02}")), "{out}");
+        }
+        assert!(!out.contains("(last "), "{out}");
+    }
+
+    #[test]
+    fn step_failure_tails_stdout_when_stderr_is_empty() {
+        let runner = FakeRunner::default().with_failure_output(
+            "apt-get update",
+            &numbered_lines("stdout", 12),
+            " \n",
+        );
+        let out = failing_apt_update(&runner);
+        assert!(!out.contains("stdout line 02"), "{out}");
+        for n in 3..=12 {
+            assert!(out.contains(&format!("stdout line {n:02}")), "{out}");
+        }
+        assert!(out.contains("(last 10 of 12 lines)"), "{out}");
+    }
+
+    #[test]
+    fn step_failure_names_the_open_log_for_the_full_output() {
+        let dir = tempfile::tempdir().unwrap();
+        let log = dir.path().join("hpds-setup.log");
+        ui::open_log(&log).unwrap();
+        let runner =
+            FakeRunner::default().with_failure("apt-get update", &numbered_lines("stderr", 15));
+        let out = failing_apt_update(&runner);
+        ui::close_log();
+        assert!(
+            out.contains(&format!("full output: {}", log.display())),
+            "{out}"
+        );
+        assert!(
+            out.contains("hint: fix the reported problem and re-run setup"),
+            "{out}"
+        );
+        assert_eq!(
+            out.matches(&log.display().to_string()).count(),
+            1,
+            "the log path is named once: {out}"
+        );
+        assert!(!out.contains("re-run with -v"), "{out}");
+    }
+
+    #[test]
+    fn step_failure_without_a_log_suggests_verbose_mode() {
+        let runner = FakeRunner::default().with_failure("apt-get update", "E: offline\n");
+        let out = failing_apt_update(&runner);
+        assert!(!out.contains("full output:"), "{out}");
+        assert!(
+            out.contains("hint: re-run with -v to see the exact commands hpds ran"),
+            "{out}"
+        );
+    }
+
+    #[test]
+    fn step_failure_on_a_worker_names_the_log_it_inherited() {
+        let dir = tempfile::tempdir().unwrap();
+        let log = dir.path().join("hpds-setup.log");
+        ui::open_log(&log).unwrap();
+        let inherited = ui::log_path();
+        let runner = FakeRunner::default().with_failure("apt-get update", "E: offline\n");
+        let out = std::thread::scope(|scope| {
+            scope
+                .spawn(|| ui::with_log_path(inherited, || failing_apt_update(&runner)))
+                .join()
+                .unwrap()
+        });
+        ui::close_log();
+        assert!(
+            out.contains(&format!("full output: {}", log.display())),
+            "{out}"
+        );
+        assert!(
+            out.contains("hint: fix the reported problem and re-run setup"),
+            "{out}"
+        );
+        assert!(!out.contains("re-run with -v"), "{out}");
+    }
+
+    #[test]
+    fn sudo_step_failure_is_tailed_and_names_the_open_log() {
+        let dir = tempfile::tempdir().unwrap();
+        let log = dir.path().join("hpds-setup.log");
+        ui::open_log(&log).unwrap();
+        let runner = FakeRunner::default().with_failure(
+            "sudo apt-get install -y quarto",
+            &numbered_lines("stderr", 11),
+        );
+        let ctx = InstallCtx {
+            yes: true,
+            ..ctx(&runner)
+        };
+        let err = ctx
+            .run_sudo_step("installing quarto", "apt-get", &["install", "-y", "quarto"])
+            .expect_err("step must fail");
+        ui::close_log();
+        let out = render_error(&err, false);
+        assert!(!out.contains("stderr line 01"), "{out}");
+        assert!(out.contains("stderr line 11"), "{out}");
+        assert!(out.contains("(last 10 of 11 lines)"), "{out}");
+        assert!(
+            out.contains(&format!("full output: {}", log.display())),
+            "{out}"
+        );
+    }
+
+    #[test]
+    fn step_failure_without_an_open_log_names_no_log() {
+        let runner =
+            FakeRunner::default().with_failure("apt-get update", &numbered_lines("stderr", 15));
+        let out = failing_apt_update(&runner);
+        assert!(!out.contains("full output:"), "{out}");
+    }
+
     #[test]
     fn sudo_step_with_yes_runs_under_sudo_without_prompting() {
         let runner = FakeRunner::default().with_output("sudo apt-get install -y quarto", "");
@@ -1262,5 +1484,31 @@ mod tests {
         ctx.run_step("refreshing package lists", "apt-get", &["update"])
             .expect("step must succeed");
         assert_eq!(runner.calls(), vec!["apt-get update"]);
+    }
+
+    #[test]
+    fn verbose_echo_stays_on_the_terminal_and_the_logging_runner_logs_the_command_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let log = dir.path().join("hpds-setup.log");
+        ui::open_log(&log).unwrap();
+        let fake = FakeRunner::default().with_output("apt-get update", "");
+        let logging = LoggingRunner::new(&fake);
+        let ctx = InstallCtx {
+            verbose: true,
+            runner: &logging,
+            ..ctx(&fake)
+        };
+        let (result, written) =
+            ui::tap_terminal(|| ctx.run_step("refreshing package lists", "apt-get", &["update"]));
+        ui::close_log();
+        result.expect("step must succeed");
+        let terminal: Vec<&str> = written.iter().map(|(_, line)| line.as_str()).collect();
+        assert_eq!(terminal, ["refreshing package lists", "$ apt-get update"]);
+        let text = std::fs::read_to_string(&log).unwrap();
+        assert_eq!(text.matches("$ apt-get update").count(), 1, "{text}");
+        assert_eq!(
+            text,
+            "refreshing package lists\n$ apt-get update\nstatus: success\n"
+        );
     }
 }

@@ -19,7 +19,8 @@
 //! [`CommandRunner`]: crate::install::CommandRunner
 
 use std::collections::HashSet;
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Condvar, Mutex, MutexGuard, PoisonError, mpsc};
 
 use anyhow::anyhow;
@@ -82,7 +83,11 @@ enum Lane {
     Background,
 }
 
-/// The server profile's first step, which installs every selected step's
+/// The server profile's first step, which brings the installed system
+/// packages up to date (see [`Action::SystemUpdates`]).
+const SYSTEM_UPDATES: &str = "system updates (apt upgrade)";
+
+/// The server profile's second step, which installs every selected step's
 /// apt packages in one transaction (see [`Action::AptPrelude`]).
 const SYSTEM_LIBRARIES: &str = "system libraries (apt)";
 
@@ -107,6 +112,10 @@ enum Action {
     StepPackages(&'static str),
     /// Reconcile one typed server-host concern without shell evaluation.
     Server(server::ServerAction),
+    /// Refresh the package lists and upgrade the installed packages, then
+    /// warn when the host reports that a reboot is pending. hpds never
+    /// reboots on its own.
+    SystemUpdates,
 }
 
 /// A planned external command: announced, logged at `-v`, and executed
@@ -249,11 +258,11 @@ const PYTHON_PACKAGES: &[&str] = &["python3", "python3-pip", "python3-venv"];
 /// dev profile installs. Every external command is a static plan run
 /// through the runner seam; nothing shells out behind the plan's back.
 ///
-/// The first step installs every selected step's apt packages in one
-/// transaction (each step's `apt` share); the steps that own those
-/// packages keep their own install paths, which find the packages
-/// installed and do nothing, or install them when the first step could
-/// not.
+/// The first step brings the installed packages up to date. The second
+/// installs every selected step's apt packages in one transaction (each
+/// step's `apt` share); the steps that own those packages keep their own
+/// install paths, which find the packages installed and do nothing, or
+/// install them when the second step could not.
 ///
 /// The background lane holds the steps that touch only the invoking
 /// user's files and never use sudo, apt, or a prompt under `--yes`. The
@@ -264,6 +273,13 @@ const PYTHON_PACKAGES: &[&str] = &["python3", "python3-pip", "python3-venv"];
 /// other background steps download over TLS with hpds's own client or
 /// rustup's, so they start right away.
 const SERVER_STEPS: &[Step] = &[
+    Step {
+        title: SYSTEM_UPDATES,
+        lane: Lane::Foreground,
+        requires: &[],
+        apt: AptShare::None,
+        actions: &[Action::SystemUpdates],
+    },
     Step {
         title: SYSTEM_LIBRARIES,
         lane: Lane::Foreground,
@@ -438,7 +454,11 @@ pub fn steps(profile: Profile) -> &'static [Step] {
 /// The numbered plan for a profile: every step, and under each step the
 /// exact commands it will run.
 pub fn plan(profile: Profile) -> String {
-    let steps = steps(profile);
+    plan_for(profile, steps(profile))
+}
+
+/// The numbered plan for `steps`, run under `profile`'s name.
+fn plan_for(profile: Profile, steps: &[Step]) -> String {
     let mut out = format!(
         "hpds setup --profile {} runs these {} steps:\n",
         profile.name(),
@@ -491,7 +511,51 @@ fn describe(step: &Step, action: &Action, all: &[Step]) -> Vec<String> {
             }]
         }
         Action::Server(action) => vec![server::describe(action).to_string()],
+        Action::SystemUpdates => vec![
+            install::apt_get_command_line(&["update"]),
+            install::apt_get_command_line(UPGRADE_ARGS),
+            format!(
+                "if {} exists afterwards: warn that a reboot is pending (hpds never reboots)",
+                server::REBOOT_REQUIRED
+            ),
+        ],
     }
+}
+
+/// The `apt-get upgrade` arguments: keep a locally changed configuration
+/// file and take the package's default for any other, so dpkg never
+/// prompts.
+const UPGRADE_ARGS: &[&str] = &[
+    "-o",
+    "Dpkg::Options::=--force-confdef",
+    "-o",
+    "Dpkg::Options::=--force-confold",
+    "upgrade",
+    "-y",
+];
+
+/// The warning raised when the host reports a pending reboot after the
+/// system updates.
+const REBOOT_PENDING: &str = "a reboot is pending to finish the system updates; run `sudo reboot`";
+
+/// Refresh the package lists and upgrade the installed packages, recording
+/// in `run` that the lists are fresh once the refresh succeeds. A failed
+/// refresh skips the upgrade. Whether or not the upgrade succeeds, a
+/// pending reboot is reported as a warning; hpds never reboots on its own.
+fn system_updates(deps: &SetupDeps, run: &Run) -> anyhow::Result<()> {
+    deps.install
+        .run_apt_step("refreshing apt package lists", &["update"])?;
+    run.mark_lists_refreshed();
+    let upgraded = deps
+        .install
+        .run_apt_step("upgrading the installed packages", UPGRADE_ARGS);
+    if deps
+        .server_host
+        .exists(&deps.server_host.reboot_required_path())
+    {
+        ui::warn(REBOOT_PENDING);
+    }
+    upgraded.map(|_| ())
 }
 
 /// Reduce the full step list to what should actually run: `--yes` takes
@@ -525,19 +589,127 @@ pub fn choose_steps(all: &[Step], yes: bool, interactive: bool) -> anyhow::Resul
 /// it, or when no background step is selected, every step runs here, one
 /// at a time, in plan order.
 pub fn execute(steps: &[Step], deps: &SetupDeps, overlap: bool) -> Vec<StepResult> {
-    let run = Run::new(steps);
-    let (foreground, background) = partition(steps);
-    if overlap && !background.is_empty() {
-        return execute_overlapped(&run, &foreground, &background, deps);
-    }
-    execute_sequential(&run, deps)
+    execute_rendered(steps, deps, overlap, ui::is_quiet()).0
 }
 
-/// What every step of one run shares: the selected steps, and the steps
-/// whose own apt packages the apt prelude has installed.
+/// [`execute`], also returning the warnings the steps raised in compact
+/// mode, deduplicated in the order first seen (see [`Render`]). `quiet`
+/// keeps step lines off the terminal (see [`Render::quiet`]).
+fn execute_rendered(
+    steps: &[Step],
+    deps: &SetupDeps,
+    overlap: bool,
+    quiet: bool,
+) -> (Vec<StepResult>, Vec<String>) {
+    let run = Run::new(steps);
+    let mut render = Render::new(steps.len(), quiet);
+    let (foreground, background) = partition(steps);
+    let results = if overlap && !background.is_empty() {
+        execute_overlapped(&run, &foreground, &background, deps, &mut render)
+    } else {
+        execute_sequential(&run, deps, &mut render)
+    };
+    (results, render.next_steps)
+}
+
+/// How a run's steps appear on the terminal.
+///
+/// Outside compact mode (`-v`, or a caller that never entered it) each step
+/// prints its `[n/N] title` header and then its output, as it always has.
+/// In compact mode the header goes to the log only, a spinner labeled with
+/// it marks a running foreground step, and the step's result is one
+/// `[n/N] title ✓`/`✗` line, with any error the step reported indented
+/// under it. The warnings the step raised are kept for the run's closing
+/// next steps.
+struct Render {
+    compact: bool,
+    /// `--quiet`: step lines go to the log only, while a failed step's
+    /// error still reaches the terminal.
+    quiet: bool,
+    total: usize,
+    /// Warnings raised so far, deduplicated, in the order first seen.
+    next_steps: Vec<String>,
+}
+
+/// How far a failed step's error is indented under its step line.
+const ERROR_INDENT: &str = "        ";
+
+impl Render {
+    fn new(total: usize, quiet: bool) -> Self {
+        Render {
+            compact: ui::is_compact(),
+            quiet,
+            total,
+            next_steps: Vec::new(),
+        }
+    }
+
+    /// Introduce a step about to run on this thread. In compact mode the
+    /// returned spinner marks it until dropped.
+    fn start(&self, index: usize, title: &str) -> Option<ui::Spinner> {
+        let header = header(index, self.total, title);
+        if self.compact {
+            ui::log_detail(&header);
+            Some(ui::spinner(header))
+        } else {
+            ui::println(&header);
+            None
+        }
+    }
+
+    /// Introduce a step whose output is replayed after it ran on the
+    /// background lane.
+    fn start_background(&self, index: usize, title: &str) {
+        let header = background_header(index, self.total, title);
+        if self.compact {
+            ui::log_detail(&header);
+        } else {
+            ui::println(&header);
+        }
+    }
+
+    /// Close a step: in compact mode, its result line, the errors it
+    /// reported, and its warnings kept for the next steps. The errors reach
+    /// the terminal even under `--quiet`, and stay out of the log, which
+    /// already holds them as the step reported them.
+    fn end(&mut self, index: usize, result: &StepResult) {
+        if !self.compact {
+            return;
+        }
+        let mark = if result.error.is_some() { "✗" } else { "✓" };
+        ui::status_line(
+            &format!("{} {mark}", header(index, self.total, result.title)),
+            self.quiet,
+        );
+        let continuing = continuing_warning(result.title);
+        for report in ui::take_reports() {
+            match report.kind {
+                ui::ReportKind::Error => {
+                    let text = report
+                        .message
+                        .strip_prefix("error: ")
+                        .unwrap_or(&report.message);
+                    for line in text.lines() {
+                        ui::report(&format!("{ERROR_INDENT}{line}"));
+                    }
+                }
+                ui::ReportKind::Warning => {
+                    if report.message != continuing && !self.next_steps.contains(&report.message) {
+                        self.next_steps.push(report.message);
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// What every step of one run shares: the selected steps, the steps
+/// whose own apt packages the apt prelude has installed, and whether the
+/// system updates have refreshed the package lists.
 struct Run<'s> {
     selected: &'s [Step],
     covered: Mutex<HashSet<&'static str>>,
+    lists_refreshed: AtomicBool,
 }
 
 impl<'s> Run<'s> {
@@ -545,7 +717,18 @@ impl<'s> Run<'s> {
         Run {
             selected,
             covered: Mutex::new(HashSet::new()),
+            lists_refreshed: AtomicBool::new(false),
         }
+    }
+
+    /// Record that the system updates refreshed the package lists.
+    fn mark_lists_refreshed(&self) {
+        self.lists_refreshed.store(true, Ordering::SeqCst);
+    }
+
+    /// Whether the system updates refreshed the package lists in this run.
+    fn lists_refreshed(&self) -> bool {
+        self.lists_refreshed.load(Ordering::SeqCst)
     }
 
     /// Record that the apt prelude installed these steps' packages.
@@ -566,14 +749,18 @@ impl<'s> Run<'s> {
 }
 
 /// Run the selected steps on this thread, one at a time, in plan order.
-fn execute_sequential(run: &Run, deps: &SetupDeps) -> Vec<StepResult> {
-    let total = run.selected.len();
+fn execute_sequential(run: &Run, deps: &SetupDeps, render: &mut Render) -> Vec<StepResult> {
     run.selected
         .iter()
         .enumerate()
         .map(|(index, step)| {
-            ui::println(&header(index, total, step.title));
-            run_step(step, deps, run)
+            let spinner = render.start(index, step.title);
+            let result = run_step(step, deps, run);
+            if let Some(spinner) = spinner {
+                spinner.finish_and_clear();
+            }
+            render.end(index, &result);
+            result
         })
         .collect()
 }
@@ -595,7 +782,7 @@ fn run_step(step: &Step, deps: &SetupDeps, run: &Run) -> StepResult {
         Ok(()) => None,
         Err(err) => {
             ui::error(&err);
-            ui::warn(&format!("step failed: {}; continuing", step.title));
+            ui::warn(&continuing_warning(step.title));
             Some(format!("{err:#}"))
         }
     };
@@ -603,6 +790,12 @@ fn run_step(step: &Step, deps: &SetupDeps, run: &Run) -> StepResult {
         title: step.title,
         error,
     }
+}
+
+/// The warning that a step failed and the run goes on. The step's line
+/// already says it failed, so compact mode leaves it out of the next steps.
+fn continuing_warning(title: &str) -> String {
+    format!("step failed: {title}; continuing")
 }
 
 /// One lane's steps, in plan order, each with its plan index.
@@ -620,8 +813,7 @@ fn partition(steps: &[Step]) -> (LaneSteps, LaneSteps) {
 
 /// Why a background step has no result, and what to do about it.
 const UNREPORTED: &str = "the background worker stopped before this step reported a result";
-const UNREPORTED_HINT: &str =
-    "re-run `hpds setup` to retry it; steps that completed are idempotent and will no-op";
+const UNREPORTED_HINT: &str = "re-run `hpds setup --profile server` to retry it; steps that completed are idempotent and will no-op";
 
 /// One background step's outcome, on its way to the main thread.
 struct Finished {
@@ -695,7 +887,9 @@ impl Drop for ReleaseForeground<'_> {
 /// step first waits for the selected steps it `requires` on the other
 /// lane. This thread replays
 /// background transcripts, under their headers, between foreground steps
-/// as they arrive, then the rest once its own lane is done.
+/// as they arrive, then the rest once its own lane is done. The worker is
+/// given this thread's log path (see [`ui::with_log_path`]), so its command
+/// failures name the log its replayed lines go to.
 ///
 /// If the worker panics, the steps it never reported fail with a hint to
 /// re-run, and every foreground result stands. A step that panics loses
@@ -706,10 +900,12 @@ fn execute_overlapped(
     foreground: &[(usize, Step)],
     background: &[(usize, Step)],
     deps: &SetupDeps,
+    render: &mut Render,
 ) -> Vec<StepResult> {
     let total = run.selected.len();
     let completed = Completed::new(foreground.iter().map(|(_, step)| step.title));
     let worker_deps = deps.for_thread();
+    let log_path = ui::log_path();
     let (tx, rx) = mpsc::channel::<Finished>();
 
     let results = std::thread::scope(|scope| {
@@ -717,7 +913,9 @@ fn execute_overlapped(
         let worker = std::thread::Builder::new()
             .name("hpds-setup-background".to_string())
             .spawn_scoped(scope, move || {
-                run_background(background, &worker_deps, run, completed, &tx);
+                ui::with_log_path(log_path, || {
+                    run_background(background, &worker_deps, run, completed, &tx);
+                });
             });
         let worker = match worker {
             Ok(worker) => worker,
@@ -730,16 +928,20 @@ fn execute_overlapped(
         };
 
         let mut lane = ForegroundLane {
-            total,
             results: (0..total).map(|_| None).collect(),
             unreported: background.iter().map(|(_, step)| step.title).collect(),
             rx,
+            render: &mut *render,
         };
         let release = ReleaseForeground(completed);
         for (index, step) in foreground {
             lane.wait_for(step.requires);
-            ui::println(&header(*index, total, step.title));
+            let spinner = lane.render.start(*index, step.title);
             let result = run_step(step, deps, run);
+            if let Some(spinner) = spinner {
+                spinner.finish_and_clear();
+            }
+            lane.render.end(*index, &result);
             if let Some(slot) = lane.results.get_mut(*index) {
                 *slot = Some(result);
             }
@@ -758,12 +960,14 @@ fn execute_overlapped(
             if let Some(slot) = results.get_mut(*index)
                 && slot.is_none()
             {
-                ui::println(&background_header(*index, total, step.title));
+                render.start_background(*index, step.title);
                 ui::error(&unreported_error());
-                *slot = Some(StepResult {
+                let result = StepResult {
                     title: step.title,
                     error: Some(format!("{UNREPORTED}; {UNREPORTED_HINT}")),
-                });
+                };
+                render.end(*index, &result);
+                *slot = Some(result);
             }
         }
         Some(results)
@@ -771,7 +975,7 @@ fn execute_overlapped(
 
     match results {
         Some(results) => results.into_iter().flatten().collect(),
-        None => execute_sequential(run, deps),
+        None => execute_sequential(run, deps, render),
     }
 }
 
@@ -802,20 +1006,21 @@ fn run_background(
 
 /// The main thread's view of an overlapped run: results so far, and the
 /// background steps that have not reported yet.
-struct ForegroundLane {
-    total: usize,
+struct ForegroundLane<'r> {
     results: Vec<Option<StepResult>>,
     unreported: HashSet<&'static str>,
     rx: mpsc::Receiver<Finished>,
+    render: &'r mut Render,
 }
 
-impl ForegroundLane {
+impl ForegroundLane<'_> {
     /// Record a background step's outcome and replay its output.
     fn record(&mut self, finished: Finished) {
         let title = finished.result.title;
         self.unreported.remove(title);
-        ui::println(&background_header(finished.index, self.total, title));
+        self.render.start_background(finished.index, title);
         ui::replay(&finished.transcript);
+        self.render.end(finished.index, &finished.result);
         if let Some(slot) = self.results.get_mut(finished.index) {
             *slot = Some(finished.result);
         }
@@ -874,7 +1079,7 @@ fn run_actions(step: &Step, deps: &SetupDeps, run: &Run) -> anyhow::Result<()> {
                 }
             }
             Action::AptPrelude => {
-                let covered = prelude::run(run.selected, deps)?;
+                let covered = prelude::run(run.selected, deps, run.lists_refreshed())?;
                 run.cover(covered);
             }
             Action::StepPackages(name) => {
@@ -894,6 +1099,7 @@ fn run_actions(step: &Step, deps: &SetupDeps, run: &Run) -> anyhow::Result<()> {
             Action::Server(action) => {
                 server::run(action, deps.server_host, deps.install.runner)?;
             }
+            Action::SystemUpdates => system_updates(deps, run)?,
         }
     }
     Ok(())
@@ -911,59 +1117,259 @@ pub fn summary(results: &[StepResult]) -> String {
     out
 }
 
-/// Print the summary, optionally write it to a log file, and turn any
-/// failed step into the run's error (exit code 1).
-pub fn finish(results: &[StepResult], log_path: Option<&Path>) -> anyhow::Result<()> {
+/// End the run: the summary block, then turn any failed step into the
+/// run's error (exit code 1), whose hint names `profile`'s command.
+pub fn finish(profile: Profile, results: &[StepResult]) -> anyhow::Result<()> {
     if results.is_empty() {
         ui::println("no steps selected; nothing to do");
         return Ok(());
     }
-    let text = summary(results);
-    ui::println(text.trim_end());
-    if let Some(path) = log_path {
-        match std::fs::write(path, &text) {
-            Ok(()) => ui::println(&format!("summary written to {}", path.display())),
-            Err(err) => ui::warn(&format!(
-                "could not write the summary log to {}: {err}",
-                path.display()
-            )),
+    ui::println(summary(results).trim_end());
+    if failed_count(results) == 0 {
+        ui::success("setup complete");
+    }
+    outcome(profile, results)
+}
+
+/// End a compact run: the summary block (which compact mode sends to the
+/// log only), then on the terminal the one-line tally and `next_steps`,
+/// the warnings the steps raised. `quiet` keeps the tally off the terminal;
+/// the next steps reach it regardless and stay out of the log, which holds
+/// each warning as it was raised. The outcome is the same as [`finish`]'s.
+fn finish_compact(
+    profile: Profile,
+    results: &[StepResult],
+    next_steps: &[String],
+    quiet: bool,
+) -> anyhow::Result<()> {
+    if results.is_empty() {
+        return finish(profile, results);
+    }
+    ui::println(summary(results).trim_end());
+    let succeeded = results.len() - failed_count(results);
+    ui::status_line(
+        &tally(succeeded, results.len(), ui::log_path().as_deref()),
+        quiet,
+    );
+    if !next_steps.is_empty() {
+        ui::report("Next steps:");
+        for step in next_steps {
+            ui::report(&format!("  - {step}"));
         }
     }
-    let failed = results.iter().filter(|r| r.error.is_some()).count();
+    outcome(profile, results)
+}
+
+/// How many steps failed.
+fn failed_count(results: &[StepResult]) -> usize {
+    results.iter().filter(|r| r.error.is_some()).count()
+}
+
+/// Turn any failed step into the run's error (exit code 1).
+fn outcome(profile: Profile, results: &[StepResult]) -> anyhow::Result<()> {
+    let failed = failed_count(results);
     if failed == 0 {
-        ui::success("setup complete");
         Ok(())
     } else {
-        Err(anyhow!("{failed} of {} setup steps failed", results.len())).hint(
-            "fix the reported problems and re-run `hpds setup`; completed steps are idempotent and will no-op",
-        )
+        Err(anyhow!("{failed} of {} setup steps failed", results.len())).hint(format!(
+            "fix the reported problems and re-run `{}`; completed steps are idempotent and will no-op",
+            rerun_command(profile)
+        ))
     }
+}
+
+/// The command that re-runs `profile`'s setup.
+fn rerun_command(profile: Profile) -> &'static str {
+    match profile {
+        Profile::Dev => "hpds setup",
+        Profile::Server => "hpds setup --profile server",
+    }
+}
+
+/// The closing line of a compact run: how many of `total` steps succeeded,
+/// and where the log is, if there is one.
+fn tally(succeeded: usize, total: usize, log: Option<&Path>) -> String {
+    let steps = if total == 1 { "step" } else { "steps" };
+    let count = if succeeded == total {
+        format!("All {total} {steps} succeeded.")
+    } else {
+        format!("{succeeded} of {total} {steps} succeeded.")
+    };
+    match log {
+        Some(path) => format!("{count} Details: {}", path.display()),
+        None => count,
+    }
+}
+
+/// The first line a run shows: the profile, how many steps will run, and
+/// where the log is, if there is one.
+fn opening_line(profile: Profile, steps: usize, log: Option<&Path>) -> String {
+    let noun = if steps == 1 { "step" } else { "steps" };
+    let log = match log {
+        Some(path) => format!("Full log: {}", path.display()),
+        None => "No log file.".to_string(),
+    };
+    format!(
+        "hpds setup --profile {}: {steps} {noun}. {log}",
+        profile.name()
+    )
+}
+
+/// What a run's log header records besides the profile.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RunInfo {
+    /// The hpds version.
+    pub version: String,
+    /// When the run started, as [`utc_timestamp`] formats it.
+    pub started: String,
+    /// The operating system and CPU architecture.
+    pub os: String,
+}
+
+impl RunInfo {
+    /// This process: its version, the current time, and the host. A clock
+    /// set before 1970 gives `unknown time`.
+    pub fn current() -> Self {
+        let started = match std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH) {
+            Ok(elapsed) => utc_timestamp(elapsed.as_secs()),
+            Err(_) => "unknown time".to_string(),
+        };
+        RunInfo {
+            version: env!("CARGO_PKG_VERSION").to_string(),
+            started,
+            os: format!("{} {}", std::env::consts::OS, std::env::consts::ARCH),
+        }
+    }
+}
+
+/// `secs` seconds after the Unix epoch, as `YYYY-MM-DD HH:MM:SS UTC`.
+///
+/// The date comes from the day count by the proleptic Gregorian
+/// civil-from-days conversion, in 400-year eras of 146,097 days counted
+/// from 0000-03-01, so leap days fall at the end of each era-year.
+pub fn utc_timestamp(secs: u64) -> String {
+    let days = secs / 86_400;
+    let of_day = secs % 86_400;
+    let (hour, minute, second) = (of_day / 3600, of_day % 3600 / 60, of_day % 60);
+
+    // Days since 0000-03-01.
+    let z = days + 719_468;
+    let era = z / 146_097;
+    let day_of_era = z % 146_097;
+    let year_of_era =
+        (day_of_era - day_of_era / 1460 + day_of_era / 36_524 - day_of_era / 146_096) / 365;
+    let day_of_year = day_of_era - (365 * year_of_era + year_of_era / 4 - year_of_era / 100);
+    // Months counted from March.
+    let month_index = (5 * day_of_year + 2) / 153;
+    let day = day_of_year - (153 * month_index + 2) / 5 + 1;
+    let month = if month_index < 10 {
+        month_index + 3
+    } else {
+        month_index - 9
+    };
+    let year = era * 400 + year_of_era + u64::from(month <= 2);
+    format!("{year:04}-{month:02}-{day:02} {hour:02}:{minute:02}:{second:02} UTC")
+}
+
+/// Where a run's log goes, and what its header records.
+#[derive(Debug, Clone)]
+pub struct SetupLog {
+    /// The log file, appended to. `None` when no path could be resolved
+    /// (`HOME` is unset); the run then continues without a log.
+    pub path: Option<PathBuf>,
+    pub info: RunInfo,
 }
 
 /// The dev-profile flow: checklist, execute, summarize.
-pub fn run_dev(deps: &SetupDeps, yes: bool, interactive: bool) -> anyhow::Result<()> {
-    let selected = choose_steps(steps(Profile::Dev), yes, interactive)?;
-    finish(&execute(&selected, deps, false), None)
+pub fn run_dev(
+    deps: &SetupDeps,
+    yes: bool,
+    interactive: bool,
+    log: &SetupLog,
+) -> anyhow::Result<()> {
+    run_profile(
+        Profile::Dev,
+        steps(Profile::Dev),
+        deps,
+        yes,
+        interactive,
+        log,
+    )
 }
 
-/// The server-profile flow: print the plan, checklist, confirm, execute,
-/// summarize into `log_path`. The caller has already verified the host is
-/// Linux; nothing runs until the confirmation gate passes (`--yes` skips
-/// it, and a non-interactive session without `--yes` refuses). Under
-/// `--yes` the background lane overlaps the foreground; an interactive
-/// run keeps every step on the main thread, where it may prompt.
+/// The server-profile flow: plan, checklist, confirm, execute, summarize.
+/// The caller has already verified the host is Linux; nothing runs until
+/// the confirmation gate passes (`--yes` skips it, and a non-interactive
+/// session without `--yes` refuses). Under `--yes` the background lane
+/// overlaps the foreground; an interactive run keeps every step on the
+/// main thread, where it may prompt.
 pub fn run_server(
     deps: &SetupDeps,
     yes: bool,
     interactive: bool,
-    log_path: &Path,
+    log: &SetupLog,
 ) -> anyhow::Result<()> {
-    ui::println(plan(Profile::Server).trim_end());
-    let selected = choose_steps(steps(Profile::Server), yes, interactive)?;
-    if selected.is_empty() {
-        return finish(&[], None);
+    run_profile(
+        Profile::Server,
+        steps(Profile::Server),
+        deps,
+        yes,
+        interactive,
+        log,
+    )
+}
+
+/// Run `all` (the profile's step table) under `profile`'s flow.
+///
+/// The log at `log.path` is opened (appending) and begins with a run
+/// header; when it cannot be opened, a warning says so and the run
+/// continues without one. Unless `-v` is on, the terminal is compact: an
+/// opening line naming the log, one `[n/N] title ✓`/`✗` line per step
+/// (with a failed step's error indented under it), a tally, and the
+/// deduplicated warnings as next steps. Everything, at full verbosity,
+/// goes to the log. The server plan goes to the log only under a compact
+/// `--yes` run, and to the terminal as well under `-v` or before the
+/// checklist of an interactive run. `--quiet` keeps the opening line, the
+/// step lines, and the tally off the terminal, never a failed step's error
+/// or the next steps.
+fn run_profile(
+    profile: Profile,
+    all: &[Step],
+    deps: &SetupDeps,
+    yes: bool,
+    interactive: bool,
+    log: &SetupLog,
+) -> anyhow::Result<()> {
+    run_profile_with(profile, all, deps, yes, interactive, log, ui::is_quiet())
+}
+
+/// [`run_profile`] with `--quiet` given as `quiet` rather than read from
+/// the process-wide setting.
+fn run_profile_with(
+    profile: Profile,
+    all: &[Step],
+    deps: &SetupDeps,
+    yes: bool,
+    interactive: bool,
+    log: &SetupLog,
+    quiet: bool,
+) -> anyhow::Result<()> {
+    let open = OpenLog::open(log.path.as_deref());
+    write_run_header(profile, &log.info);
+    let server = profile == Profile::Server;
+    if server {
+        let plan = plan_for(profile, all);
+        if yes && !deps.install.verbose {
+            ui::log_detail(plan.trim_end());
+        } else {
+            ui::println(plan.trim_end());
+        }
     }
-    if !yes {
+    let selected = choose_steps(all, yes, interactive)?;
+    if selected.is_empty() {
+        return finish(profile, &[]);
+    }
+    if server && !yes {
         let go = ui::confirm(
             &format!(
                 "Run these {} steps now? (several need sudo)",
@@ -976,7 +1382,69 @@ pub fn run_server(
                 .hint("re-run `hpds setup --profile server` when you are ready");
         }
     }
-    finish(&execute(&selected, deps, yes), Some(log_path))
+    ui::status_line(&opening_line(profile, selected.len(), open.path()), quiet);
+    let overlap = server && yes;
+    if deps.install.verbose {
+        return finish(profile, &execute(&selected, deps, overlap));
+    }
+    let compact = ui::compact();
+    let (results, next_steps) = execute_rendered(&selected, deps, overlap, quiet);
+    let outcome = finish_compact(profile, &results, &next_steps, quiet);
+    // Compact mode ends before the caller renders the run's error.
+    drop(compact);
+    outcome
+}
+
+/// The calling thread's setup log while it lives: opened (appending) on
+/// creation, closed on drop, so every return path closes it.
+struct OpenLog {
+    /// The open log, or `None` when the run has no log.
+    path: Option<PathBuf>,
+}
+
+impl OpenLog {
+    /// Open the log at `path`. When there is no path, or the file cannot be
+    /// opened, warn and carry on without a log.
+    fn open(path: Option<&Path>) -> Self {
+        let Some(path) = path else {
+            ui::warn(
+                "HOME is not set, so setup has nowhere to keep its log; continuing without a log",
+            );
+            return OpenLog { path: None };
+        };
+        match ui::open_log(path) {
+            Ok(()) => OpenLog {
+                path: Some(path.to_path_buf()),
+            },
+            Err(err) => {
+                ui::warn(&format!(
+                    "could not open the setup log {}: {err}; continuing without a log",
+                    path.display()
+                ));
+                OpenLog { path: None }
+            }
+        }
+    }
+
+    fn path(&self) -> Option<&Path> {
+        self.path.as_deref()
+    }
+}
+
+impl Drop for OpenLog {
+    fn drop(&mut self) {
+        if self.path.is_some() {
+            ui::close_log();
+        }
+    }
+}
+
+/// Begin a run's section of the log: the profile, then what `info` records.
+fn write_run_header(profile: Profile, info: &RunInfo) {
+    ui::log_detail(&format!("=== hpds setup --profile {} ===", profile.name()));
+    ui::log_detail(&format!("hpds version: {}", info.version));
+    ui::log_detail(&format!("started: {}", info.started));
+    ui::log_detail(&format!("os: {}", info.os));
 }
 
 #[cfg(test)]
@@ -992,7 +1460,7 @@ mod tests {
     };
     use crate::install::registry;
     use crate::install::test_support::{FakeFetcher, FakeRunner, PanicFetcher, probe_fixture};
-    use crate::install::{CommandOutput, CommandRunner, ReleaseFetcher};
+    use crate::install::{CommandOutput, CommandRunner, LoggingRunner, ReleaseFetcher};
     use crate::tools::Os;
     use crate::ui::render_error;
 
@@ -1029,7 +1497,14 @@ mod tests {
         fn acquire_code_server_package(&self) -> anyhow::Result<server::CodeServerPackage> {
             Err(anyhow!("this host downloads nothing"))
         }
+        fn reboot_required_path(&self) -> std::path::PathBuf {
+            // Never the real marker, so a pending reboot on the machine
+            // running the tests cannot leak into them.
+            NO_REBOOT_MARKER.into()
+        }
     }
+    /// A reboot marker path that exists on no machine.
+    const NO_REBOOT_MARKER: &str = "/nonexistent/hpds-test/reboot-required";
     static NO_SERVER_HOST: NoServerHost = NoServerHost;
 
     /// `SetupDeps` on `os` whose git-setup seam records itself in the
@@ -1057,6 +1532,23 @@ mod tests {
             git_setup,
             installer_lookup: &registry::find,
             server_host: &NO_SERVER_HOST,
+        }
+    }
+
+    /// The run header the log tests write: fixed, so logs are stable.
+    fn test_info() -> RunInfo {
+        RunInfo {
+            version: "9.9.9".to_string(),
+            started: "2026-11-03 21:15:00 UTC".to_string(),
+            os: "linux x86_64".to_string(),
+        }
+    }
+
+    /// A [`SetupLog`] at `path` with the fixed test header.
+    fn test_log(path: Option<std::path::PathBuf>) -> SetupLog {
+        SetupLog {
+            path,
+            info: test_info(),
         }
     }
 
@@ -1174,9 +1666,11 @@ mod tests {
         for omitted in [
             "miniconda",
             "conda",
-            "apt upgrade",
             "dist-upgrade",
-            "reboot",
+            "full-upgrade",
+            "sudo reboot",
+            "systemctl reboot",
+            "shutdown",
         ] {
             assert!(
                 !lowercase.contains(omitted),
@@ -1225,8 +1719,11 @@ mod tests {
             Ok(())
         };
         let deps = deps_recording_git(Os::Mac, true, &runner, &fetcher, &git_setup);
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let log = test_log(Some(dir.path().join("hpds-setup.log")));
 
-        run_dev(&deps, true, false).expect("every step no-ops successfully");
+        let (result, _) = ui::tap_terminal(|| run_dev(&deps, true, false, &log));
+        result.expect("every step no-ops successfully");
 
         // Each install step probes its tool in profile order, and the git
         // seam runs last: the full step sequence, seen through the runner.
@@ -1298,7 +1795,7 @@ mod tests {
             runner.calls()
         );
 
-        let err = finish(&results, None).expect_err("a failed step fails the run");
+        let err = finish(Profile::Dev, &results).expect_err("a failed step fails the run");
         assert!(err.to_string().contains("1 of 8"), "{err}");
     }
 
@@ -1309,10 +1806,12 @@ mod tests {
         let runner = FakeRunner::default();
         let git_setup = || panic!("no step may run when confirmation is refused");
         let deps = deps_recording_git(Os::Linux, false, &runner, &PanicFetcher, &git_setup);
-        let log = tempfile::tempdir().expect("create temp dir");
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let log_path = dir.path().join("hpds-setup.log");
 
-        let err = run_server(&deps, false, false, &log.path().join("hpds-setup.log"))
-            .expect_err("must refuse without --yes");
+        let (result, _) =
+            ui::tap_terminal(|| run_server(&deps, false, false, &test_log(Some(log_path.clone()))));
+        let err = result.expect_err("must refuse without --yes");
 
         let out = render_error(&err, false);
         assert!(out.contains("--yes"), "{out}");
@@ -1321,7 +1820,8 @@ mod tests {
             "zero commands may run: {:?}",
             runner.calls()
         );
-        assert!(!log.path().join("hpds-setup.log").exists());
+        let log = std::fs::read_to_string(&log_path).unwrap_or_default();
+        assert!(!log.contains("setup summary:"), "{log}");
     }
 
     // --- a simulated server -------------------------------------------------
@@ -1603,6 +2103,9 @@ mod tests {
         /// The name of the thread each code-server download ran on.
         code_server_threads: Mutex<Vec<Option<String>>>,
         writes: Mutex<Vec<std::path::PathBuf>>,
+        /// The reboot marker to check, when not [`NO_REBOOT_MARKER`]: a
+        /// real file in the tests that want a pending reboot.
+        reboot_required: Option<std::path::PathBuf>,
     }
 
     impl SimHost {
@@ -1637,7 +2140,9 @@ mod tests {
             NoServerHost.read(path)
         }
         fn exists(&self, path: &Path) -> bool {
-            self.existing.iter().any(|file| Path::new(file) == path) || NoServerHost.exists(path)
+            self.existing.iter().any(|file| Path::new(file) == path)
+                || NoServerHost.exists(path)
+                || (self.reboot_required.as_deref() == Some(path) && path.exists())
         }
         fn write_atomic(&self, path: &Path, _bytes: &[u8], _mode: u32) -> anyhow::Result<()> {
             self.writes.lock().unwrap().push(path.to_path_buf());
@@ -1676,6 +2181,11 @@ mod tests {
                 package: DownloadedPackage::at(CODE_SERVER_DEB.into()),
                 version: "4.141.0".to_string(),
             })
+        }
+        fn reboot_required_path(&self) -> std::path::PathBuf {
+            self.reboot_required
+                .clone()
+                .unwrap_or_else(|| NoServerHost.reboot_required_path())
         }
     }
 
@@ -1875,6 +2385,13 @@ mod tests {
             .collect()
     }
 
+    /// The server profile without its system-updates step, so the apt
+    /// prelude makes the run's first package-list refresh, as it does
+    /// whenever that step is not selected.
+    fn prelude_steps() -> Vec<Step> {
+        server_steps_without(&[SYSTEM_UPDATES])
+    }
+
     /// Run `selected` against the simulated server, one step at a time,
     /// with the git flow recorded in the simulation's call log.
     fn run_sim(
@@ -1943,11 +2460,15 @@ mod tests {
         let dir = tempfile::tempdir().expect("create temp dir");
         let log_path = dir.path().join("hpds-setup.log");
 
-        finish(
-            &execute(steps(Profile::Server), &deps, false),
-            Some(&log_path),
-        )
-        .expect("all steps succeed");
+        ui::open_log(&log_path).expect("open the log");
+        let (result, _) = ui::tap_terminal(|| {
+            finish(
+                Profile::Server,
+                &execute(steps(Profile::Server), &deps, false),
+            )
+        });
+        ui::close_log();
+        result.expect("all steps succeed");
 
         let calls = sim.calls();
         // System steps ran as the planned commands, under sudo where
@@ -1983,7 +2504,7 @@ mod tests {
         );
         assert_eq!(calls.last().map(String::as_str), Some("hpds git setup"));
 
-        let log = std::fs::read_to_string(&log_path).expect("summary log must be written");
+        let log = std::fs::read_to_string(&log_path).expect("the summary must reach the log");
         for step in steps(Profile::Server) {
             assert!(
                 log.contains(step.title),
@@ -2047,7 +2568,7 @@ mod tests {
             assert!(left_out(&plan), "{title}: {plan:?}");
         }
 
-        let only_libraries = prelude::prelude_plan(&steps(Profile::Server)[..1]);
+        let only_libraries = prelude::prelude_plan(&prelude_steps()[..1]);
         assert_eq!(only_libraries.base, APT_SYSTEM_LIBRARIES);
         assert!(only_libraries.repos.is_empty() && only_libraries.debs.is_empty());
         assert_eq!(
@@ -2064,8 +2585,7 @@ mod tests {
     fn a_fresh_server_installs_everything_in_one_update_and_one_install() {
         let sim = Sim::default();
         let host = SimHost::default();
-        let (results, rstudio) =
-            run_sim(&sim, &host, SimRstudio::default(), steps(Profile::Server));
+        let (results, rstudio) = run_sim(&sim, &host, SimRstudio::default(), &prelude_steps());
 
         assert!(failures(&results).is_empty(), "{:?}", failures(&results));
         assert_eq!(
@@ -2175,12 +2695,7 @@ mod tests {
     fn step_one_alone_installs_only_the_system_libraries() {
         let sim = Sim::default();
         let host = SimHost::default();
-        let (results, rstudio) = run_sim(
-            &sim,
-            &host,
-            SimRstudio::default(),
-            &steps(Profile::Server)[..1],
-        );
+        let (results, rstudio) = run_sim(&sim, &host, SimRstudio::default(), &prelude_steps()[..1]);
         assert!(failures(&results).is_empty(), "{:?}", failures(&results));
         assert_eq!(
             sim.apt_calls(),
@@ -2200,7 +2715,7 @@ mod tests {
             docker_key_fails: true,
             ..SimHost::default()
         };
-        let (results, _) = run_sim(&sim, &host, SimRstudio::default(), steps(Profile::Server));
+        let (results, _) = run_sim(&sim, &host, SimRstudio::default(), &prelude_steps());
 
         let failed = failures(&results);
         assert_eq!(failed.len(), 1, "{failed:?}");
@@ -2222,8 +2737,7 @@ mod tests {
             download_fails: true,
             ..SimRstudio::default()
         };
-        let (results, rstudio) =
-            run_sim(&sim, &SimHost::default(), rstudio, steps(Profile::Server));
+        let (results, rstudio) = run_sim(&sim, &SimHost::default(), rstudio, &prelude_steps());
 
         let failed = failures(&results);
         assert_eq!(failed.len(), 1, "{failed:?}");
@@ -2244,7 +2758,7 @@ mod tests {
             &sim,
             &SimHost::default(),
             SimRstudio::default(),
-            steps(Profile::Server),
+            &prelude_steps(),
         );
 
         assert!(failures(&results).is_empty(), "{:?}", failures(&results));
@@ -2274,7 +2788,7 @@ mod tests {
             &sim,
             &SimHost::default(),
             SimRstudio::default(),
-            steps(Profile::Server),
+            &prelude_steps(),
         );
 
         let step_one = results[0].error.as_deref().expect("step 1 fails");
@@ -2289,7 +2803,7 @@ mod tests {
             &sim,
             &SimHost::default(),
             SimRstudio::default(),
-            steps(Profile::Server),
+            &prelude_steps(),
         );
 
         // Both of this run's sources come out, since apt does not say which
@@ -2335,7 +2849,7 @@ mod tests {
             &sim,
             &SimHost::default(),
             SimRstudio::default(),
-            steps(Profile::Server),
+            &prelude_steps(),
         );
 
         let failed: Vec<_> = failures(&results)
@@ -2379,7 +2893,7 @@ mod tests {
             &sim,
             &SimHost::default(),
             SimRstudio::default(),
-            steps(Profile::Server),
+            &prelude_steps(),
         );
 
         let step_one = results[0].error.as_deref().expect("step 1 fails");
@@ -2397,7 +2911,7 @@ mod tests {
             existing: vec![DOCKER_SOURCES],
             ..SimHost::default()
         };
-        let (results, _) = run_sim(&sim, &host, SimRstudio::default(), steps(Profile::Server));
+        let (results, _) = run_sim(&sim, &host, SimRstudio::default(), &prelude_steps());
 
         assert!(
             results[0].error.is_some(),
@@ -2423,7 +2937,7 @@ mod tests {
             ))),
             ..SimRstudio::default()
         };
-        let (results, _) = run_sim(&sim, &SimHost::default(), rstudio, steps(Profile::Server));
+        let (results, _) = run_sim(&sim, &SimHost::default(), rstudio, &prelude_steps());
 
         let failed: Vec<_> = failures(&results)
             .into_iter()
@@ -2441,7 +2955,7 @@ mod tests {
         let sim = Sim::default();
         let host = SimHost::default();
         let (_, transcript) =
-            ui::capture(|| run_sim(&sim, &host, SimRstudio::default(), steps(Profile::Server)));
+            ui::capture(|| run_sim(&sim, &host, SimRstudio::default(), &prelude_steps()));
         let lines: Vec<_> = transcript
             .lines()
             .iter()
@@ -2470,7 +2984,7 @@ mod tests {
         // restarts it once R is installed.
         let sim = Sim::default();
         let host = SimHost::default();
-        let (results, _) = run_sim(&sim, &host, systemd_rstudio(), steps(Profile::Server));
+        let (results, _) = run_sim(&sim, &host, systemd_rstudio(), &prelude_steps());
 
         assert!(failures(&results).is_empty(), "{:?}", failures(&results));
         let calls = sim.calls();
@@ -2495,7 +3009,7 @@ mod tests {
         let sim = Sim::provisioned();
         *sim.rstudio_active.lock().unwrap() = true;
         let host = SimHost::default();
-        let (results, _) = run_sim(&sim, &host, systemd_rstudio(), steps(Profile::Server));
+        let (results, _) = run_sim(&sim, &host, systemd_rstudio(), &prelude_steps());
 
         assert!(failures(&results).is_empty(), "{:?}", failures(&results));
         let calls = sim.calls();
@@ -2549,7 +3063,7 @@ mod tests {
             rstudio_never_starts: true,
             ..Sim::default()
         };
-        let (error, lines) = rstudio_failure(&sim, steps(Profile::Server));
+        let (error, lines) = rstudio_failure(&sim, &prelude_steps());
 
         assert!(error.contains("rstudio-server"), "{error}");
         assert!(
@@ -2574,8 +3088,7 @@ mod tests {
     fn rstudio_step_without_systemd_installs_and_passes_as_before() {
         let sim = Sim::default();
         let host = SimHost::default();
-        let (results, rstudio) =
-            run_sim(&sim, &host, SimRstudio::default(), steps(Profile::Server));
+        let (results, rstudio) = run_sim(&sim, &host, SimRstudio::default(), &prelude_steps());
 
         assert!(failures(&results).is_empty(), "{:?}", failures(&results));
         assert_eq!(rstudio.downloads(), 1);
@@ -2610,8 +3123,7 @@ mod tests {
     fn a_rerun_downloads_nothing_already_installed() {
         let sim = Sim::provisioned();
         let host = SimHost::default();
-        let (results, rstudio) =
-            run_sim(&sim, &host, SimRstudio::default(), steps(Profile::Server));
+        let (results, rstudio) = run_sim(&sim, &host, SimRstudio::default(), &prelude_steps());
 
         assert!(failures(&results).is_empty(), "{:?}", failures(&results));
         assert_eq!(rstudio.downloads(), 0);
@@ -2671,7 +3183,7 @@ mod tests {
             meet: Some(Arc::clone(&meet)),
             ..SimRstudio::default()
         };
-        let (results, _) = run_sim(&sim, &host, rstudio, steps(Profile::Server));
+        let (results, _) = run_sim(&sim, &host, rstudio, &prelude_steps());
 
         assert_eq!(
             meet.met(),
@@ -2705,7 +3217,7 @@ mod tests {
             delay: Some(Duration::from_millis(300)),
             ..SimRstudio::default()
         };
-        let (results, _, lines) = run_sim_captured(&sim, &host, rstudio, steps(Profile::Server));
+        let (results, _, lines) = run_sim_captured(&sim, &host, rstudio, &prelude_steps());
 
         assert!(failures(&results).is_empty(), "{:?}", failures(&results));
         let refresh = only_line(&lines, "refreshing apt package lists");
@@ -2729,7 +3241,7 @@ mod tests {
             ..SimRstudio::default()
         };
         let (results, _, lines) =
-            run_sim_captured(&sim, &SimHost::default(), rstudio, steps(Profile::Server));
+            run_sim_captured(&sim, &SimHost::default(), rstudio, &prelude_steps());
 
         assert!(failures(&results).is_empty(), "{:?}", failures(&results));
         let refresh = only_line(&lines, "refreshing apt package lists");
@@ -2751,7 +3263,7 @@ mod tests {
             ..SimRstudio::default()
         };
         let (results, rstudio, lines) =
-            run_sim_captured(&sim, &SimHost::default(), rstudio, steps(Profile::Server));
+            run_sim_captured(&sim, &SimHost::default(), rstudio, &prelude_steps());
 
         assert!(failures(&results).is_empty(), "{:?}", failures(&results));
         assert_eq!(rstudio.downloads(), 2, "step 1 tried, then RStudio retried");
@@ -2777,7 +3289,7 @@ mod tests {
             code_server_fails: true,
             ..SimHost::default()
         };
-        let (results, _) = run_sim(&sim, &host, SimRstudio::default(), steps(Profile::Server));
+        let (results, _) = run_sim(&sim, &host, SimRstudio::default(), &prelude_steps());
 
         let failed = failures(&results);
         assert_eq!(failed.len(), 1, "{failed:?}");
@@ -2801,7 +3313,7 @@ mod tests {
             &Sim::default(),
             &host,
             SimRstudio::default(),
-            steps(Profile::Server),
+            &prelude_steps(),
         );
         assert_eq!(
             host.code_server_threads(),
@@ -2844,8 +3356,7 @@ mod tests {
             temporary: true,
             ..SimRstudio::default()
         };
-        let (results, rstudio) =
-            run_sim(&sim, &SimHost::default(), rstudio, steps(Profile::Server));
+        let (results, rstudio) = run_sim(&sim, &SimHost::default(), rstudio, &prelude_steps());
 
         assert!(failures(&results).is_empty(), "{:?}", failures(&results));
         let created = rstudio.created();
@@ -2873,8 +3384,7 @@ mod tests {
             temporary: true,
             ..SimRstudio::default()
         };
-        let (results, rstudio) =
-            run_sim(&sim, &SimHost::default(), rstudio, steps(Profile::Server));
+        let (results, rstudio) = run_sim(&sim, &SimHost::default(), rstudio, &prelude_steps());
 
         assert!(results[0].error.is_some(), "step 1 fails");
         let created = rstudio.created();
@@ -2889,13 +3399,13 @@ mod tests {
         let text = plan(Profile::Server);
         assert!(!text.contains("install.sh"), "{text}");
         assert!(!text.contains("code-server.dev"), "{text}");
-        let step_one: Vec<&str> = text
+        let prelude_lines: Vec<&str> = text
             .lines()
-            .skip_while(|line| !line.ends_with("1. system libraries (apt)"))
+            .skip_while(|line| !line.ends_with("2. system libraries (apt)"))
             .skip(1)
-            .take_while(|line| !line.ends_with("2. Docker Engine"))
+            .take_while(|line| !line.ends_with("3. Docker Engine"))
             .collect();
-        let merged = step_one
+        let merged = prelude_lines
             .iter()
             .find(|line| line.contains("install -y build-essential"))
             .expect("merged install line");
@@ -2909,13 +3419,371 @@ mod tests {
             assert!(merged.contains(package), "{package}: {merged}");
         }
         assert_eq!(
-            step_one
+            prelude_lines
                 .iter()
-                .filter(|line| line.ends_with("apt-get -o DPkg::Lock::Timeout=600 update"))
+                .filter(|line| line.contains("apt-get -o DPkg::Lock::Timeout=600 update"))
                 .count(),
             1,
-            "{step_one:#?}"
+            "{prelude_lines:#?}"
         );
+    }
+
+    // --- system updates -------------------------------------------------------
+
+    /// The package-list refresh, exactly as the system-updates step and the
+    /// apt prelude run it.
+    const REFRESH_LINE: &str = "sudo env DEBIAN_FRONTEND=noninteractive NEEDRESTART_SUSPEND=1 \
+                                apt-get -o DPkg::Lock::Timeout=600 update";
+
+    /// The upgrade, exactly as the system-updates step runs it: keep a
+    /// locally changed configuration file and take the package's default
+    /// for any other, so dpkg never prompts.
+    const UPGRADE_LINE: &str = "sudo env DEBIAN_FRONTEND=noninteractive NEEDRESTART_SUSPEND=1 \
+                                apt-get -o DPkg::Lock::Timeout=600 \
+                                -o Dpkg::Options::=--force-confdef \
+                                -o Dpkg::Options::=--force-confold upgrade -y";
+
+    /// The warning a pending reboot raises after the upgrade.
+    const REBOOT_PENDING: &str =
+        "a reboot is pending to finish the system updates; run `sudo reboot`";
+
+    /// The server steps titled in `titles`, in plan order.
+    fn server_steps_titled(titles: &[&str]) -> Vec<Step> {
+        let selected: Vec<Step> = steps(Profile::Server)
+            .iter()
+            .filter(|step| titles.contains(&step.title))
+            .copied()
+            .collect();
+        assert_eq!(selected.len(), titles.len(), "unknown title in {titles:?}");
+        selected
+    }
+
+    /// Every call that would restart or power off the host.
+    fn reboot_calls(sim: &Sim) -> Vec<String> {
+        sim.calls()
+            .into_iter()
+            .filter(|call| {
+                call.split_whitespace()
+                    .any(|word| ["reboot", "shutdown", "poweroff"].contains(&word))
+            })
+            .collect()
+    }
+
+    #[test]
+    fn system_updates_is_the_first_server_step_and_runs_in_the_foreground() {
+        let step = steps(Profile::Server)[0];
+        assert_eq!(step.title, "system updates (apt upgrade)");
+        assert_eq!(step.title, SYSTEM_UPDATES);
+        assert_eq!(step.lane, Lane::Foreground);
+        assert!(step.requires.is_empty(), "{:?}", step.requires);
+        assert_eq!(step.apt, AptShare::None);
+        assert!(matches!(step.actions, [Action::SystemUpdates]));
+        assert_eq!(steps(Profile::Server).len(), 16);
+        assert!(
+            steps(Profile::Dev)
+                .iter()
+                .all(|step| step.title != SYSTEM_UPDATES
+                    && !step
+                        .actions
+                        .iter()
+                        .any(|action| matches!(action, Action::SystemUpdates))),
+            "the dev profile never upgrades the system"
+        );
+    }
+
+    #[test]
+    fn the_server_plan_lists_the_system_update_commands_first() {
+        let text = plan(Profile::Server);
+        let expected = format!(
+            "hpds setup --profile server runs these 16 steps:\n\
+             \x20 1. system updates (apt upgrade)\n\
+             \x20      {REFRESH_LINE}\n\
+             \x20      {UPGRADE_LINE}\n\
+             \x20      if /var/run/reboot-required exists afterwards: warn that a reboot is pending (hpds never reboots)\n\
+             \x20 2. system libraries (apt)\n"
+        );
+        assert!(text.starts_with(&expected), "{text}");
+    }
+
+    #[test]
+    fn system_updates_refresh_then_upgrade_through_the_apt_policy() {
+        let sim = Sim::default();
+        let (results, _) = run_sim(
+            &sim,
+            &SimHost::default(),
+            SimRstudio::default(),
+            &server_steps_titled(&[SYSTEM_UPDATES]),
+        );
+
+        assert!(failures(&results).is_empty(), "{:?}", failures(&results));
+        assert_eq!(
+            install::apt_get_command_line(&[
+                "-o",
+                "Dpkg::Options::=--force-confdef",
+                "-o",
+                "Dpkg::Options::=--force-confold",
+                "upgrade",
+                "-y"
+            ]),
+            UPGRADE_LINE
+        );
+        assert_eq!(sim.calls(), [REFRESH_LINE, UPGRADE_LINE]);
+        assert_eq!(reboot_calls(&sim), Vec::<String>::new());
+    }
+
+    #[test]
+    fn the_prelude_does_not_refresh_again_after_system_updates_refreshed() {
+        let sim = Sim::default();
+        let (results, _) = run_sim(
+            &sim,
+            &SimHost::default(),
+            SimRstudio::default(),
+            &server_steps_titled(&[SYSTEM_UPDATES, SYSTEM_LIBRARIES]),
+        );
+
+        assert!(failures(&results).is_empty(), "{:?}", failures(&results));
+        assert_eq!(
+            sim.apt_calls(),
+            [
+                REFRESH_LINE.to_string(),
+                UPGRADE_LINE.to_string(),
+                apt_install(APT_SYSTEM_LIBRARIES)
+            ],
+            "the lists system updates refreshed are current for the prelude"
+        );
+    }
+
+    #[test]
+    fn a_rerun_of_the_whole_server_profile_refreshes_the_lists_once() {
+        // Every repository is registered and every package installed, so
+        // the prelude adds no apt source and needs no refresh of its own.
+        let sim = Sim::provisioned();
+        let (results, _) = run_sim(
+            &sim,
+            &SimHost::default(),
+            SimRstudio::default(),
+            steps(Profile::Server),
+        );
+
+        assert!(failures(&results).is_empty(), "{:?}", failures(&results));
+        let apt = sim.apt_calls();
+        assert_eq!(
+            apt.iter().filter(|call| *call == REFRESH_LINE).count(),
+            1,
+            "{apt:#?}"
+        );
+        assert_eq!(apt[..2], [REFRESH_LINE, UPGRADE_LINE], "{apt:#?}");
+        assert_eq!(reboot_calls(&sim), Vec::<String>::new());
+    }
+
+    #[test]
+    fn the_prelude_refreshes_again_when_it_adds_apt_sources_after_system_updates() {
+        // A fresh server: the prelude registers the Docker and rig
+        // repositories, whose package lists the first refresh never saw.
+        let sim = Sim::default();
+        let (results, _) = run_sim(
+            &sim,
+            &SimHost::default(),
+            SimRstudio::default(),
+            steps(Profile::Server),
+        );
+
+        assert!(failures(&results).is_empty(), "{:?}", failures(&results));
+        let apt = sim.apt_calls();
+        assert_eq!(
+            apt,
+            [
+                REFRESH_LINE.to_string(),
+                UPGRADE_LINE.to_string(),
+                REFRESH_LINE.to_string(),
+                apt_install(&merged_packages())
+            ],
+            "{apt:#?}"
+        );
+        let calls = sim.calls();
+        let registered = calls
+            .iter()
+            .position(|call| call == "sudo install -m 0755 -d /etc/apt/keyrings")
+            .unwrap_or_else(|| panic!("the Docker repository is registered: {calls:#?}"));
+        let second_refresh = calls
+            .iter()
+            .enumerate()
+            .filter(|(_, call)| *call == REFRESH_LINE)
+            .map(|(index, _)| index)
+            .nth(1)
+            .unwrap_or_else(|| panic!("a second refresh: {calls:#?}"));
+        assert!(registered < second_refresh, "{calls:#?}");
+    }
+
+    #[test]
+    fn without_system_updates_the_prelude_refreshes_as_before() {
+        let sim = Sim::provisioned();
+        let (results, _) = run_sim(
+            &sim,
+            &SimHost::default(),
+            SimRstudio::default(),
+            &prelude_steps(),
+        );
+
+        assert!(failures(&results).is_empty(), "{:?}", failures(&results));
+        let apt = sim.apt_calls();
+        assert_eq!(apt.first().map(String::as_str), Some(REFRESH_LINE));
+        assert_eq!(
+            apt.iter().filter(|call| *call == REFRESH_LINE).count(),
+            1,
+            "{apt:#?}"
+        );
+        assert!(!apt.iter().any(|call| call.contains("upgrade")), "{apt:#?}");
+    }
+
+    #[test]
+    fn a_failed_upgrade_fails_only_its_own_step() {
+        let sim = Sim::default().failing(UPGRADE_LINE, "E: dpkg was interrupted");
+        let (results, _) = run_sim(
+            &sim,
+            &SimHost::default(),
+            SimRstudio::default(),
+            &server_steps_titled(&[SYSTEM_UPDATES, SYSTEM_LIBRARIES]),
+        );
+
+        let failed = failures(&results);
+        assert_eq!(failed.len(), 1, "{failed:?}");
+        assert_eq!(failed[0].0, SYSTEM_UPDATES);
+        assert!(
+            failed[0].1.contains("E: dpkg was interrupted"),
+            "{failed:?}"
+        );
+        assert_eq!(
+            sim.apt_calls(),
+            [
+                REFRESH_LINE.to_string(),
+                UPGRADE_LINE.to_string(),
+                apt_install(APT_SYSTEM_LIBRARIES)
+            ],
+            "the refresh succeeded, so the prelude adds no refresh of its own"
+        );
+    }
+
+    #[test]
+    fn a_failed_refresh_skips_the_upgrade_and_leaves_the_prelude_its_own_refresh() {
+        let sim = Sim::default().failing(REFRESH_LINE, "E: mirror down");
+        let (results, _) = run_sim(
+            &sim,
+            &SimHost::default(),
+            SimRstudio::default(),
+            &server_steps_titled(&[SYSTEM_UPDATES, SYSTEM_LIBRARIES]),
+        );
+
+        let failed = failures(&results);
+        assert!(
+            failed
+                .iter()
+                .any(|(title, error)| *title == SYSTEM_UPDATES && error.contains("E: mirror down")),
+            "{failed:?}"
+        );
+        let apt = sim.apt_calls();
+        assert!(!apt.iter().any(|call| call == UPGRADE_LINE), "{apt:#?}");
+        assert_eq!(
+            apt.iter().filter(|call| *call == REFRESH_LINE).count(),
+            2,
+            "the prelude still tries its own refresh: {apt:#?}"
+        );
+    }
+
+    /// Run the system-updates step alone against a host whose reboot
+    /// marker is `marker`, returning the step's results, the simulation,
+    /// and what the run printed.
+    fn run_system_updates(marker: std::path::PathBuf) -> (Vec<StepResult>, Sim, Vec<String>) {
+        let sim = Sim::default();
+        let host = SimHost {
+            reboot_required: Some(marker),
+            ..SimHost::default()
+        };
+        let ((results, _), transcript) = ui::capture(|| {
+            run_sim(
+                &sim,
+                &host,
+                SimRstudio::default(),
+                &server_steps_titled(&[SYSTEM_UPDATES]),
+            )
+        });
+        let lines = transcript
+            .lines()
+            .iter()
+            .map(|(_, line)| line.clone())
+            .collect();
+        (results, sim, lines)
+    }
+
+    #[test]
+    fn a_pending_reboot_is_reported_after_the_upgrade_and_never_performed() {
+        let dir = tempfile::tempdir().unwrap();
+        let marker = dir.path().join("reboot-required");
+        std::fs::write(&marker, "*** System restart required ***\n").unwrap();
+
+        let (results, sim, lines) = run_system_updates(marker);
+
+        assert!(failures(&results).is_empty(), "{:?}", failures(&results));
+        let warnings: Vec<&String> = lines
+            .iter()
+            .filter(|line| line.contains(REBOOT_PENDING))
+            .collect();
+        assert_eq!(warnings.len(), 1, "{lines:#?}");
+        assert!(warnings[0].starts_with("warning: "), "{lines:#?}");
+        assert_eq!(sim.calls(), [REFRESH_LINE, UPGRADE_LINE]);
+        assert_eq!(reboot_calls(&sim), Vec::<String>::new());
+    }
+
+    #[test]
+    fn no_reboot_marker_means_no_reboot_warning() {
+        let dir = tempfile::tempdir().unwrap();
+        let (results, sim, lines) = run_system_updates(dir.path().join("reboot-required"));
+
+        assert!(failures(&results).is_empty(), "{:?}", failures(&results));
+        assert!(
+            !lines.iter().any(|line| line.contains("reboot")),
+            "{lines:#?}"
+        );
+        assert_eq!(reboot_calls(&sim), Vec::<String>::new());
+    }
+
+    #[test]
+    fn a_pending_reboot_reaches_the_compact_next_steps() {
+        let dir = tempfile::tempdir().unwrap();
+        let marker = dir.path().join("reboot-required");
+        std::fs::write(&marker, "*** System restart required ***\n").unwrap();
+        let sim = Sim::default();
+        let host = SimHost {
+            reboot_required: Some(marker),
+            ..SimHost::default()
+        };
+        let git_setup = || Ok(());
+        let fetcher = FakeFetcher::default();
+        let runner = LoggingRunner::new(&sim);
+        let mut deps = deps_recording_git(Os::Linux, true, &runner, &fetcher, &git_setup);
+        deps.server_host = &host;
+        let log_path = dir.path().join("hpds-setup.log");
+
+        let run = run_logged(
+            Profile::Server,
+            &server_steps_titled(&[SYSTEM_UPDATES]),
+            &deps,
+            true,
+            &log_path,
+        );
+
+        assert!(run.result.is_ok(), "{:?}", run.result);
+        assert!(
+            run.terminal.ends_with(&format!(
+                "[1/1] system updates (apt upgrade) ✓\n\
+                 All 1 step succeeded. Details: <LOG>\n\
+                 Next steps:\n\
+                 \x20 - {REBOOT_PENDING}"
+            )),
+            "{}",
+            run.terminal
+        );
+        assert_eq!(reboot_calls(&sim), Vec::<String>::new());
     }
 
     // --- lanes and requirements ---------------------------------------------
@@ -2997,7 +3865,8 @@ mod tests {
             .map(|step| step.title)
             .collect();
         assert_eq!(waiting, ["tinytex"]);
-        assert_eq!(steps(Profile::Server)[0].title, SYSTEM_LIBRARIES);
+        assert_eq!(steps(Profile::Server)[0].title, SYSTEM_UPDATES);
+        assert_eq!(steps(Profile::Server)[1].title, SYSTEM_LIBRARIES);
     }
 
     #[test]
@@ -3043,6 +3912,9 @@ mod tests {
                             step.title
                         ),
                         Action::GitSetup => panic!("{}: git setup is foreground", step.title),
+                        Action::SystemUpdates => {
+                            panic!("{}: system updates use apt", step.title)
+                        }
                     }
                 }
             }
@@ -3123,8 +3995,8 @@ mod tests {
     fn partition_splits_lanes_in_plan_order_with_plan_indices() {
         let (foreground, background) = partition(steps(Profile::Server));
         let indices = |lane: &[(usize, Step)]| lane.iter().map(|(i, _)| *i).collect::<Vec<_>>();
-        assert_eq!(indices(&foreground), [0, 1, 3, 4, 7, 8, 9, 13, 14]);
-        assert_eq!(indices(&background), [2, 5, 6, 10, 11, 12]);
+        assert_eq!(indices(&foreground), [0, 1, 2, 4, 5, 8, 9, 10, 14, 15]);
+        assert_eq!(indices(&background), [3, 6, 7, 11, 12, 13]);
         for (index, step) in foreground.iter().chain(&background) {
             assert_eq!(step.title, steps(Profile::Server)[*index].title);
         }
@@ -3531,7 +4403,10 @@ mod tests {
         );
         for (_, error) in &outcome.results[1..3] {
             let error = error.as_deref().unwrap();
-            assert!(error.contains("re-run `hpds setup`"), "{error}");
+            assert!(
+                error.contains("re-run `hpds setup --profile server`"),
+                "{error}"
+            );
         }
         assert_eq!(outcome.log, ["fake one", "fake three"]);
         assert_eq!(
@@ -3546,9 +4421,56 @@ mod tests {
             outcome
                 .output
                 .iter()
-                .any(|line| line.contains("hint: re-run `hpds setup`")),
+                .any(|line| line.contains("hint: re-run `hpds setup --profile server`")),
             "{:?}",
             outcome.output
+        );
+    }
+
+    /// A background step whose command fails: its gate never opens.
+    const FAILING_BACKGROUND_STEPS: &[Step] = &[
+        Step {
+            title: "foreground first",
+            lane: Lane::Foreground,
+            requires: &[],
+            apt: AptShare::None,
+            actions: &[fake!("one")],
+        },
+        Step {
+            title: "background fails",
+            lane: Lane::Background,
+            requires: &[],
+            apt: AptShare::None,
+            actions: &[fake!("stuck")],
+        },
+    ];
+
+    #[test]
+    fn a_failing_background_step_names_the_log_of_the_main_thread() {
+        let dir = tempfile::tempdir().unwrap();
+        let log = dir.path().join("hpds-setup.log");
+        ui::open_log(&log).unwrap();
+        let runner =
+            GateRunner::new(Duration::from_millis(20)).gate("fake stuck", "fake never runs");
+        let git_setup = || Ok(());
+        let deps = deps_recording_git(Os::Linux, true, &runner, &PanicFetcher, &git_setup);
+        let (results, _) = ui::capture(|| execute(FAILING_BACKGROUND_STEPS, &deps, true));
+        ui::close_log();
+
+        let failed: Vec<_> = results
+            .iter()
+            .filter_map(|result| result.error.as_deref().map(|error| (result.title, error)))
+            .collect();
+        assert_eq!(failed.len(), 1, "{failed:?}");
+        let (title, error) = failed[0];
+        assert_eq!(title, "background fails");
+        assert!(
+            error.contains("gave up waiting for fake never runs"),
+            "{error}"
+        );
+        assert!(
+            error.contains(&format!("full output: {}", log.display())),
+            "{error}"
         );
     }
 
@@ -3738,6 +4660,800 @@ mod tests {
 
     #[test]
     fn finish_with_no_selected_steps_is_a_clean_no_op() {
-        finish(&[], None).expect("nothing selected is not an error");
+        finish(Profile::Dev, &[]).expect("nothing selected is not an error");
+    }
+
+    // --- compact rendering and the setup log ----------------------------
+
+    /// `text` with ANSI color codes removed: the color choice is
+    /// process-wide, and another test may change it concurrently.
+    fn strip_ansi(text: &str) -> String {
+        let mut out = String::new();
+        let mut chars = text.chars();
+        while let Some(c) = chars.next() {
+            if c == '\x1b' {
+                for c in chars.by_ref() {
+                    if c.is_ascii_alphabetic() {
+                        break;
+                    }
+                }
+            } else {
+                out.push(c);
+            }
+        }
+        out
+    }
+
+    /// `text` with the log path shown as `<LOG>`.
+    fn redact(text: &str, log: &Path) -> String {
+        text.replace(&log.display().to_string(), "<LOG>")
+    }
+
+    /// What the terminal shows, one written line after another, without
+    /// color and with the log path redacted.
+    fn screen(written: &[(ui::Stream, String)], log: &Path) -> String {
+        let lines: Vec<String> = written
+            .iter()
+            .map(|(_, line)| redact(&strip_ansi(line), log))
+            .collect();
+        lines.join("\n")
+    }
+
+    /// The lines written to one stream, as [`screen`] shows them.
+    fn stream_lines(
+        written: &[(ui::Stream, String)],
+        stream: ui::Stream,
+        log: &Path,
+    ) -> Vec<String> {
+        written
+            .iter()
+            .filter(|(s, _)| *s == stream)
+            .map(|(_, line)| redact(&strip_ansi(line), log))
+            .collect()
+    }
+
+    /// The log at `path`, redacted; empty when there is none.
+    fn read_redacted(path: &Path) -> String {
+        redact(&std::fs::read_to_string(path).unwrap_or_default(), path)
+    }
+
+    const USER_NAME_WARNING: &str =
+        "user.name is not set; run `git config --global user.name <VALUE>` or `hpds git setup`";
+    const GH_WARNING: &str = "gh is installed but not logged in to GitHub; run `gh auth login`";
+
+    /// A git-setup seam that succeeds with the two warnings a fresh
+    /// account gets.
+    fn warning_git_setup() -> anyhow::Result<()> {
+        ui::warn(USER_NAME_WARNING);
+        ui::warn(GH_WARNING);
+        Ok(())
+    }
+
+    /// Two command steps and two git steps; both git steps warn the same
+    /// two warnings.
+    const COMPACT_STEPS: &[Step] = &[
+        Step {
+            title: "first",
+            lane: Lane::Foreground,
+            requires: &[],
+            apt: AptShare::None,
+            actions: &[fake!("one")],
+        },
+        Step {
+            title: "git defaults",
+            lane: Lane::Foreground,
+            requires: &[],
+            apt: AptShare::None,
+            actions: &[Action::GitSetup],
+        },
+        Step {
+            title: "second",
+            lane: Lane::Foreground,
+            requires: &[],
+            apt: AptShare::None,
+            actions: &[fake!("two")],
+        },
+        Step {
+            title: "git again",
+            lane: Lane::Foreground,
+            requires: &[],
+            apt: AptShare::None,
+            actions: &[Action::GitSetup],
+        },
+    ];
+
+    /// The runner [`COMPACT_STEPS`] runs against: both commands succeed
+    /// with one line of output.
+    fn compact_runner() -> FakeRunner {
+        FakeRunner::default()
+            .with_output("fake one", "one done\n")
+            .with_output("fake two", "two done\n")
+    }
+
+    /// What one run of a profile flow left behind.
+    struct Logged {
+        result: anyhow::Result<()>,
+        written: Vec<(ui::Stream, String)>,
+        /// [`screen`] of `written`.
+        terminal: String,
+        /// The log, redacted.
+        log: String,
+    }
+
+    /// Run `table` through `profile`'s flow with the terminal tapped and
+    /// the log at `log_path`, non-interactively.
+    fn run_logged(
+        profile: Profile,
+        table: &[Step],
+        deps: &SetupDeps,
+        yes: bool,
+        log_path: &Path,
+    ) -> Logged {
+        run_logged_with(profile, table, deps, yes, log_path, false)
+    }
+
+    /// [`run_logged`] with `--quiet` given as `quiet`.
+    fn run_logged_with(
+        profile: Profile,
+        table: &[Step],
+        deps: &SetupDeps,
+        yes: bool,
+        log_path: &Path,
+        quiet: bool,
+    ) -> Logged {
+        let log = test_log(Some(log_path.to_path_buf()));
+        let (result, written) =
+            ui::tap_terminal(|| run_profile_with(profile, table, deps, yes, false, &log, quiet));
+        Logged {
+            result,
+            terminal: screen(&written, log_path),
+            written,
+            log: read_redacted(log_path),
+        }
+    }
+
+    #[test]
+    fn compact_dev_run_shows_one_line_per_step_a_tally_and_next_steps() {
+        let fake = compact_runner();
+        let runner = LoggingRunner::new(&fake);
+        let deps = deps_recording_git(Os::Mac, true, &runner, &PanicFetcher, &warning_git_setup);
+        let dir = tempfile::tempdir().unwrap();
+        let log_path = dir.path().join("hpds-setup.log");
+
+        let run = run_logged(Profile::Dev, COMPACT_STEPS, &deps, true, &log_path);
+
+        assert!(run.result.is_ok(), "{:?}", run.result);
+        assert_eq!(
+            stream_lines(&run.written, ui::Stream::Stderr, &log_path),
+            Vec::<String>::new(),
+            "warnings are collected, not printed inline"
+        );
+        insta::assert_snapshot!("compact_dev_terminal", run.terminal);
+        insta::assert_snapshot!("compact_dev_log", run.log);
+        assert!(
+            ui::take_reports().is_empty(),
+            "the run drains the warnings it collected"
+        );
+    }
+
+    /// A git-setup seam that fails with a hint.
+    fn failing_git_setup() -> anyhow::Result<()> {
+        Err(anyhow!(
+            "user.name is not set, and --yes suppresses the prompt for it"
+        ))
+        .hint("set it with `git config --global user.name`")
+    }
+
+    /// One passing step, then two that fail.
+    const FAILING_COMPACT_STEPS: &[Step] = &[
+        Step {
+            title: "first",
+            lane: Lane::Foreground,
+            requires: &[],
+            apt: AptShare::None,
+            actions: &[fake!("one")],
+        },
+        Step {
+            title: "git defaults",
+            lane: Lane::Foreground,
+            requires: &[],
+            apt: AptShare::None,
+            actions: &[Action::GitSetup],
+        },
+        Step {
+            title: "second",
+            lane: Lane::Foreground,
+            requires: &[],
+            apt: AptShare::None,
+            actions: &[fake!("two")],
+        },
+    ];
+
+    #[test]
+    fn compact_failures_show_their_error_indented_under_the_step_line() {
+        let fake = FakeRunner::default()
+            .with_output("fake one", "one done\n")
+            .with_failure("fake two", "line a\nline b\n");
+        let runner = LoggingRunner::new(&fake);
+        let deps = deps_recording_git(Os::Mac, true, &runner, &PanicFetcher, &failing_git_setup);
+        let dir = tempfile::tempdir().unwrap();
+        let log_path = dir.path().join("hpds-setup.log");
+
+        let run = run_logged(Profile::Dev, FAILING_COMPACT_STEPS, &deps, true, &log_path);
+
+        insta::assert_snapshot!("compact_failure_terminal", run.terminal);
+        assert_eq!(ui::log_path(), None, "a failed run closes its log");
+        let err = run.result.expect_err("two failed steps fail the run");
+        assert_eq!(
+            render_error(&err, false),
+            "error: 2 of 3 setup steps failed\n\
+             hint: fix the reported problems and re-run `hpds setup`; completed steps are \
+             idempotent and will no-op"
+        );
+        // The full detail is in the log, as today's output reads.
+        for expected in [
+            "$ fake two\nstatus: failed\nstderr:\n  line a\n  line b\n",
+            "error: user.name is not set, and --yes suppresses the prompt for it\n\
+             hint: set it with `git config --global user.name`\n",
+            "setup summary:\n  ✓ first\n  ✗ git defaults: user.name is not set",
+        ] {
+            assert!(
+                run.log.contains(expected),
+                "missing {expected:?}:\n{}",
+                run.log
+            );
+        }
+        // Compact mode is over: the caller's rendering of the final error
+        // reaches the terminal, and nothing is left collected.
+        let ((), written) = ui::tap_terminal(|| ui::error(&err));
+        assert_eq!(written.len(), 1, "{written:?}");
+        assert_eq!(written[0].0, ui::Stream::Stderr);
+        assert!(
+            written[0].1.contains("2 of 3 setup steps failed"),
+            "{written:?}"
+        );
+        assert!(ui::take_reports().is_empty());
+    }
+
+    /// A git-setup seam that raises the two warnings a fresh account gets
+    /// and then fails like [`failing_git_setup`].
+    fn warning_then_failing_git_setup() -> anyhow::Result<()> {
+        warning_git_setup()?;
+        failing_git_setup()
+    }
+
+    #[test]
+    fn quiet_compact_failures_still_show_their_errors_and_next_steps() {
+        let fake = FakeRunner::default()
+            .with_output("fake one", "one done\n")
+            .with_failure("fake two", "line a\nline b\n");
+        let runner = LoggingRunner::new(&fake);
+        let deps = deps_recording_git(
+            Os::Mac,
+            true,
+            &runner,
+            &PanicFetcher,
+            &warning_then_failing_git_setup,
+        );
+        let dir = tempfile::tempdir().unwrap();
+        let log_path = dir.path().join("hpds-setup.log");
+
+        let run = run_logged_with(
+            Profile::Dev,
+            FAILING_COMPACT_STEPS,
+            &deps,
+            true,
+            &log_path,
+            true,
+        );
+
+        assert!(run.result.is_err());
+        assert_eq!(
+            stream_lines(&run.written, ui::Stream::Stdout, &log_path),
+            [
+                "        user.name is not set, and --yes suppresses the prompt for it",
+                "        hint: set it with `git config --global user.name`",
+                "        `fake` failed: line a",
+                "        line b",
+                "        full output: <LOG>",
+                "        hint: fix the reported problem and re-run setup",
+                "Next steps:",
+                &format!("  - {USER_NAME_WARNING}"),
+                &format!("  - {GH_WARNING}"),
+            ],
+            "quiet hides the opening line, step lines, and tally, never errors"
+        );
+        assert_eq!(
+            stream_lines(&run.written, ui::Stream::Stderr, &log_path),
+            Vec::<String>::new()
+        );
+        // The log has every quiet line, and each error once, as the step
+        // reported it.
+        for expected in [
+            "hpds setup --profile dev: 3 steps. Full log: <LOG>\n",
+            "[1/3] first ✓\n",
+            "[2/3] git defaults ✗\n",
+            "[3/3] second ✗\n",
+            "1 of 3 steps succeeded. Details: <LOG>\n",
+        ] {
+            assert!(
+                run.log.contains(expected),
+                "missing {expected:?}:\n{}",
+                run.log
+            );
+        }
+        for once in [
+            "error: user.name is not set, and --yes suppresses the prompt for it\n",
+            "hint: set it with `git config --global user.name`\n",
+            "error: `fake` failed: line a\n",
+            &format!("warning: {USER_NAME_WARNING}\n"),
+            &format!("warning: {GH_WARNING}\n"),
+        ] {
+            assert_eq!(run.log.matches(once).count(), 1, "{once:?}:\n{}", run.log);
+        }
+        assert!(!run.log.contains("Next steps:"), "{}", run.log);
+        assert!(!run.log.contains("        "), "{}", run.log);
+        assert!(ui::take_reports().is_empty());
+    }
+
+    #[test]
+    fn compact_background_steps_print_their_line_when_their_result_arrives() {
+        // The background step can only finish after the last foreground
+        // step, so its line comes last.
+        let runner = GateRunner::new(Duration::from_secs(10)).gate("fake wait", "fake release");
+        let git_setup = || Ok(());
+        let deps = deps_recording_git(Os::Linux, true, &runner, &PanicFetcher, &git_setup);
+        let dir = tempfile::tempdir().unwrap();
+        let log_path = dir.path().join("hpds-setup.log");
+
+        let run = run_logged(Profile::Server, OVERLAP_STEPS, &deps, true, &log_path);
+
+        assert!(run.result.is_ok(), "{:?}", run.result);
+        assert!(
+            !run.terminal.contains("runs these"),
+            "under --yes the plan goes to the log only:\n{}",
+            run.terminal
+        );
+        insta::assert_snapshot!("compact_background_terminal", run.terminal);
+        insta::assert_snapshot!("compact_background_log", run.log);
+    }
+
+    #[test]
+    fn compact_background_failure_shows_its_error_under_its_line() {
+        let runner =
+            GateRunner::new(Duration::from_millis(20)).gate("fake stuck", "fake never runs");
+        let git_setup = || Ok(());
+        let deps = deps_recording_git(Os::Linux, true, &runner, &PanicFetcher, &git_setup);
+        let dir = tempfile::tempdir().unwrap();
+        let log_path = dir.path().join("hpds-setup.log");
+
+        let run = run_logged(
+            Profile::Server,
+            FAILING_BACKGROUND_STEPS,
+            &deps,
+            true,
+            &log_path,
+        );
+
+        assert!(run.result.is_err());
+        insta::assert_snapshot!("compact_background_failure_terminal", run.terminal);
+    }
+
+    #[test]
+    fn interactive_server_shows_the_plan_on_the_terminal_before_the_checklist() {
+        // Prompts must fail here rather than wait on a terminal a test
+        // run may have attached; the plan has to be on screen by then.
+        ui::set_non_interactive(true);
+        let runner = GateRunner::new(Duration::from_secs(10));
+        let git_setup = || panic!("no step may run before the checklist is answered");
+        let deps = deps_recording_git(Os::Linux, false, &runner, &PanicFetcher, &git_setup);
+        let dir = tempfile::tempdir().unwrap();
+        let log_path = dir.path().join("hpds-setup.log");
+        let log = test_log(Some(log_path.clone()));
+
+        let (result, written) = ui::tap_terminal(|| {
+            run_profile(Profile::Server, OVERLAP_STEPS, &deps, false, true, &log)
+        });
+
+        let err = result.expect_err("the checklist cannot be shown in a test");
+        assert!(render_error(&err, false).contains("cannot ask"), "{err:#}");
+        assert_eq!(ui::log_path(), None, "a refused run closes its log");
+        assert!(runner.finished().is_empty(), "{:?}", runner.finished());
+        let stdout = stream_lines(&written, ui::Stream::Stdout, &log_path).join("\n");
+        assert_eq!(
+            stdout,
+            plan_for(Profile::Server, OVERLAP_STEPS).trim_end(),
+            "the plan, and only the plan, is on the terminal before the checklist"
+        );
+        assert!(
+            read_redacted(&log_path).contains("hpds setup --profile server runs these 3 steps:"),
+            "the log receives the plan as well"
+        );
+    }
+
+    #[test]
+    fn verbose_run_prints_todays_full_output_and_still_logs_everything() {
+        let fake = compact_runner();
+        let runner = LoggingRunner::new(&fake);
+        let mut deps =
+            deps_recording_git(Os::Mac, true, &runner, &PanicFetcher, &warning_git_setup);
+        deps.install.verbose = true;
+        let dir = tempfile::tempdir().unwrap();
+        let log_path = dir.path().join("hpds-setup.log");
+
+        let run = run_logged(Profile::Dev, COMPACT_STEPS, &deps, true, &log_path);
+
+        assert!(run.result.is_ok(), "{:?}", run.result);
+        insta::assert_snapshot!("verbose_dev_terminal", run.terminal);
+        assert!(
+            run.log.starts_with(
+                "=== hpds setup --profile dev ===\n\
+                 hpds version: 9.9.9\n\
+                 started: 2026-11-03 21:15:00 UTC\n\
+                 os: linux x86_64\n"
+            ),
+            "{}",
+            run.log
+        );
+        for expected in [
+            "[1/4] first\none\n$ fake one\nstatus: success\nstdout:\n  one done\n",
+            &format!("[2/4] git defaults\nwarning: {USER_NAME_WARNING}\nwarning: {GH_WARNING}\n"),
+            "setup summary:\n  ✓ first\n  ✓ git defaults\n  ✓ second\n  ✓ git again\n\
+             ✓ setup complete\n",
+        ] {
+            assert!(
+                run.log.contains(expected),
+                "missing {expected:?}:\n{}",
+                run.log
+            );
+        }
+        assert!(ui::take_reports().is_empty());
+    }
+
+    #[test]
+    fn verbose_server_run_with_yes_prints_the_plan_to_the_terminal_and_the_log() {
+        let runner = GateRunner::new(Duration::from_secs(10)).gate("fake wait", "fake release");
+        let git_setup = || Ok(());
+        let mut deps = deps_recording_git(Os::Linux, true, &runner, &PanicFetcher, &git_setup);
+        deps.install.verbose = true;
+        let dir = tempfile::tempdir().unwrap();
+        let log_path = dir.path().join("hpds-setup.log");
+
+        let run = run_logged(Profile::Server, OVERLAP_STEPS, &deps, true, &log_path);
+
+        assert!(run.result.is_ok(), "{:?}", run.result);
+        let plan = plan_for(Profile::Server, OVERLAP_STEPS);
+        let plan = plan.trim_end();
+        assert!(
+            run.terminal.starts_with(plan),
+            "-v shows the plan first, even with --yes:\n{}",
+            run.terminal
+        );
+        assert_eq!(run.log.matches(plan).count(), 1, "{}", run.log);
+    }
+
+    #[test]
+    fn each_run_appends_its_own_header_and_keeps_what_the_log_held() {
+        let fake = compact_runner();
+        let runner = LoggingRunner::new(&fake);
+        let deps = deps_recording_git(Os::Mac, true, &runner, &PanicFetcher, &warning_git_setup);
+        let dir = tempfile::tempdir().unwrap();
+        let log_path = dir.path().join("hpds-setup.log");
+        std::fs::write(&log_path, "written by the bootstrap script\n").unwrap();
+
+        let first = run_logged(Profile::Dev, COMPACT_STEPS, &deps, true, &log_path);
+        assert!(first.result.is_ok(), "{:?}", first.result);
+        assert_eq!(ui::log_path(), None, "the run closes its log");
+        let second_log = SetupLog {
+            path: Some(log_path.clone()),
+            info: RunInfo {
+                started: "2026-11-04 09:00:00 UTC".to_string(),
+                ..test_info()
+            },
+        };
+        let (second, _) = ui::tap_terminal(|| {
+            run_profile(Profile::Dev, COMPACT_STEPS, &deps, true, false, &second_log)
+        });
+        assert!(second.is_ok(), "{second:?}");
+        assert_eq!(ui::log_path(), None, "the run closes its log");
+
+        let log = read_redacted(&log_path);
+        let first_header = "=== hpds setup --profile dev ===\n\
+                            hpds version: 9.9.9\n\
+                            started: 2026-11-03 21:15:00 UTC\n\
+                            os: linux x86_64\n";
+        let second_header = "=== hpds setup --profile dev ===\n\
+                             hpds version: 9.9.9\n\
+                             started: 2026-11-04 09:00:00 UTC\n\
+                             os: linux x86_64\n";
+        assert!(
+            log.starts_with(&format!("written by the bootstrap script\n{first_header}")),
+            "{log}"
+        );
+        let second_at = log.find(second_header).unwrap_or_else(|| panic!("{log}"));
+        assert_eq!(log.matches("setup summary:").count(), 2, "{log}");
+        assert!(
+            log[..second_at].contains("setup summary:"),
+            "the first run's section is complete before the second begins:\n{log}"
+        );
+    }
+
+    /// The stdout lines of a successful [`COMPACT_STEPS`] run without a
+    /// log.
+    fn compact_lines_without_a_log() -> Vec<String> {
+        [
+            "hpds setup --profile dev: 4 steps. No log file.",
+            "[1/4] first ✓",
+            "[2/4] git defaults ✓",
+            "[3/4] second ✓",
+            "[4/4] git again ✓",
+            "All 4 steps succeeded.",
+            "Next steps:",
+            &format!("  - {USER_NAME_WARNING}"),
+            &format!("  - {GH_WARNING}"),
+        ]
+        .iter()
+        .map(|line| line.to_string())
+        .collect()
+    }
+
+    #[test]
+    fn without_home_the_run_warns_and_continues_without_a_log() {
+        let fake = compact_runner();
+        let runner = LoggingRunner::new(&fake);
+        let deps = deps_recording_git(Os::Mac, true, &runner, &PanicFetcher, &warning_git_setup);
+        let log = test_log(None);
+
+        let (result, written) =
+            ui::tap_terminal(|| run_profile(Profile::Dev, COMPACT_STEPS, &deps, true, false, &log));
+
+        assert!(result.is_ok(), "{result:?}");
+        let nowhere = Path::new("/no-log");
+        let stderr = stream_lines(&written, ui::Stream::Stderr, nowhere);
+        assert_eq!(stderr.len(), 1, "{stderr:?}");
+        assert!(stderr[0].starts_with("warning: "), "{stderr:?}");
+        assert!(stderr[0].contains("HOME"), "{stderr:?}");
+        assert!(stderr[0].contains("without a log"), "{stderr:?}");
+        assert_eq!(
+            stream_lines(&written, ui::Stream::Stdout, nowhere),
+            compact_lines_without_a_log()
+        );
+    }
+
+    #[test]
+    fn a_log_that_cannot_be_opened_is_a_warning_and_the_run_continues() {
+        let fake = compact_runner();
+        let runner = LoggingRunner::new(&fake);
+        let deps = deps_recording_git(Os::Mac, true, &runner, &PanicFetcher, &warning_git_setup);
+        let dir = tempfile::tempdir().unwrap();
+        let log_path = dir.path().join("missing-dir").join("hpds-setup.log");
+        let log = test_log(Some(log_path.clone()));
+
+        let (result, written) =
+            ui::tap_terminal(|| run_profile(Profile::Dev, COMPACT_STEPS, &deps, true, false, &log));
+
+        assert!(result.is_ok(), "{result:?}");
+        let unredacted = Path::new("/no-log");
+        let stderr = stream_lines(&written, ui::Stream::Stderr, unredacted);
+        assert_eq!(stderr.len(), 1, "{stderr:?}");
+        assert!(stderr[0].starts_with("warning: "), "{stderr:?}");
+        assert!(
+            stderr[0].contains(&log_path.display().to_string()),
+            "the warning names the log it could not open: {stderr:?}"
+        );
+        assert!(stderr[0].contains("without a log"), "{stderr:?}");
+        assert_eq!(
+            stream_lines(&written, ui::Stream::Stdout, unredacted),
+            compact_lines_without_a_log()
+        );
+        assert!(!log_path.exists());
+    }
+
+    #[test]
+    fn a_running_foreground_step_is_the_active_spinner_so_prompts_suspend_it() {
+        let seen = Mutex::new(Vec::new());
+        let git_setup = || {
+            seen.lock().unwrap().push(ui::active_spinner_message());
+            Ok(())
+        };
+        let fake = compact_runner();
+        let runner = LoggingRunner::new(&fake);
+        let deps = deps_recording_git(Os::Mac, true, &runner, &PanicFetcher, &git_setup);
+        let dir = tempfile::tempdir().unwrap();
+        let log_path = dir.path().join("hpds-setup.log");
+
+        let run = run_logged(Profile::Dev, COMPACT_STEPS, &deps, true, &log_path);
+
+        assert!(run.result.is_ok(), "{:?}", run.result);
+        assert_eq!(
+            *seen.lock().unwrap(),
+            [
+                Some("[2/4] git defaults".to_string()),
+                Some("[4/4] git again".to_string())
+            ]
+        );
+        assert_eq!(
+            ui::active_spinner_message(),
+            None,
+            "no spinner outlives its step"
+        );
+    }
+
+    /// The terminal lines after the tally must be a `Next steps:` list.
+    fn assert_next_steps(rest: &[String]) {
+        if let Some((first, items)) = rest.split_first() {
+            assert_eq!(first, "Next steps:", "{rest:#?}");
+            assert!(!items.is_empty(), "{rest:#?}");
+            for item in items {
+                assert!(item.starts_with("  - "), "{rest:#?}");
+            }
+        }
+    }
+
+    #[test]
+    fn compact_dev_profile_shows_one_line_per_step_in_plan_order() {
+        let runner = runner_with_everything_installed();
+        let fetcher = FakeFetcher::default().with_latest("0.1.0");
+        let git_setup = || Ok(());
+        let deps = deps_recording_git(Os::Mac, true, &runner, &fetcher, &git_setup);
+        let dir = tempfile::tempdir().unwrap();
+        let log_path = dir.path().join("hpds-setup.log");
+        let log = test_log(Some(log_path.clone()));
+
+        let (result, written) = ui::tap_terminal(|| run_dev(&deps, true, false, &log));
+
+        assert!(result.is_ok(), "{result:?}");
+        let table = steps(Profile::Dev);
+        let total = table.len();
+        let lines = stream_lines(&written, ui::Stream::Stdout, &log_path);
+        let mut expected = vec![format!(
+            "hpds setup --profile dev: {total} steps. Full log: <LOG>"
+        )];
+        for (index, step) in table.iter().enumerate() {
+            expected.push(format!("[{}/{total}] {} ✓", index + 1, step.title));
+        }
+        expected.push(format!("All {total} steps succeeded. Details: <LOG>"));
+        assert!(lines.len() >= expected.len(), "{lines:#?}");
+        assert_eq!(lines[..expected.len()], expected[..], "{lines:#?}");
+        assert_next_steps(&lines[expected.len()..]);
+        assert_eq!(
+            stream_lines(&written, ui::Stream::Stderr, &log_path),
+            Vec::<String>::new()
+        );
+    }
+
+    #[test]
+    fn compact_overlapped_server_shows_every_step_once_and_logs_the_plan() {
+        let (tx, rx) = mpsc::channel();
+        std::thread::spawn(move || {
+            let sim = Sim::default();
+            let host = SimHost::default();
+            let git_setup = || {
+                sim.record("hpds git setup");
+                Ok(())
+            };
+            let fetcher = FakeFetcher::default().with_latest("0.1.0");
+            let (_, lookup) = sim_lookup(SimRstudio::default());
+            let mut deps = deps_recording_git(Os::Linux, true, &sim, &fetcher, &git_setup);
+            deps.installer_lookup = lookup;
+            deps.server_host = &host;
+            let dir = tempfile::tempdir().unwrap();
+            let log_path = dir.path().join("hpds-setup.log");
+            let log = test_log(Some(log_path.clone()));
+            let (result, written) = ui::tap_terminal(|| run_server(&deps, true, false, &log));
+            let _ = tx.send((
+                result.map_err(|err| format!("{err:#}")),
+                stream_lines(&written, ui::Stream::Stdout, &log_path),
+                read_redacted(&log_path),
+            ));
+        });
+        let (result, lines, log) = match rx.recv_timeout(Duration::from_secs(30)) {
+            Ok(outcome) => outcome,
+            Err(mpsc::RecvTimeoutError::Timeout) => panic!("server setup hung"),
+            Err(mpsc::RecvTimeoutError::Disconnected) => panic!("server setup panicked"),
+        };
+
+        assert!(result.is_ok(), "{result:?}");
+        let table = steps(Profile::Server);
+        let total = table.len();
+        assert_eq!(
+            lines.first().map(String::as_str),
+            Some(format!("hpds setup --profile server: {total} steps. Full log: <LOG>").as_str()),
+            "{lines:#?}"
+        );
+        let step_lines: Vec<&String> = lines.iter().filter(|line| line.starts_with('[')).collect();
+        assert_eq!(step_lines.len(), total, "{lines:#?}");
+        for (index, step) in table.iter().enumerate() {
+            let expected = format!("[{}/{total}] {} ✓", index + 1, step.title);
+            assert_eq!(
+                lines.iter().filter(|line| **line == expected).count(),
+                1,
+                "{expected}: {lines:#?}"
+            );
+        }
+        let foreground: Vec<String> = lines
+            .iter()
+            .filter(|line| {
+                table.iter().enumerate().any(|(index, step)| {
+                    step.lane == Lane::Foreground
+                        && **line == format!("[{}/{total}] {} ✓", index + 1, step.title)
+                })
+            })
+            .cloned()
+            .collect();
+        let planned_foreground: Vec<String> = table
+            .iter()
+            .enumerate()
+            .filter(|(_, step)| step.lane == Lane::Foreground)
+            .map(|(index, step)| format!("[{}/{total}] {} ✓", index + 1, step.title))
+            .collect();
+        assert_eq!(
+            foreground, planned_foreground,
+            "foreground lines follow plan order"
+        );
+        let tally = lines
+            .iter()
+            .position(|line| line.starts_with("All "))
+            .unwrap_or_else(|| panic!("no tally: {lines:#?}"));
+        assert_eq!(
+            lines[tally],
+            format!("All {total} steps succeeded. Details: <LOG>")
+        );
+        assert_eq!(tally, total + 1, "{lines:#?}");
+        assert_next_steps(&lines[tally + 1..]);
+        assert!(
+            !lines.iter().any(|line| line.contains("runs these")),
+            "{lines:#?}"
+        );
+
+        assert!(
+            log.contains(&plan(Profile::Server).trim_end().to_string()),
+            "the log holds the plan:\n{log}"
+        );
+        for (index, step) in table.iter().enumerate() {
+            if step.lane == Lane::Background {
+                let header = format!(
+                    "[{}/{total}] {} (ran in the background)",
+                    index + 1,
+                    step.title
+                );
+                assert!(log.contains(&header), "missing {header}:\n{log}");
+            }
+        }
+        assert!(log.contains("setup summary:\n"), "{log}");
+    }
+
+    #[test]
+    fn the_tally_counts_one_step_in_the_singular() {
+        assert_eq!(tally(1, 1, None), "All 1 step succeeded.");
+        assert_eq!(tally(0, 1, None), "0 of 1 step succeeded.");
+        assert_eq!(
+            tally(1, 2, Some(Path::new("/home/nero/hpds-setup.log"))),
+            "1 of 2 steps succeeded. Details: /home/nero/hpds-setup.log"
+        );
+        assert_eq!(tally(2, 2, None), "All 2 steps succeeded.");
+    }
+
+    // --- the log's run header -----------------------------------------------
+
+    #[test]
+    fn utc_timestamps_read_as_calendar_dates_in_utc() {
+        assert_eq!(utc_timestamp(0), "1970-01-01 00:00:00 UTC");
+        assert_eq!(utc_timestamp(1_793_740_500), "2026-11-03 21:15:00 UTC");
+        assert_eq!(utc_timestamp(1_709_251_199), "2024-02-29 23:59:59 UTC");
+        assert_eq!(utc_timestamp(951_868_800), "2000-03-01 00:00:00 UTC");
+    }
+
+    #[test]
+    fn the_current_run_reports_this_build_and_host() {
+        let info = RunInfo::current();
+        assert_eq!(info.version, env!("CARGO_PKG_VERSION"));
+        assert!(info.os.contains(std::env::consts::OS), "{info:?}");
+        assert!(info.started.ends_with(" UTC"), "{info:?}");
+        assert_eq!(
+            info.started.len(),
+            "2026-11-03 21:15:00 UTC".len(),
+            "{info:?}"
+        );
     }
 }

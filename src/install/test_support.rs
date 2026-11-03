@@ -65,6 +65,19 @@ impl FakeRunner {
         );
         self
     }
+
+    /// A failing command that wrote `stdout` and `stderr`.
+    pub fn with_failure_output(mut self, command_line: &str, stdout: &str, stderr: &str) -> Self {
+        self.outputs.insert(
+            command_line.to_string(),
+            CommandOutput {
+                success: false,
+                stdout: stdout.to_string(),
+                stderr: stderr.to_string(),
+            },
+        );
+        self
+    }
 }
 
 impl CommandRunner for FakeRunner {

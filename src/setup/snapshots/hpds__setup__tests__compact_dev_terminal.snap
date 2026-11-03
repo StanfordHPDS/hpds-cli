@@ -1,0 +1,13 @@
+---
+source: src/setup/mod.rs
+expression: run.terminal
+---
+hpds setup --profile dev: 4 steps. Full log: <LOG>
+[1/4] first ✓
+[2/4] git defaults ✓
+[3/4] second ✓
+[4/4] git again ✓
+All 4 steps succeeded. Details: <LOG>
+Next steps:
+  - user.name is not set; run `git config --global user.name <VALUE>` or `hpds git setup`
+  - gh is installed but not logged in to GitHub; run `gh auth login`

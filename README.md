@@ -178,18 +178,43 @@ The supported way to provision a lab server is:
 $ hpds setup --profile server --yes
 ```
 
-The Linux-only server profile installs the official Docker Engine packages,
-stable Rust, R, Python, Quarto, TinyTeX, RStudio Server, code-server, and the
-lab command-line tools. It adds the invoking user to the Docker group, merges
-the managed RStudio and code-server preferences, and enables that user's
-code-server service. Log in again after the run before using Docker without
-`sudo`. The profile does not install Miniconda, perform a blanket system
-upgrade, or reboot the server. With `--yes`, the user-space installs (Rust,
-Quarto, TinyTeX, gh, DuckDB, and uv with its tools) run on a background thread
-while the system steps run. Each one's output appears under its step header,
-marked as having run in the background, at the first step boundary after it
-finishes, or after the last system step if it is still running then. `dev` (the
-default) installs the toolchain on your own machine.
+The Linux-only server profile first applies pending Ubuntu updates: it
+refreshes the package lists (`apt-get update`) and upgrades the installed
+packages (`apt-get upgrade`). Because it runs `upgrade` rather than
+`full-upgrade`, apt may keep back an update that needs new packages, such as
+a new kernel; run `sudo apt-get full-upgrade` yourself to take those. When the
+updates leave a reboot pending, setup says so under its next steps; it never
+reboots the server itself. The profile then installs the official Docker
+Engine packages, stable Rust, R, Python, Quarto, TinyTeX, RStudio Server,
+code-server, and the lab command-line tools. It adds the invoking user to the
+Docker group, merges the managed RStudio and code-server preferences, and
+enables that user's code-server service. Log in again after the run before
+using Docker without `sudo`. The profile does not install Miniconda. With
+`--yes`, the user-space installs (Rust, Quarto, TinyTeX, gh, DuckDB, and uv
+with its tools) run on a background thread while the system steps run, so
+their step lines can appear out of order. `dev` (the default) installs the
+toolchain on your own machine.
+
+Either profile keeps the terminal short. It opens with one line that names
+the profile, the number of steps, and the log; shows one `[n/N] title` line
+per step, marked ✓ or ✗ when the step finishes, with a failed step's error
+indented beneath it; and ends with a one-line tally and a `Next steps:` list
+of anything left for you to do, such as setting a git identity or logging in
+to GitHub with `gh auth login`.
+
+Everything else goes to `~/hpds-setup.log` in your home directory. Each run
+appends a section that starts with a `=== hpds setup --profile <profile> ===`
+header and the hpds version, start time, and OS. The section holds the run's
+full output, including each step's header (a background step's is marked as
+having run in the background) and every warning, and every command the run
+ran, git and gh included, with whether it succeeded, its stdout, and its stderr. It ends
+with the setup summary and the tally. When `HOME` is not set, setup runs
+without a log and says so on its opening line.
+
+`-v` (`--verbose`) shows the full output on the terminal as well, echoing
+each command as it runs; the log is still written.
+`-q` (`--quiet`) hides the opening line, the step lines, and the tally, but
+never a failed step's error or the next steps.
 
 ### Audit a repo
 
