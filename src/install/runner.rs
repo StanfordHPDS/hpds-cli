@@ -4,10 +4,13 @@
 //! they go through [`CommandRunner`] so unit tests can fake both process
 //! output and which binaries appear to be installed.
 
+use std::collections::VecDeque;
 use std::ffi::{OsStr, OsString};
 use std::path::PathBuf;
 
 use anyhow::Context;
+
+use crate::ui;
 
 /// Captured result of one finished process.
 #[derive(Debug, Clone)]
@@ -59,6 +62,155 @@ impl CommandRunner for SystemRunner {
             stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
         })
     }
+}
+
+/// A [`CommandRunner`] that writes every command it runs to the log (see
+/// [`crate::ui::log_detail`]): the command line, whether it succeeded, and
+/// its stdout and stderr. Nothing reaches the terminal, and the output (or
+/// spawn error) the inner runner returns is passed back unchanged.
+pub struct LoggingRunner<'a> {
+    inner: &'a (dyn CommandRunner + Sync),
+}
+
+impl<'a> LoggingRunner<'a> {
+    /// Wrap `inner`, logging each command it runs.
+    pub fn new(inner: &'a (dyn CommandRunner + Sync)) -> Self {
+        Self { inner }
+    }
+}
+
+impl CommandRunner for LoggingRunner<'_> {
+    fn which(&self, program: &str) -> Option<PathBuf> {
+        self.inner.which(program)
+    }
+
+    fn run(&self, program: &str, args: &[&str]) -> anyhow::Result<CommandOutput> {
+        ui::log_detail(&format!("$ {}", shell_line(program, args)));
+        let output = match self.inner.run(program, args) {
+            Ok(output) => output,
+            Err(err) => {
+                ui::log_detail(&format!("failed to start: {err:#}"));
+                return Err(err);
+            }
+        };
+        let status = if output.success { "success" } else { "failed" };
+        ui::log_detail(&format!("status: {status}"));
+        log_block("stdout", &output.stdout);
+        log_block("stderr", &output.stderr);
+        Ok(output)
+    }
+}
+
+/// Log `text` under a `label:` line with each line indented two spaces;
+/// nothing at all when `text` holds only whitespace. A carriage return
+/// counts as a line break (see [`output_lines`]), so each update of a
+/// progress line keeps a line of its own.
+fn log_block(label: &str, text: &str) {
+    if text.trim().is_empty() {
+        return;
+    }
+    ui::log_detail(&format!("{label}:"));
+    for line in output_lines(text) {
+        ui::log_detail(&format!("  {line}"));
+    }
+}
+
+/// The lines of a command's output, splitting on `\n`, `\r\n`, and a lone
+/// `\r`. Progress output rewrites its line with `\r`; split only on `\n`,
+/// each update would land on one line and a terminal would show only the
+/// last. A `\r\n` pair yields one break, not an empty line between.
+fn output_lines(text: &str) -> impl Iterator<Item = &str> {
+    let text = text.strip_suffix('\n').unwrap_or(text);
+    let text = text.strip_suffix('\r').unwrap_or(text);
+    let mut rest = Some(text).filter(|text| !text.is_empty());
+    std::iter::from_fn(move || {
+        let current = rest?;
+        match current.find(['\r', '\n']) {
+            Some(at) => {
+                let (line, tail) = current.split_at(at);
+                let tail = tail
+                    .strip_prefix("\r\n")
+                    .or_else(|| tail.get(1..))
+                    .unwrap_or("");
+                rest = Some(tail);
+                Some(line)
+            }
+            None => {
+                rest = None;
+                Some(current)
+            }
+        }
+    })
+}
+
+/// `program args` as a POSIX shell would read it back: each word bare when
+/// it holds only characters a shell takes literally, otherwise single-quoted.
+fn shell_line(program: &str, args: &[&str]) -> String {
+    std::iter::once(program)
+        .chain(args.iter().copied())
+        .map(shell_word)
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// One shell word: bare for `[A-Za-z0-9-_./=:,+@%]`, else single-quoted with
+/// each `'` written as `'\''`. The empty word is `''`.
+fn shell_word(word: &str) -> String {
+    let bare = !word.is_empty()
+        && word
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || "-_./=:,+@%".contains(c));
+    if bare {
+        word.to_string()
+    } else {
+        format!("'{}'", word.replace('\'', "'\\''"))
+    }
+}
+
+/// How many non-empty lines of a failed command's output an error carries.
+const FAILURE_TAIL_LINES: usize = 10;
+
+/// The last [`FAILURE_TAIL_LINES`] non-empty lines of `text`, each with
+/// trailing whitespace trimmed, and how many non-empty lines it holds in
+/// all. Only the tail is kept while counting, however long the output.
+fn output_tail(text: &str) -> (VecDeque<&str>, usize) {
+    let mut tail = VecDeque::with_capacity(FAILURE_TAIL_LINES);
+    let mut total = 0;
+    for line in output_lines(text).filter(|line| !line.trim().is_empty()) {
+        total += 1;
+        if tail.len() == FAILURE_TAIL_LINES {
+            tail.pop_front();
+        }
+        tail.push_back(line.trim_end());
+    }
+    (tail, total)
+}
+
+/// The error for a command that ran and failed: `headline`, then the last
+/// ten non-empty lines of its stderr (or of its stdout when stderr has no
+/// non-empty line), then the path of the log, which holds the full output
+/// (see [`ui::log_path`]). Lines split as in [`output_lines`], so a lone
+/// `\r` ends a line. A line is non-empty when it holds anything but
+/// whitespace (`!line.trim().is_empty()`); only those lines count toward
+/// the ten and toward the total that a truncated tail reports as
+/// `(last 10 of N lines)`.
+pub(crate) fn command_failure(headline: &str, output: &CommandOutput) -> anyhow::Error {
+    let (mut tail, mut total) = output_tail(&output.stderr);
+    if total == 0 {
+        (tail, total) = output_tail(&output.stdout);
+    }
+    let mut message = headline.to_string();
+    if total > tail.len() {
+        message.push_str(&format!(" (last {} of {total} lines)", tail.len()));
+    }
+    if !tail.is_empty() {
+        message.push_str(": ");
+        message.push_str(&tail.make_contiguous().join("\n"));
+    }
+    if let Some(path) = ui::log_path() {
+        message.push_str(&format!("\nfull output: {}", path.display()));
+    }
+    anyhow::anyhow!(message)
 }
 
 /// Search a `PATH`-style value for `program`, honoring the platform's
@@ -243,6 +395,328 @@ mod tests {
             .expect("git must spawn");
         assert!(out.success);
         assert!(out.stdout.contains("git version"), "{}", out.stdout);
+    }
+
+    mod logging_runner {
+        use super::super::*;
+        use crate::install::test_support::FakeRunner;
+        use crate::ui;
+        use std::path::Path;
+
+        fn temp_log() -> (tempfile::TempDir, PathBuf) {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("hpds-setup.log");
+            ui::open_log(&path).unwrap();
+            (dir, path)
+        }
+
+        fn read_log(path: &Path) -> String {
+            ui::close_log();
+            std::fs::read_to_string(path).unwrap_or_default()
+        }
+
+        #[test]
+        fn is_send_and_sync_so_it_can_serve_the_background_lane() {
+            fn assert_send_sync<T: Send + Sync>() {}
+            assert_send_sync::<LoggingRunner<'static>>();
+        }
+
+        #[test]
+        fn fits_both_runner_seams() {
+            let fake = FakeRunner::default().with_output("id -nG analyst", "analyst sudo\n");
+            let logging = LoggingRunner::new(&fake);
+            let shared: &(dyn CommandRunner + Sync) = &logging;
+            let plain: &dyn CommandRunner = &logging;
+            assert!(shared.which("rustup").is_none());
+            assert!(plain.run("id", &["-nG", "analyst"]).unwrap().success);
+        }
+
+        #[test]
+        fn delegates_which_to_the_inner_runner() {
+            let fake = FakeRunner::default().on_path("quarto");
+            let logging = LoggingRunner::new(&fake);
+            assert_eq!(
+                logging.which("quarto"),
+                Some(PathBuf::from("/fake/bin/quarto"))
+            );
+            assert_eq!(logging.which("rustup"), None);
+        }
+
+        #[test]
+        fn logs_a_successful_command_with_its_output_and_nothing_on_the_terminal() {
+            let (_dir, path) = temp_log();
+            let fake = FakeRunner::default().with_output("dpkg --print-architecture", "amd64\n");
+            let logging = LoggingRunner::new(&fake);
+            let (out, written) =
+                ui::tap_terminal(|| logging.run("dpkg", &["--print-architecture"]));
+            let out = out.unwrap();
+            assert!(written.is_empty(), "written was: {written:?}");
+            assert!(out.success);
+            assert_eq!(out.stdout, "amd64\n");
+            assert_eq!(out.stderr, "");
+            assert_eq!(fake.calls(), ["dpkg --print-architecture"]);
+            assert_eq!(
+                read_log(&path),
+                "$ dpkg --print-architecture\n\
+                 status: success\n\
+                 stdout:\n  amd64\n"
+            );
+        }
+
+        #[test]
+        fn logs_a_failed_command_with_stdout_and_stderr_labeled() {
+            let (_dir, path) = temp_log();
+            let fake = FakeRunner::default().with_failure_output(
+                "rustup update stable",
+                "info: syncing channel updates\ninfo: downloading component\n",
+                "error: could not download\nerror: caused by: timeout\n",
+            );
+            let logging = LoggingRunner::new(&fake);
+            let (out, written) = ui::tap_terminal(|| logging.run("rustup", &["update", "stable"]));
+            let out = out.unwrap();
+            assert!(written.is_empty(), "written was: {written:?}");
+            assert!(!out.success);
+            assert_eq!(
+                out.stdout,
+                "info: syncing channel updates\ninfo: downloading component\n"
+            );
+            assert_eq!(
+                out.stderr,
+                "error: could not download\nerror: caused by: timeout\n"
+            );
+            assert_eq!(
+                read_log(&path),
+                "$ rustup update stable\n\
+                 status: failed\n\
+                 stdout:\n\
+                 \x20 info: syncing channel updates\n\
+                 \x20 info: downloading component\n\
+                 stderr:\n\
+                 \x20 error: could not download\n\
+                 \x20 error: caused by: timeout\n"
+            );
+        }
+
+        #[test]
+        fn omits_empty_stdout_and_stderr() {
+            let (_dir, path) = temp_log();
+            let fake = FakeRunner::default().with_output("sudo systemctl restart docker", "");
+            let logging = LoggingRunner::new(&fake);
+            logging
+                .run("sudo", &["systemctl", "restart", "docker"])
+                .unwrap();
+            assert_eq!(
+                read_log(&path),
+                "$ sudo systemctl restart docker\nstatus: success\n"
+            );
+        }
+
+        #[test]
+        fn quotes_arguments_a_shell_would_split_or_expand() {
+            let (_dir, path) = temp_log();
+            let key = "sudo env DEBIAN_FRONTEND=noninteractive apt-get -o Dpkg::Options::=--force-confold install r base  it's /usr/bin/x a,b+c@d%e";
+            let fake = FakeRunner::default().with_output(key, "");
+            let logging = LoggingRunner::new(&fake);
+            logging
+                .run(
+                    "sudo",
+                    &[
+                        "env",
+                        "DEBIAN_FRONTEND=noninteractive",
+                        "apt-get",
+                        "-o",
+                        "Dpkg::Options::=--force-confold",
+                        "install",
+                        "r base",
+                        "",
+                        "it's",
+                        "/usr/bin/x",
+                        "a,b+c@d%e",
+                    ],
+                )
+                .unwrap();
+            assert_eq!(
+                read_log(&path),
+                "$ sudo env DEBIAN_FRONTEND=noninteractive apt-get -o \
+                 Dpkg::Options::=--force-confold install 'r base' '' 'it'\\''s' \
+                 /usr/bin/x a,b+c@d%e\n\
+                 status: success\n"
+            );
+        }
+
+        #[test]
+        fn logs_a_spawn_error_and_returns_it_unchanged() {
+            let (_dir, path) = temp_log();
+            let fake = FakeRunner::default();
+            let logging = LoggingRunner::new(&fake);
+            let (result, written) =
+                ui::tap_terminal(|| logging.run("hpds-missing", &["--version"]));
+            let err = result.expect_err("an unrecorded command must fail to spawn");
+            assert!(written.is_empty(), "written was: {written:?}");
+            assert_eq!(
+                err.to_string(),
+                "no fake output recorded for `hpds-missing --version`"
+            );
+            assert_eq!(
+                read_log(&path),
+                "$ hpds-missing --version\n\
+                 failed to start: no fake output recorded for `hpds-missing --version`\n"
+            );
+        }
+
+        /// A runner whose every spawn fails with an OS cause under context.
+        struct UnstartableRunner;
+
+        impl CommandRunner for UnstartableRunner {
+            fn which(&self, _program: &str) -> Option<PathBuf> {
+                None
+            }
+
+            fn run(&self, program: &str, _args: &[&str]) -> anyhow::Result<CommandOutput> {
+                Err(anyhow::Error::new(std::io::Error::new(
+                    std::io::ErrorKind::PermissionDenied,
+                    "permission denied",
+                ))
+                .context(format!("could not run `{program}`")))
+            }
+        }
+
+        #[test]
+        fn logs_the_cause_of_a_spawn_error() {
+            let (_dir, path) = temp_log();
+            let logging = LoggingRunner::new(&UnstartableRunner);
+            let err = logging
+                .run("rustup", &["--version"])
+                .expect_err("the spawn must fail");
+            assert_eq!(err.to_string(), "could not run `rustup`");
+            assert_eq!(
+                read_log(&path),
+                "$ rustup --version\n\
+                 failed to start: could not run `rustup`: permission denied\n"
+            );
+        }
+
+        #[test]
+        fn whitespace_only_output_logs_no_block() {
+            let (_dir, path) = temp_log();
+            let fake =
+                FakeRunner::default().with_failure_output("apt-get update", "\n\n", " \n\t\n");
+            let logging = LoggingRunner::new(&fake);
+            logging.run("apt-get", &["update"]).unwrap();
+            assert_eq!(read_log(&path), "$ apt-get update\nstatus: failed\n");
+        }
+
+        #[test]
+        fn carriage_returns_start_new_lines_in_the_log() {
+            let (_dir, path) = temp_log();
+            let fake = FakeRunner::default()
+                .with_output("curl -o code-server.deb", " 10%\r 50%\r100%\r\ndone\r\n");
+            let logging = LoggingRunner::new(&fake);
+            logging.run("curl", &["-o", "code-server.deb"]).unwrap();
+            assert_eq!(
+                read_log(&path),
+                "$ curl -o code-server.deb\n\
+                 status: success\n\
+                 stdout:\n\
+                 \x20  10%\n\
+                 \x20  50%\n\
+                 \x20 100%\n\
+                 \x20 done\n"
+            );
+        }
+
+        #[test]
+        fn a_failure_on_a_worker_thread_names_the_spawning_threads_log() {
+            let (_dir, path) = temp_log();
+            let inherited = ui::log_path();
+            let fake = FakeRunner::default().with_failure("rustup check", "error: offline\n");
+            let logging = LoggingRunner::new(&fake);
+            let (message, transcript) = std::thread::scope(|scope| {
+                scope
+                    .spawn(|| {
+                        ui::with_log_path(inherited, || {
+                            ui::capture(|| {
+                                let out = logging.run("rustup", &["check"]).unwrap();
+                                command_failure("`rustup` failed", &out).to_string()
+                            })
+                        })
+                    })
+                    .join()
+                    .unwrap()
+            });
+            ui::replay(&transcript);
+            assert_eq!(
+                message,
+                format!(
+                    "`rustup` failed: error: offline\nfull output: {}",
+                    path.display()
+                )
+            );
+            assert_eq!(
+                read_log(&path),
+                "$ rustup check\n\
+                 status: failed\n\
+                 stderr:\n\
+                 \x20 error: offline\n"
+            );
+        }
+
+        #[test]
+        fn lines_are_recorded_in_a_capture_so_they_replay_with_their_step() {
+            let fake = FakeRunner::default().with_failure("rustup check", "error: offline\n");
+            let logging = LoggingRunner::new(&fake);
+            let (result, transcript) = ui::capture(|| logging.run("rustup", &["check"]));
+            assert!(!result.unwrap().success);
+            let messages: Vec<String> = transcript
+                .entries()
+                .iter()
+                .flat_map(|line| line.message.lines().map(str::to_string).collect::<Vec<_>>())
+                .collect();
+            assert_eq!(
+                messages,
+                [
+                    "$ rustup check",
+                    "status: failed",
+                    "stderr:",
+                    "  error: offline",
+                ]
+            );
+        }
+    }
+
+    fn failed(stdout: &str, stderr: &str) -> CommandOutput {
+        CommandOutput {
+            success: false,
+            stdout: stdout.to_string(),
+            stderr: stderr.to_string(),
+        }
+    }
+
+    #[test]
+    fn command_failure_treats_carriage_returns_as_line_breaks() {
+        let err = command_failure("`curl` failed", &failed("", "a\rb\rc\r\nd\n"));
+        assert_eq!(err.to_string(), "`curl` failed: a\nb\nc\nd");
+    }
+
+    #[test]
+    fn command_failure_counts_carriage_return_lines_toward_the_tail() {
+        let progress: String = (1..=12).map(|n| format!("{n:02}%\r")).collect();
+        let err = command_failure("`curl` failed", &failed("", &progress));
+        let message = err.to_string();
+        assert!(
+            message.starts_with("`curl` failed (last 10 of 12 lines): 03%\n"),
+            "{message}"
+        );
+        assert!(message.ends_with("\n12%"), "{message}");
+    }
+
+    #[test]
+    fn output_lines_matches_str_lines_without_carriage_returns() {
+        for text in ["", "a", "a\n", "a\n\n", "\na", "a\r\nb\r\n", "a\n\nb"] {
+            let ours: Vec<&str> = output_lines(text).collect();
+            let std: Vec<&str> = text.lines().collect();
+            assert_eq!(ours, std, "text was {text:?}");
+        }
     }
 
     #[test]

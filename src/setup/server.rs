@@ -408,13 +408,11 @@ fn run_checked(runner: &dyn CommandRunner, program: &str, args: &[&str]) -> Resu
         .run(program, args)
         .with_context(|| format!("could not run `{program}`"))?;
     if !output.success {
-        let detail = if output.stderr.trim().is_empty() {
-            output.stdout.trim()
-        } else {
-            output.stderr.trim()
-        };
-        return Err(anyhow!("`{program}` failed: {detail}"))
-            .hint("fix the reported command failure and rerun server setup");
+        return Err(install::command_failure(
+            &format!("`{program}` failed"),
+            &output,
+        ))
+        .hint("fix the reported command failure and rerun server setup");
     }
     Ok(output.stdout)
 }
@@ -595,9 +593,9 @@ fn rust_state(runner: &dyn CommandRunner) -> Result<RustState> {
         .run("rustup", &["check"])
         .context("installed rustup could not run `rustup check`")?;
     if !check.success {
-        return Err(anyhow!(
-            "installed rustup failed `rustup check`: {}",
-            check.stderr.trim()
+        return Err(install::command_failure(
+            "installed rustup failed `rustup check`",
+            &check,
         ))
         .hint("repair rustup, then rerun server setup");
     }
@@ -1062,6 +1060,126 @@ mod tests {
             let rendered = crate::ui::render_error(&err, false);
             assert!(rendered.contains("hint:"), "{rendered}");
         }
+    }
+
+    /// `count` numbered lines (`<label> line 01`, ...), with a blank line
+    /// after every fourth so blank lines are seen not to count.
+    fn numbered_lines(label: &str, count: usize) -> String {
+        let mut text = String::new();
+        for n in 1..=count {
+            text.push_str(&format!("{label} line {n:02}\n"));
+            if n % 4 == 0 {
+                text.push('\n');
+            }
+        }
+        text
+    }
+
+    fn checked_failure(runner: &FakeRunner) -> String {
+        let err = super::run_checked(runner, "sudo", &["systemctl", "restart", "docker"])
+            .expect_err("command must fail");
+        crate::ui::render_error(&err, false)
+    }
+
+    #[test]
+    fn checked_command_failure_keeps_only_the_last_ten_nonempty_stderr_lines() {
+        let runner = FakeRunner::default().with_failure(
+            "sudo systemctl restart docker",
+            &numbered_lines("stderr", 14),
+        );
+        let rendered = checked_failure(&runner);
+        for n in 1..=4 {
+            assert!(
+                !rendered.contains(&format!("stderr line {n:02}")),
+                "{rendered}"
+            );
+        }
+        for n in 5..=14 {
+            assert!(
+                rendered.contains(&format!("stderr line {n:02}")),
+                "{rendered}"
+            );
+        }
+        assert!(rendered.contains("(last 10 of 14 lines)"), "{rendered}");
+        assert!(
+            rendered.contains("fix the reported command failure"),
+            "{rendered}"
+        );
+        assert!(!rendered.contains("full output:"), "{rendered}");
+    }
+
+    #[test]
+    fn checked_command_failure_with_few_lines_keeps_them_all_without_a_note() {
+        let runner = FakeRunner::default().with_failure(
+            "sudo systemctl restart docker",
+            "Job for docker.service failed.\n",
+        );
+        let rendered = checked_failure(&runner);
+        assert!(
+            rendered.contains("Job for docker.service failed."),
+            "{rendered}"
+        );
+        assert!(!rendered.contains("(last "), "{rendered}");
+    }
+
+    #[test]
+    fn checked_command_failure_tails_stdout_when_stderr_is_empty() {
+        let runner = FakeRunner::default().with_failure_output(
+            "sudo systemctl restart docker",
+            &numbered_lines("stdout", 13),
+            "",
+        );
+        let rendered = checked_failure(&runner);
+        assert!(!rendered.contains("stdout line 03"), "{rendered}");
+        for n in 4..=13 {
+            assert!(
+                rendered.contains(&format!("stdout line {n:02}")),
+                "{rendered}"
+            );
+        }
+        assert!(rendered.contains("(last 10 of 13 lines)"), "{rendered}");
+    }
+
+    #[test]
+    fn checked_command_failure_names_the_open_log_for_the_full_output() {
+        let dir = tempfile::tempdir().unwrap();
+        let log = dir.path().join("hpds-setup.log");
+        crate::ui::open_log(&log).unwrap();
+        let runner = FakeRunner::default().with_failure(
+            "sudo systemctl restart docker",
+            &numbered_lines("stderr", 14),
+        );
+        let rendered = checked_failure(&runner);
+        crate::ui::close_log();
+        assert!(
+            rendered.contains(&format!("full output: {}", log.display())),
+            "{rendered}"
+        );
+        assert!(
+            rendered.contains("fix the reported command failure"),
+            "{rendered}"
+        );
+    }
+
+    #[test]
+    fn rustup_check_failure_is_tailed_and_names_the_open_log() {
+        let dir = tempfile::tempdir().unwrap();
+        let log = dir.path().join("hpds-setup.log");
+        crate::ui::open_log(&log).unwrap();
+        let runner = FakeRunner::default()
+            .on_path("rustup")
+            .with_failure("rustup check", &numbered_lines("stderr", 12));
+        let err = super::rust_state(&runner).expect_err("rustup check must fail");
+        crate::ui::close_log();
+        let rendered = crate::ui::render_error(&err, false);
+        assert!(!rendered.contains("stderr line 02"), "{rendered}");
+        assert!(rendered.contains("stderr line 12"), "{rendered}");
+        assert!(rendered.contains("(last 10 of 12 lines)"), "{rendered}");
+        assert!(
+            rendered.contains(&format!("full output: {}", log.display())),
+            "{rendered}"
+        );
+        assert!(rendered.contains("repair rustup"), "{rendered}");
     }
 
     #[test]

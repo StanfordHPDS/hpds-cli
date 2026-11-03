@@ -1,9 +1,9 @@
 //! The log sink, compact terminal mode, and collected reports.
 //!
-//! All three are scoped to the calling thread. Work that moves to another
-//! thread already runs inside [`fn@super::capture`] (its lines would otherwise
-//! interleave with the foreground's), and its transcript is replayed on the
-//! thread that owns the terminal, so its lines reach that thread's log and
+//! All of this state is scoped to the calling thread. Work that moves to
+//! another thread already runs inside [`fn@super::capture`] (its lines would
+//! otherwise interleave with the foreground's), and its transcript is
+//! replayed on the thread that owns the terminal, so its lines reach that thread's log and
 //! reports in order. Keeping the state per thread also lets tests, which run
 //! on parallel threads, each open their own log without seeing another
 //! test's lines.
@@ -18,6 +18,9 @@
 //!   being printed inline. Progress bars are hidden. Dropping the guard
 //!   restores the previous mode, so an early return cannot leave compact
 //!   mode on.
+//! - **Inherited log path.** A worker thread does not share the log handle,
+//!   but [`with_log_path`] lets it know where the spawning thread's log
+//!   lives, so its errors can name the file its replayed lines end up in.
 //!
 //! Lines emitted by a background step that panics are lost: its capture is
 //! discarded with the panic, so they never reach the log, and the panic
@@ -56,6 +59,9 @@ struct Log {
 thread_local! {
     /// The calling thread's open log, if any.
     static LOG: RefCell<Option<Log>> = const { RefCell::new(None) };
+    /// The log path a worker thread was given by [`with_log_path`]: the log
+    /// of the thread that spawned it, which receives its replayed lines.
+    static INHERITED_LOG_PATH: RefCell<Option<PathBuf>> = const { RefCell::new(None) };
     /// Whether the calling thread is in compact terminal mode.
     static COMPACT: Cell<bool> = const { Cell::new(false) };
     /// Warnings and errors kept in compact mode, oldest first.
@@ -85,12 +91,41 @@ pub fn close_log() {
     let _ = LOG.try_with(|slot| slot.borrow_mut().take());
 }
 
-/// The path of the calling thread's open log, if any.
-#[allow(dead_code)] // part of the ui API for setup's compact output; no caller outside tests yet
+/// The path of the calling thread's open log, if any; otherwise the path
+/// it was given by [`with_log_path`], if any.
 pub fn log_path() -> Option<PathBuf> {
     LOG.try_with(|slot| slot.borrow().as_ref().map(|log| log.path.clone()))
         .ok()
         .flatten()
+        .or_else(|| {
+            INHERITED_LOG_PATH
+                .try_with(|slot| slot.borrow().clone())
+                .ok()
+                .flatten()
+        })
+}
+
+/// Run `f` with [`log_path`] returning `path` on the calling thread when no
+/// log is open there, then restore whatever path it returned before (also
+/// when `f` panics). Only the path moves: lines `f` writes out still go to
+/// this thread's own log, if any, so a worker thread runs `f` inside
+/// [`fn@super::capture`] and the spawning thread replays its lines into the
+/// log that `path` names. Capture `path` with [`log_path`] before spawning.
+pub fn with_log_path<T>(path: Option<PathBuf>, f: impl FnOnce() -> T) -> T {
+    /// Restores the inherited path in force before [`with_log_path`].
+    struct Restore(Option<PathBuf>);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            let previous = self.0.take();
+            let _ = INHERITED_LOG_PATH.try_with(|slot| *slot.borrow_mut() = previous);
+        }
+    }
+    let previous = INHERITED_LOG_PATH
+        .try_with(|slot| std::mem::replace(&mut *slot.borrow_mut(), path))
+        .ok()
+        .flatten();
+    let _restore = Restore(previous);
+    f()
 }
 
 /// Append `line` to the calling thread's open log, if any.
@@ -333,5 +368,70 @@ mod tests {
             fs::read_to_string(&path).unwrap_or_default(),
             "from the logging thread\n"
         );
+    }
+
+    #[test]
+    fn with_log_path_names_the_spawning_threads_log_without_writing_to_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("hpds-setup.log");
+        open_log(&path).unwrap();
+        let _compact = compact();
+        let inherited = log_path();
+        let ((seen_inside, transcript), seen_after) = std::thread::scope(|scope| {
+            scope
+                .spawn(|| {
+                    let inside = with_log_path(inherited, || {
+                        crate::ui::capture(|| {
+                            info("from the worker");
+                            log_path()
+                        })
+                    });
+                    (inside, log_path())
+                })
+                .join()
+                .unwrap()
+        });
+        assert_eq!(seen_inside, Some(path.clone()));
+        assert_eq!(
+            seen_after, None,
+            "the inherited path must not outlive the call"
+        );
+        assert_eq!(
+            fs::read_to_string(&path).unwrap_or_default(),
+            "",
+            "the worker must not write to the log directly"
+        );
+        crate::ui::replay(&transcript);
+        close_log();
+        assert_eq!(
+            fs::read_to_string(&path).unwrap_or_default(),
+            "from the worker\n"
+        );
+    }
+
+    #[test]
+    fn an_open_log_outranks_an_inherited_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let own = dir.path().join("own.log");
+        let other = dir.path().join("other.log");
+        open_log(&own).unwrap();
+        let seen = with_log_path(Some(other), log_path);
+        close_log();
+        assert_eq!(seen, Some(own));
+    }
+
+    #[test]
+    fn with_log_path_restores_the_previous_path_when_f_panics() {
+        let dir = tempfile::tempdir().unwrap();
+        let outer = dir.path().join("outer.log");
+        let inner = dir.path().join("inner.log");
+        with_log_path(Some(outer.clone()), || {
+            let result = std::panic::catch_unwind(|| {
+                with_log_path(Some(inner), || panic!("step panicked"));
+            });
+            assert!(result.is_err());
+            assert_eq!(log_path(), Some(outer.clone()));
+        });
+        assert_eq!(log_path(), None);
     }
 }

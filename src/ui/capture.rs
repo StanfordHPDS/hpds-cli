@@ -36,6 +36,9 @@ pub(crate) enum Stream {
 pub(crate) enum LineKind {
     /// A plain informational line on stdout.
     Info,
+    /// An informational line on stdout that is never written to the log,
+    /// such as the `-v` echo of a command something else already logs.
+    Echo,
     /// A line on stdout that stays on the terminal in compact mode, such as
     /// a setup step's result. Never kept as a report.
     Status,
@@ -57,7 +60,9 @@ impl LineKind {
     /// log-only lines.
     pub(crate) fn stream(self) -> Option<Stream> {
         match self {
-            LineKind::Info | LineKind::Status | LineKind::Success => Some(Stream::Stdout),
+            LineKind::Info | LineKind::Echo | LineKind::Status | LineKind::Success => {
+                Some(Stream::Stdout)
+            }
             LineKind::Notice | LineKind::Warning | LineKind::Error => Some(Stream::Stderr),
             LineKind::Detail => None,
         }
@@ -83,6 +88,7 @@ impl Line {
             LineKind::Success => format!("✓ {}", self.message),
             LineKind::Warning => format!("warning: {}", self.message),
             LineKind::Info
+            | LineKind::Echo
             | LineKind::Status
             | LineKind::Notice
             | LineKind::Error
@@ -182,12 +188,14 @@ pub(crate) fn emit(kind: LineKind, message: &str, styled: &str) {
     }
 }
 
-/// Write an unrecorded line out: to the log, if one is open, and then to
-/// the terminal. In compact mode only status lines reach the terminal;
-/// warnings and errors are kept as reports instead, and other lines go to
-/// the log only. Log-only lines never reach the terminal.
+/// Write an unrecorded line out: to the log, if one is open (echo lines
+/// excepted), and then to the terminal. In compact mode only status lines
+/// reach the terminal; warnings and errors are kept as reports instead, and
+/// other lines go to the log only. Log-only lines never reach the terminal.
 fn write_out(line: &Line) {
-    sink::write_log(&line.plain());
+    if line.kind != LineKind::Echo {
+        sink::write_log(&line.plain());
+    }
     if sink::is_compact() {
         match line.kind {
             LineKind::Status => {}
@@ -205,7 +213,11 @@ fn write_out(line: &Line) {
                 });
                 return;
             }
-            LineKind::Info | LineKind::Success | LineKind::Notice | LineKind::Detail => return,
+            LineKind::Info
+            | LineKind::Echo
+            | LineKind::Success
+            | LineKind::Notice
+            | LineKind::Detail => return,
         }
     }
     if let Some(stream) = line.kind.stream() {

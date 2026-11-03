@@ -23,9 +23,8 @@ use capture::{LineKind, emit};
 pub use capture::{Transcript, capture, replay};
 #[allow(unused_imports)]
 // part of the ui API for setup's compact output; no caller outside tests yet
-pub use sink::{
-    CompactGuard, Report, ReportKind, close_log, compact, log_path, open_log, take_reports,
-};
+pub use sink::{CompactGuard, Report, ReportKind, close_log, compact, open_log, take_reports};
+pub use sink::{log_path, with_log_path};
 
 #[allow(unused_imports)] // consumed only by unit tests today; part of the ui API
 pub use error::render_error;
@@ -172,6 +171,16 @@ fn visible_or_detail(kind: LineKind, quiet: bool) -> LineKind {
     if quiet { LineKind::Detail } else { kind }
 }
 
+/// Print an unstyled informational line to stdout that is never written to
+/// the log, for a line the log already holds in another form (the `-v` echo
+/// of a command a logging runner records). Hidden in compact mode like
+/// [`fn@println`], and dropped entirely by `--quiet`.
+pub fn echo(msg: &str) {
+    if !is_quiet() {
+        emit(LineKind::Echo, msg, msg);
+    }
+}
+
 /// Print a status line to stdout: one of the few lines that stay on the
 /// terminal in compact mode, such as a setup step's result or a run's
 /// closing tally. Written to the log as well. Unlike a warning it is never
@@ -190,7 +199,6 @@ fn status_line(msg: &str, quiet: bool) {
 /// [`fn@capture`] it is recorded with the other lines and written to the
 /// log, in order, when the transcript is replayed. Without an open log the
 /// line is dropped.
-#[allow(dead_code)] // part of the ui API for logging command output; no caller outside tests yet
 pub fn log_detail(text: &str) {
     emit(LineKind::Detail, text, text);
 }

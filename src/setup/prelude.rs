@@ -329,10 +329,11 @@ impl<'scope> Preparation<'scope> {
         deps: &SetupDeps<'a>,
     ) -> Self {
         let thread_deps = deps.for_thread();
+        let log_path = ui::log_path();
         let spawned = std::thread::Builder::new()
             .name(deb.thread_name().to_string())
             .spawn_scoped(scope, move || {
-                ui::capture(|| prepare_file(deb, &thread_deps))
+                ui::with_log_path(log_path, || ui::capture(|| prepare_file(deb, &thread_deps)))
             });
         Preparation {
             deb,

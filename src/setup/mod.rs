@@ -695,7 +695,9 @@ impl Drop for ReleaseForeground<'_> {
 /// step first waits for the selected steps it `requires` on the other
 /// lane. This thread replays
 /// background transcripts, under their headers, between foreground steps
-/// as they arrive, then the rest once its own lane is done.
+/// as they arrive, then the rest once its own lane is done. The worker is
+/// given this thread's log path (see [`ui::with_log_path`]), so its command
+/// failures name the log its replayed lines go to.
 ///
 /// If the worker panics, the steps it never reported fail with a hint to
 /// re-run, and every foreground result stands. A step that panics loses
@@ -710,6 +712,7 @@ fn execute_overlapped(
     let total = run.selected.len();
     let completed = Completed::new(foreground.iter().map(|(_, step)| step.title));
     let worker_deps = deps.for_thread();
+    let log_path = ui::log_path();
     let (tx, rx) = mpsc::channel::<Finished>();
 
     let results = std::thread::scope(|scope| {
@@ -717,7 +720,9 @@ fn execute_overlapped(
         let worker = std::thread::Builder::new()
             .name("hpds-setup-background".to_string())
             .spawn_scoped(scope, move || {
-                run_background(background, &worker_deps, run, completed, &tx);
+                ui::with_log_path(log_path, || {
+                    run_background(background, &worker_deps, run, completed, &tx);
+                });
             });
         let worker = match worker {
             Ok(worker) => worker,
@@ -3549,6 +3554,53 @@ mod tests {
                 .any(|line| line.contains("hint: re-run `hpds setup`")),
             "{:?}",
             outcome.output
+        );
+    }
+
+    /// A background step whose command fails: its gate never opens.
+    const FAILING_BACKGROUND_STEPS: &[Step] = &[
+        Step {
+            title: "foreground first",
+            lane: Lane::Foreground,
+            requires: &[],
+            apt: AptShare::None,
+            actions: &[fake!("one")],
+        },
+        Step {
+            title: "background fails",
+            lane: Lane::Background,
+            requires: &[],
+            apt: AptShare::None,
+            actions: &[fake!("stuck")],
+        },
+    ];
+
+    #[test]
+    fn a_failing_background_step_names_the_log_of_the_main_thread() {
+        let dir = tempfile::tempdir().unwrap();
+        let log = dir.path().join("hpds-setup.log");
+        ui::open_log(&log).unwrap();
+        let runner =
+            GateRunner::new(Duration::from_millis(20)).gate("fake stuck", "fake never runs");
+        let git_setup = || Ok(());
+        let deps = deps_recording_git(Os::Linux, true, &runner, &PanicFetcher, &git_setup);
+        let (results, _) = ui::capture(|| execute(FAILING_BACKGROUND_STEPS, &deps, true));
+        ui::close_log();
+
+        let failed: Vec<_> = results
+            .iter()
+            .filter_map(|result| result.error.as_deref().map(|error| (result.title, error)))
+            .collect();
+        assert_eq!(failed.len(), 1, "{failed:?}");
+        let (title, error) = failed[0];
+        assert_eq!(title, "background fails");
+        assert!(
+            error.contains("gave up waiting for fake never runs"),
+            "{error}"
+        );
+        assert!(
+            error.contains(&format!("full output: {}", log.display())),
+            "{error}"
         );
     }
 

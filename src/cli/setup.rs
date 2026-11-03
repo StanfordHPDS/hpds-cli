@@ -11,7 +11,7 @@ use std::path::Path;
 use anyhow::anyhow;
 use clap::{Args, ValueEnum};
 
-use crate::install::{CacheFetcher, InstallCtx, SystemRunner};
+use crate::install::{CacheFetcher, InstallCtx, LoggingRunner, SystemRunner};
 use crate::setup::{self, Profile, SetupDeps};
 use crate::tools::{Os, Platform};
 use crate::ui::{self, HintExt};
@@ -77,7 +77,9 @@ pub fn run(args: SetupArgs, global: &GlobalArgs) -> anyhow::Result<()> {
         );
     }
 
-    let runner = SystemRunner;
+    // Every command setup runs goes through one logging runner, so the log
+    // holds each command and its full output whichever step ran it.
+    let runner = LoggingRunner::new(&SystemRunner);
     let fetcher = CacheFetcher::new(global.verbose);
     let server_host = setup::server::SystemServerHost::new(&runner);
     let git_setup = || super::git::run_setup_with_defaults(args.yes);
