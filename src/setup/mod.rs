@@ -19,7 +19,7 @@
 //! [`CommandRunner`]: crate::install::CommandRunner
 
 use std::collections::HashSet;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::{Condvar, Mutex, MutexGuard, PoisonError, mpsc};
 
 use anyhow::anyhow;
@@ -438,7 +438,11 @@ pub fn steps(profile: Profile) -> &'static [Step] {
 /// The numbered plan for a profile: every step, and under each step the
 /// exact commands it will run.
 pub fn plan(profile: Profile) -> String {
-    let steps = steps(profile);
+    plan_for(profile, steps(profile))
+}
+
+/// The numbered plan for `steps`, run under `profile`'s name.
+fn plan_for(profile: Profile, steps: &[Step]) -> String {
     let mut out = format!(
         "hpds setup --profile {} runs these {} steps:\n",
         profile.name(),
@@ -525,12 +529,118 @@ pub fn choose_steps(all: &[Step], yes: bool, interactive: bool) -> anyhow::Resul
 /// it, or when no background step is selected, every step runs here, one
 /// at a time, in plan order.
 pub fn execute(steps: &[Step], deps: &SetupDeps, overlap: bool) -> Vec<StepResult> {
+    execute_rendered(steps, deps, overlap, ui::is_quiet()).0
+}
+
+/// [`execute`], also returning the warnings the steps raised in compact
+/// mode, deduplicated in the order first seen (see [`Render`]). `quiet`
+/// keeps step lines off the terminal (see [`Render::quiet`]).
+fn execute_rendered(
+    steps: &[Step],
+    deps: &SetupDeps,
+    overlap: bool,
+    quiet: bool,
+) -> (Vec<StepResult>, Vec<String>) {
     let run = Run::new(steps);
+    let mut render = Render::new(steps.len(), quiet);
     let (foreground, background) = partition(steps);
-    if overlap && !background.is_empty() {
-        return execute_overlapped(&run, &foreground, &background, deps);
+    let results = if overlap && !background.is_empty() {
+        execute_overlapped(&run, &foreground, &background, deps, &mut render)
+    } else {
+        execute_sequential(&run, deps, &mut render)
+    };
+    (results, render.next_steps)
+}
+
+/// How a run's steps appear on the terminal.
+///
+/// Outside compact mode (`-v`, or a caller that never entered it) each step
+/// prints its `[n/N] title` header and then its output, as it always has.
+/// In compact mode the header goes to the log only, a spinner labeled with
+/// it marks a running foreground step, and the step's result is one
+/// `[n/N] title ✓`/`✗` line, with any error the step reported indented
+/// under it. The warnings the step raised are kept for the run's closing
+/// next steps.
+struct Render {
+    compact: bool,
+    /// `--quiet`: step lines go to the log only, while a failed step's
+    /// error still reaches the terminal.
+    quiet: bool,
+    total: usize,
+    /// Warnings raised so far, deduplicated, in the order first seen.
+    next_steps: Vec<String>,
+}
+
+/// How far a failed step's error is indented under its step line.
+const ERROR_INDENT: &str = "        ";
+
+impl Render {
+    fn new(total: usize, quiet: bool) -> Self {
+        Render {
+            compact: ui::is_compact(),
+            quiet,
+            total,
+            next_steps: Vec::new(),
+        }
     }
-    execute_sequential(&run, deps)
+
+    /// Introduce a step about to run on this thread. In compact mode the
+    /// returned spinner marks it until dropped.
+    fn start(&self, index: usize, title: &str) -> Option<ui::Spinner> {
+        let header = header(index, self.total, title);
+        if self.compact {
+            ui::log_detail(&header);
+            Some(ui::spinner(header))
+        } else {
+            ui::println(&header);
+            None
+        }
+    }
+
+    /// Introduce a step whose output is replayed after it ran on the
+    /// background lane.
+    fn start_background(&self, index: usize, title: &str) {
+        let header = background_header(index, self.total, title);
+        if self.compact {
+            ui::log_detail(&header);
+        } else {
+            ui::println(&header);
+        }
+    }
+
+    /// Close a step: in compact mode, its result line, the errors it
+    /// reported, and its warnings kept for the next steps. The errors reach
+    /// the terminal even under `--quiet`, and stay out of the log, which
+    /// already holds them as the step reported them.
+    fn end(&mut self, index: usize, result: &StepResult) {
+        if !self.compact {
+            return;
+        }
+        let mark = if result.error.is_some() { "✗" } else { "✓" };
+        ui::status_line(
+            &format!("{} {mark}", header(index, self.total, result.title)),
+            self.quiet,
+        );
+        let continuing = continuing_warning(result.title);
+        for report in ui::take_reports() {
+            match report.kind {
+                ui::ReportKind::Error => {
+                    let text = report
+                        .message
+                        .strip_prefix("error: ")
+                        .unwrap_or(&report.message);
+                    for line in text.lines() {
+                        ui::report(&format!("{ERROR_INDENT}{line}"));
+                    }
+                }
+                ui::ReportKind::Warning => {
+                    if report.message != continuing && !self.next_steps.contains(&report.message) {
+                        self.next_steps.push(report.message);
+                    }
+                }
+            }
+        }
+    }
 }
 
 /// What every step of one run shares: the selected steps, and the steps
@@ -566,14 +676,18 @@ impl<'s> Run<'s> {
 }
 
 /// Run the selected steps on this thread, one at a time, in plan order.
-fn execute_sequential(run: &Run, deps: &SetupDeps) -> Vec<StepResult> {
-    let total = run.selected.len();
+fn execute_sequential(run: &Run, deps: &SetupDeps, render: &mut Render) -> Vec<StepResult> {
     run.selected
         .iter()
         .enumerate()
         .map(|(index, step)| {
-            ui::println(&header(index, total, step.title));
-            run_step(step, deps, run)
+            let spinner = render.start(index, step.title);
+            let result = run_step(step, deps, run);
+            if let Some(spinner) = spinner {
+                spinner.finish_and_clear();
+            }
+            render.end(index, &result);
+            result
         })
         .collect()
 }
@@ -595,7 +709,7 @@ fn run_step(step: &Step, deps: &SetupDeps, run: &Run) -> StepResult {
         Ok(()) => None,
         Err(err) => {
             ui::error(&err);
-            ui::warn(&format!("step failed: {}; continuing", step.title));
+            ui::warn(&continuing_warning(step.title));
             Some(format!("{err:#}"))
         }
     };
@@ -603,6 +717,12 @@ fn run_step(step: &Step, deps: &SetupDeps, run: &Run) -> StepResult {
         title: step.title,
         error,
     }
+}
+
+/// The warning that a step failed and the run goes on. The step's line
+/// already says it failed, so compact mode leaves it out of the next steps.
+fn continuing_warning(title: &str) -> String {
+    format!("step failed: {title}; continuing")
 }
 
 /// One lane's steps, in plan order, each with its plan index.
@@ -620,8 +740,7 @@ fn partition(steps: &[Step]) -> (LaneSteps, LaneSteps) {
 
 /// Why a background step has no result, and what to do about it.
 const UNREPORTED: &str = "the background worker stopped before this step reported a result";
-const UNREPORTED_HINT: &str =
-    "re-run `hpds setup` to retry it; steps that completed are idempotent and will no-op";
+const UNREPORTED_HINT: &str = "re-run `hpds setup --profile server` to retry it; steps that completed are idempotent and will no-op";
 
 /// One background step's outcome, on its way to the main thread.
 struct Finished {
@@ -708,6 +827,7 @@ fn execute_overlapped(
     foreground: &[(usize, Step)],
     background: &[(usize, Step)],
     deps: &SetupDeps,
+    render: &mut Render,
 ) -> Vec<StepResult> {
     let total = run.selected.len();
     let completed = Completed::new(foreground.iter().map(|(_, step)| step.title));
@@ -735,16 +855,20 @@ fn execute_overlapped(
         };
 
         let mut lane = ForegroundLane {
-            total,
             results: (0..total).map(|_| None).collect(),
             unreported: background.iter().map(|(_, step)| step.title).collect(),
             rx,
+            render: &mut *render,
         };
         let release = ReleaseForeground(completed);
         for (index, step) in foreground {
             lane.wait_for(step.requires);
-            ui::println(&header(*index, total, step.title));
+            let spinner = lane.render.start(*index, step.title);
             let result = run_step(step, deps, run);
+            if let Some(spinner) = spinner {
+                spinner.finish_and_clear();
+            }
+            lane.render.end(*index, &result);
             if let Some(slot) = lane.results.get_mut(*index) {
                 *slot = Some(result);
             }
@@ -763,12 +887,14 @@ fn execute_overlapped(
             if let Some(slot) = results.get_mut(*index)
                 && slot.is_none()
             {
-                ui::println(&background_header(*index, total, step.title));
+                render.start_background(*index, step.title);
                 ui::error(&unreported_error());
-                *slot = Some(StepResult {
+                let result = StepResult {
                     title: step.title,
                     error: Some(format!("{UNREPORTED}; {UNREPORTED_HINT}")),
-                });
+                };
+                render.end(*index, &result);
+                *slot = Some(result);
             }
         }
         Some(results)
@@ -776,7 +902,7 @@ fn execute_overlapped(
 
     match results {
         Some(results) => results.into_iter().flatten().collect(),
-        None => execute_sequential(run, deps),
+        None => execute_sequential(run, deps, render),
     }
 }
 
@@ -807,20 +933,21 @@ fn run_background(
 
 /// The main thread's view of an overlapped run: results so far, and the
 /// background steps that have not reported yet.
-struct ForegroundLane {
-    total: usize,
+struct ForegroundLane<'r> {
     results: Vec<Option<StepResult>>,
     unreported: HashSet<&'static str>,
     rx: mpsc::Receiver<Finished>,
+    render: &'r mut Render,
 }
 
-impl ForegroundLane {
+impl ForegroundLane<'_> {
     /// Record a background step's outcome and replay its output.
     fn record(&mut self, finished: Finished) {
         let title = finished.result.title;
         self.unreported.remove(title);
-        ui::println(&background_header(finished.index, self.total, title));
+        self.render.start_background(finished.index, title);
         ui::replay(&finished.transcript);
+        self.render.end(finished.index, &finished.result);
         if let Some(slot) = self.results.get_mut(finished.index) {
             *slot = Some(finished.result);
         }
@@ -916,59 +1043,259 @@ pub fn summary(results: &[StepResult]) -> String {
     out
 }
 
-/// Print the summary, optionally write it to a log file, and turn any
-/// failed step into the run's error (exit code 1).
-pub fn finish(results: &[StepResult], log_path: Option<&Path>) -> anyhow::Result<()> {
+/// End the run: the summary block, then turn any failed step into the
+/// run's error (exit code 1), whose hint names `profile`'s command.
+pub fn finish(profile: Profile, results: &[StepResult]) -> anyhow::Result<()> {
     if results.is_empty() {
         ui::println("no steps selected; nothing to do");
         return Ok(());
     }
-    let text = summary(results);
-    ui::println(text.trim_end());
-    if let Some(path) = log_path {
-        match std::fs::write(path, &text) {
-            Ok(()) => ui::println(&format!("summary written to {}", path.display())),
-            Err(err) => ui::warn(&format!(
-                "could not write the summary log to {}: {err}",
-                path.display()
-            )),
+    ui::println(summary(results).trim_end());
+    if failed_count(results) == 0 {
+        ui::success("setup complete");
+    }
+    outcome(profile, results)
+}
+
+/// End a compact run: the summary block (which compact mode sends to the
+/// log only), then on the terminal the one-line tally and `next_steps`,
+/// the warnings the steps raised. `quiet` keeps the tally off the terminal;
+/// the next steps reach it regardless and stay out of the log, which holds
+/// each warning as it was raised. The outcome is the same as [`finish`]'s.
+fn finish_compact(
+    profile: Profile,
+    results: &[StepResult],
+    next_steps: &[String],
+    quiet: bool,
+) -> anyhow::Result<()> {
+    if results.is_empty() {
+        return finish(profile, results);
+    }
+    ui::println(summary(results).trim_end());
+    let succeeded = results.len() - failed_count(results);
+    ui::status_line(
+        &tally(succeeded, results.len(), ui::log_path().as_deref()),
+        quiet,
+    );
+    if !next_steps.is_empty() {
+        ui::report("Next steps:");
+        for step in next_steps {
+            ui::report(&format!("  - {step}"));
         }
     }
-    let failed = results.iter().filter(|r| r.error.is_some()).count();
+    outcome(profile, results)
+}
+
+/// How many steps failed.
+fn failed_count(results: &[StepResult]) -> usize {
+    results.iter().filter(|r| r.error.is_some()).count()
+}
+
+/// Turn any failed step into the run's error (exit code 1).
+fn outcome(profile: Profile, results: &[StepResult]) -> anyhow::Result<()> {
+    let failed = failed_count(results);
     if failed == 0 {
-        ui::success("setup complete");
         Ok(())
     } else {
-        Err(anyhow!("{failed} of {} setup steps failed", results.len())).hint(
-            "fix the reported problems and re-run `hpds setup`; completed steps are idempotent and will no-op",
-        )
+        Err(anyhow!("{failed} of {} setup steps failed", results.len())).hint(format!(
+            "fix the reported problems and re-run `{}`; completed steps are idempotent and will no-op",
+            rerun_command(profile)
+        ))
     }
+}
+
+/// The command that re-runs `profile`'s setup.
+fn rerun_command(profile: Profile) -> &'static str {
+    match profile {
+        Profile::Dev => "hpds setup",
+        Profile::Server => "hpds setup --profile server",
+    }
+}
+
+/// The closing line of a compact run: how many of `total` steps succeeded,
+/// and where the log is, if there is one.
+fn tally(succeeded: usize, total: usize, log: Option<&Path>) -> String {
+    let steps = if total == 1 { "step" } else { "steps" };
+    let count = if succeeded == total {
+        format!("All {total} {steps} succeeded.")
+    } else {
+        format!("{succeeded} of {total} {steps} succeeded.")
+    };
+    match log {
+        Some(path) => format!("{count} Details: {}", path.display()),
+        None => count,
+    }
+}
+
+/// The first line a run shows: the profile, how many steps will run, and
+/// where the log is, if there is one.
+fn opening_line(profile: Profile, steps: usize, log: Option<&Path>) -> String {
+    let noun = if steps == 1 { "step" } else { "steps" };
+    let log = match log {
+        Some(path) => format!("Full log: {}", path.display()),
+        None => "No log file.".to_string(),
+    };
+    format!(
+        "hpds setup --profile {}: {steps} {noun}. {log}",
+        profile.name()
+    )
+}
+
+/// What a run's log header records besides the profile.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RunInfo {
+    /// The hpds version.
+    pub version: String,
+    /// When the run started, as [`utc_timestamp`] formats it.
+    pub started: String,
+    /// The operating system and CPU architecture.
+    pub os: String,
+}
+
+impl RunInfo {
+    /// This process: its version, the current time, and the host. A clock
+    /// set before 1970 gives `unknown time`.
+    pub fn current() -> Self {
+        let started = match std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH) {
+            Ok(elapsed) => utc_timestamp(elapsed.as_secs()),
+            Err(_) => "unknown time".to_string(),
+        };
+        RunInfo {
+            version: env!("CARGO_PKG_VERSION").to_string(),
+            started,
+            os: format!("{} {}", std::env::consts::OS, std::env::consts::ARCH),
+        }
+    }
+}
+
+/// `secs` seconds after the Unix epoch, as `YYYY-MM-DD HH:MM:SS UTC`.
+///
+/// The date comes from the day count by the proleptic Gregorian
+/// civil-from-days conversion, in 400-year eras of 146,097 days counted
+/// from 0000-03-01, so leap days fall at the end of each era-year.
+pub fn utc_timestamp(secs: u64) -> String {
+    let days = secs / 86_400;
+    let of_day = secs % 86_400;
+    let (hour, minute, second) = (of_day / 3600, of_day % 3600 / 60, of_day % 60);
+
+    // Days since 0000-03-01.
+    let z = days + 719_468;
+    let era = z / 146_097;
+    let day_of_era = z % 146_097;
+    let year_of_era =
+        (day_of_era - day_of_era / 1460 + day_of_era / 36_524 - day_of_era / 146_096) / 365;
+    let day_of_year = day_of_era - (365 * year_of_era + year_of_era / 4 - year_of_era / 100);
+    // Months counted from March.
+    let month_index = (5 * day_of_year + 2) / 153;
+    let day = day_of_year - (153 * month_index + 2) / 5 + 1;
+    let month = if month_index < 10 {
+        month_index + 3
+    } else {
+        month_index - 9
+    };
+    let year = era * 400 + year_of_era + u64::from(month <= 2);
+    format!("{year:04}-{month:02}-{day:02} {hour:02}:{minute:02}:{second:02} UTC")
+}
+
+/// Where a run's log goes, and what its header records.
+#[derive(Debug, Clone)]
+pub struct SetupLog {
+    /// The log file, appended to. `None` when no path could be resolved
+    /// (`HOME` is unset); the run then continues without a log.
+    pub path: Option<PathBuf>,
+    pub info: RunInfo,
 }
 
 /// The dev-profile flow: checklist, execute, summarize.
-pub fn run_dev(deps: &SetupDeps, yes: bool, interactive: bool) -> anyhow::Result<()> {
-    let selected = choose_steps(steps(Profile::Dev), yes, interactive)?;
-    finish(&execute(&selected, deps, false), None)
+pub fn run_dev(
+    deps: &SetupDeps,
+    yes: bool,
+    interactive: bool,
+    log: &SetupLog,
+) -> anyhow::Result<()> {
+    run_profile(
+        Profile::Dev,
+        steps(Profile::Dev),
+        deps,
+        yes,
+        interactive,
+        log,
+    )
 }
 
-/// The server-profile flow: print the plan, checklist, confirm, execute,
-/// summarize into `log_path`. The caller has already verified the host is
-/// Linux; nothing runs until the confirmation gate passes (`--yes` skips
-/// it, and a non-interactive session without `--yes` refuses). Under
-/// `--yes` the background lane overlaps the foreground; an interactive
-/// run keeps every step on the main thread, where it may prompt.
+/// The server-profile flow: plan, checklist, confirm, execute, summarize.
+/// The caller has already verified the host is Linux; nothing runs until
+/// the confirmation gate passes (`--yes` skips it, and a non-interactive
+/// session without `--yes` refuses). Under `--yes` the background lane
+/// overlaps the foreground; an interactive run keeps every step on the
+/// main thread, where it may prompt.
 pub fn run_server(
     deps: &SetupDeps,
     yes: bool,
     interactive: bool,
-    log_path: &Path,
+    log: &SetupLog,
 ) -> anyhow::Result<()> {
-    ui::println(plan(Profile::Server).trim_end());
-    let selected = choose_steps(steps(Profile::Server), yes, interactive)?;
-    if selected.is_empty() {
-        return finish(&[], None);
+    run_profile(
+        Profile::Server,
+        steps(Profile::Server),
+        deps,
+        yes,
+        interactive,
+        log,
+    )
+}
+
+/// Run `all` (the profile's step table) under `profile`'s flow.
+///
+/// The log at `log.path` is opened (appending) and begins with a run
+/// header; when it cannot be opened, a warning says so and the run
+/// continues without one. Unless `-v` is on, the terminal is compact: an
+/// opening line naming the log, one `[n/N] title ✓`/`✗` line per step
+/// (with a failed step's error indented under it), a tally, and the
+/// deduplicated warnings as next steps. Everything, at full verbosity,
+/// goes to the log. The server plan goes to the log only under a compact
+/// `--yes` run, and to the terminal as well under `-v` or before the
+/// checklist of an interactive run. `--quiet` keeps the opening line, the
+/// step lines, and the tally off the terminal, never a failed step's error
+/// or the next steps.
+fn run_profile(
+    profile: Profile,
+    all: &[Step],
+    deps: &SetupDeps,
+    yes: bool,
+    interactive: bool,
+    log: &SetupLog,
+) -> anyhow::Result<()> {
+    run_profile_with(profile, all, deps, yes, interactive, log, ui::is_quiet())
+}
+
+/// [`run_profile`] with `--quiet` given as `quiet` rather than read from
+/// the process-wide setting.
+fn run_profile_with(
+    profile: Profile,
+    all: &[Step],
+    deps: &SetupDeps,
+    yes: bool,
+    interactive: bool,
+    log: &SetupLog,
+    quiet: bool,
+) -> anyhow::Result<()> {
+    let open = OpenLog::open(log.path.as_deref());
+    write_run_header(profile, &log.info);
+    let server = profile == Profile::Server;
+    if server {
+        let plan = plan_for(profile, all);
+        if yes && !deps.install.verbose {
+            ui::log_detail(plan.trim_end());
+        } else {
+            ui::println(plan.trim_end());
+        }
     }
-    if !yes {
+    let selected = choose_steps(all, yes, interactive)?;
+    if selected.is_empty() {
+        return finish(profile, &[]);
+    }
+    if server && !yes {
         let go = ui::confirm(
             &format!(
                 "Run these {} steps now? (several need sudo)",
@@ -981,7 +1308,69 @@ pub fn run_server(
                 .hint("re-run `hpds setup --profile server` when you are ready");
         }
     }
-    finish(&execute(&selected, deps, yes), Some(log_path))
+    ui::status_line(&opening_line(profile, selected.len(), open.path()), quiet);
+    let overlap = server && yes;
+    if deps.install.verbose {
+        return finish(profile, &execute(&selected, deps, overlap));
+    }
+    let compact = ui::compact();
+    let (results, next_steps) = execute_rendered(&selected, deps, overlap, quiet);
+    let outcome = finish_compact(profile, &results, &next_steps, quiet);
+    // Compact mode ends before the caller renders the run's error.
+    drop(compact);
+    outcome
+}
+
+/// The calling thread's setup log while it lives: opened (appending) on
+/// creation, closed on drop, so every return path closes it.
+struct OpenLog {
+    /// The open log, or `None` when the run has no log.
+    path: Option<PathBuf>,
+}
+
+impl OpenLog {
+    /// Open the log at `path`. When there is no path, or the file cannot be
+    /// opened, warn and carry on without a log.
+    fn open(path: Option<&Path>) -> Self {
+        let Some(path) = path else {
+            ui::warn(
+                "HOME is not set, so setup has nowhere to keep its log; continuing without a log",
+            );
+            return OpenLog { path: None };
+        };
+        match ui::open_log(path) {
+            Ok(()) => OpenLog {
+                path: Some(path.to_path_buf()),
+            },
+            Err(err) => {
+                ui::warn(&format!(
+                    "could not open the setup log {}: {err}; continuing without a log",
+                    path.display()
+                ));
+                OpenLog { path: None }
+            }
+        }
+    }
+
+    fn path(&self) -> Option<&Path> {
+        self.path.as_deref()
+    }
+}
+
+impl Drop for OpenLog {
+    fn drop(&mut self) {
+        if self.path.is_some() {
+            ui::close_log();
+        }
+    }
+}
+
+/// Begin a run's section of the log: the profile, then what `info` records.
+fn write_run_header(profile: Profile, info: &RunInfo) {
+    ui::log_detail(&format!("=== hpds setup --profile {} ===", profile.name()));
+    ui::log_detail(&format!("hpds version: {}", info.version));
+    ui::log_detail(&format!("started: {}", info.started));
+    ui::log_detail(&format!("os: {}", info.os));
 }
 
 #[cfg(test)]
@@ -997,7 +1386,7 @@ mod tests {
     };
     use crate::install::registry;
     use crate::install::test_support::{FakeFetcher, FakeRunner, PanicFetcher, probe_fixture};
-    use crate::install::{CommandOutput, CommandRunner, ReleaseFetcher};
+    use crate::install::{CommandOutput, CommandRunner, LoggingRunner, ReleaseFetcher};
     use crate::tools::Os;
     use crate::ui::render_error;
 
@@ -1062,6 +1451,23 @@ mod tests {
             git_setup,
             installer_lookup: &registry::find,
             server_host: &NO_SERVER_HOST,
+        }
+    }
+
+    /// The run header the log tests write: fixed, so logs are stable.
+    fn test_info() -> RunInfo {
+        RunInfo {
+            version: "9.9.9".to_string(),
+            started: "2026-11-03 21:15:00 UTC".to_string(),
+            os: "linux x86_64".to_string(),
+        }
+    }
+
+    /// A [`SetupLog`] at `path` with the fixed test header.
+    fn test_log(path: Option<std::path::PathBuf>) -> SetupLog {
+        SetupLog {
+            path,
+            info: test_info(),
         }
     }
 
@@ -1230,8 +1636,11 @@ mod tests {
             Ok(())
         };
         let deps = deps_recording_git(Os::Mac, true, &runner, &fetcher, &git_setup);
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let log = test_log(Some(dir.path().join("hpds-setup.log")));
 
-        run_dev(&deps, true, false).expect("every step no-ops successfully");
+        let (result, _) = ui::tap_terminal(|| run_dev(&deps, true, false, &log));
+        result.expect("every step no-ops successfully");
 
         // Each install step probes its tool in profile order, and the git
         // seam runs last: the full step sequence, seen through the runner.
@@ -1303,7 +1712,7 @@ mod tests {
             runner.calls()
         );
 
-        let err = finish(&results, None).expect_err("a failed step fails the run");
+        let err = finish(Profile::Dev, &results).expect_err("a failed step fails the run");
         assert!(err.to_string().contains("1 of 8"), "{err}");
     }
 
@@ -1314,10 +1723,12 @@ mod tests {
         let runner = FakeRunner::default();
         let git_setup = || panic!("no step may run when confirmation is refused");
         let deps = deps_recording_git(Os::Linux, false, &runner, &PanicFetcher, &git_setup);
-        let log = tempfile::tempdir().expect("create temp dir");
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let log_path = dir.path().join("hpds-setup.log");
 
-        let err = run_server(&deps, false, false, &log.path().join("hpds-setup.log"))
-            .expect_err("must refuse without --yes");
+        let (result, _) =
+            ui::tap_terminal(|| run_server(&deps, false, false, &test_log(Some(log_path.clone()))));
+        let err = result.expect_err("must refuse without --yes");
 
         let out = render_error(&err, false);
         assert!(out.contains("--yes"), "{out}");
@@ -1326,7 +1737,8 @@ mod tests {
             "zero commands may run: {:?}",
             runner.calls()
         );
-        assert!(!log.path().join("hpds-setup.log").exists());
+        let log = std::fs::read_to_string(&log_path).unwrap_or_default();
+        assert!(!log.contains("setup summary:"), "{log}");
     }
 
     // --- a simulated server -------------------------------------------------
@@ -1948,11 +2360,15 @@ mod tests {
         let dir = tempfile::tempdir().expect("create temp dir");
         let log_path = dir.path().join("hpds-setup.log");
 
-        finish(
-            &execute(steps(Profile::Server), &deps, false),
-            Some(&log_path),
-        )
-        .expect("all steps succeed");
+        ui::open_log(&log_path).expect("open the log");
+        let (result, _) = ui::tap_terminal(|| {
+            finish(
+                Profile::Server,
+                &execute(steps(Profile::Server), &deps, false),
+            )
+        });
+        ui::close_log();
+        result.expect("all steps succeed");
 
         let calls = sim.calls();
         // System steps ran as the planned commands, under sudo where
@@ -1988,7 +2404,7 @@ mod tests {
         );
         assert_eq!(calls.last().map(String::as_str), Some("hpds git setup"));
 
-        let log = std::fs::read_to_string(&log_path).expect("summary log must be written");
+        let log = std::fs::read_to_string(&log_path).expect("the summary must reach the log");
         for step in steps(Profile::Server) {
             assert!(
                 log.contains(step.title),
@@ -3536,7 +3952,10 @@ mod tests {
         );
         for (_, error) in &outcome.results[1..3] {
             let error = error.as_deref().unwrap();
-            assert!(error.contains("re-run `hpds setup`"), "{error}");
+            assert!(
+                error.contains("re-run `hpds setup --profile server`"),
+                "{error}"
+            );
         }
         assert_eq!(outcome.log, ["fake one", "fake three"]);
         assert_eq!(
@@ -3551,7 +3970,7 @@ mod tests {
             outcome
                 .output
                 .iter()
-                .any(|line| line.contains("hint: re-run `hpds setup`")),
+                .any(|line| line.contains("hint: re-run `hpds setup --profile server`")),
             "{:?}",
             outcome.output
         );
@@ -3790,6 +4209,800 @@ mod tests {
 
     #[test]
     fn finish_with_no_selected_steps_is_a_clean_no_op() {
-        finish(&[], None).expect("nothing selected is not an error");
+        finish(Profile::Dev, &[]).expect("nothing selected is not an error");
+    }
+
+    // --- compact rendering and the setup log ----------------------------
+
+    /// `text` with ANSI color codes removed: the color choice is
+    /// process-wide, and another test may change it concurrently.
+    fn strip_ansi(text: &str) -> String {
+        let mut out = String::new();
+        let mut chars = text.chars();
+        while let Some(c) = chars.next() {
+            if c == '\x1b' {
+                for c in chars.by_ref() {
+                    if c.is_ascii_alphabetic() {
+                        break;
+                    }
+                }
+            } else {
+                out.push(c);
+            }
+        }
+        out
+    }
+
+    /// `text` with the log path shown as `<LOG>`.
+    fn redact(text: &str, log: &Path) -> String {
+        text.replace(&log.display().to_string(), "<LOG>")
+    }
+
+    /// What the terminal shows, one written line after another, without
+    /// color and with the log path redacted.
+    fn screen(written: &[(ui::Stream, String)], log: &Path) -> String {
+        let lines: Vec<String> = written
+            .iter()
+            .map(|(_, line)| redact(&strip_ansi(line), log))
+            .collect();
+        lines.join("\n")
+    }
+
+    /// The lines written to one stream, as [`screen`] shows them.
+    fn stream_lines(
+        written: &[(ui::Stream, String)],
+        stream: ui::Stream,
+        log: &Path,
+    ) -> Vec<String> {
+        written
+            .iter()
+            .filter(|(s, _)| *s == stream)
+            .map(|(_, line)| redact(&strip_ansi(line), log))
+            .collect()
+    }
+
+    /// The log at `path`, redacted; empty when there is none.
+    fn read_redacted(path: &Path) -> String {
+        redact(&std::fs::read_to_string(path).unwrap_or_default(), path)
+    }
+
+    const USER_NAME_WARNING: &str =
+        "user.name is not set; run `git config --global user.name <VALUE>` or `hpds git setup`";
+    const GH_WARNING: &str = "gh is installed but not logged in to GitHub; run `gh auth login`";
+
+    /// A git-setup seam that succeeds with the two warnings a fresh
+    /// account gets.
+    fn warning_git_setup() -> anyhow::Result<()> {
+        ui::warn(USER_NAME_WARNING);
+        ui::warn(GH_WARNING);
+        Ok(())
+    }
+
+    /// Two command steps and two git steps; both git steps warn the same
+    /// two warnings.
+    const COMPACT_STEPS: &[Step] = &[
+        Step {
+            title: "first",
+            lane: Lane::Foreground,
+            requires: &[],
+            apt: AptShare::None,
+            actions: &[fake!("one")],
+        },
+        Step {
+            title: "git defaults",
+            lane: Lane::Foreground,
+            requires: &[],
+            apt: AptShare::None,
+            actions: &[Action::GitSetup],
+        },
+        Step {
+            title: "second",
+            lane: Lane::Foreground,
+            requires: &[],
+            apt: AptShare::None,
+            actions: &[fake!("two")],
+        },
+        Step {
+            title: "git again",
+            lane: Lane::Foreground,
+            requires: &[],
+            apt: AptShare::None,
+            actions: &[Action::GitSetup],
+        },
+    ];
+
+    /// The runner [`COMPACT_STEPS`] runs against: both commands succeed
+    /// with one line of output.
+    fn compact_runner() -> FakeRunner {
+        FakeRunner::default()
+            .with_output("fake one", "one done\n")
+            .with_output("fake two", "two done\n")
+    }
+
+    /// What one run of a profile flow left behind.
+    struct Logged {
+        result: anyhow::Result<()>,
+        written: Vec<(ui::Stream, String)>,
+        /// [`screen`] of `written`.
+        terminal: String,
+        /// The log, redacted.
+        log: String,
+    }
+
+    /// Run `table` through `profile`'s flow with the terminal tapped and
+    /// the log at `log_path`, non-interactively.
+    fn run_logged(
+        profile: Profile,
+        table: &[Step],
+        deps: &SetupDeps,
+        yes: bool,
+        log_path: &Path,
+    ) -> Logged {
+        run_logged_with(profile, table, deps, yes, log_path, false)
+    }
+
+    /// [`run_logged`] with `--quiet` given as `quiet`.
+    fn run_logged_with(
+        profile: Profile,
+        table: &[Step],
+        deps: &SetupDeps,
+        yes: bool,
+        log_path: &Path,
+        quiet: bool,
+    ) -> Logged {
+        let log = test_log(Some(log_path.to_path_buf()));
+        let (result, written) =
+            ui::tap_terminal(|| run_profile_with(profile, table, deps, yes, false, &log, quiet));
+        Logged {
+            result,
+            terminal: screen(&written, log_path),
+            written,
+            log: read_redacted(log_path),
+        }
+    }
+
+    #[test]
+    fn compact_dev_run_shows_one_line_per_step_a_tally_and_next_steps() {
+        let fake = compact_runner();
+        let runner = LoggingRunner::new(&fake);
+        let deps = deps_recording_git(Os::Mac, true, &runner, &PanicFetcher, &warning_git_setup);
+        let dir = tempfile::tempdir().unwrap();
+        let log_path = dir.path().join("hpds-setup.log");
+
+        let run = run_logged(Profile::Dev, COMPACT_STEPS, &deps, true, &log_path);
+
+        assert!(run.result.is_ok(), "{:?}", run.result);
+        assert_eq!(
+            stream_lines(&run.written, ui::Stream::Stderr, &log_path),
+            Vec::<String>::new(),
+            "warnings are collected, not printed inline"
+        );
+        insta::assert_snapshot!("compact_dev_terminal", run.terminal);
+        insta::assert_snapshot!("compact_dev_log", run.log);
+        assert!(
+            ui::take_reports().is_empty(),
+            "the run drains the warnings it collected"
+        );
+    }
+
+    /// A git-setup seam that fails with a hint.
+    fn failing_git_setup() -> anyhow::Result<()> {
+        Err(anyhow!(
+            "user.name is not set, and --yes suppresses the prompt for it"
+        ))
+        .hint("set it with `git config --global user.name`")
+    }
+
+    /// One passing step, then two that fail.
+    const FAILING_COMPACT_STEPS: &[Step] = &[
+        Step {
+            title: "first",
+            lane: Lane::Foreground,
+            requires: &[],
+            apt: AptShare::None,
+            actions: &[fake!("one")],
+        },
+        Step {
+            title: "git defaults",
+            lane: Lane::Foreground,
+            requires: &[],
+            apt: AptShare::None,
+            actions: &[Action::GitSetup],
+        },
+        Step {
+            title: "second",
+            lane: Lane::Foreground,
+            requires: &[],
+            apt: AptShare::None,
+            actions: &[fake!("two")],
+        },
+    ];
+
+    #[test]
+    fn compact_failures_show_their_error_indented_under_the_step_line() {
+        let fake = FakeRunner::default()
+            .with_output("fake one", "one done\n")
+            .with_failure("fake two", "line a\nline b\n");
+        let runner = LoggingRunner::new(&fake);
+        let deps = deps_recording_git(Os::Mac, true, &runner, &PanicFetcher, &failing_git_setup);
+        let dir = tempfile::tempdir().unwrap();
+        let log_path = dir.path().join("hpds-setup.log");
+
+        let run = run_logged(Profile::Dev, FAILING_COMPACT_STEPS, &deps, true, &log_path);
+
+        insta::assert_snapshot!("compact_failure_terminal", run.terminal);
+        assert_eq!(ui::log_path(), None, "a failed run closes its log");
+        let err = run.result.expect_err("two failed steps fail the run");
+        assert_eq!(
+            render_error(&err, false),
+            "error: 2 of 3 setup steps failed\n\
+             hint: fix the reported problems and re-run `hpds setup`; completed steps are \
+             idempotent and will no-op"
+        );
+        // The full detail is in the log, as today's output reads.
+        for expected in [
+            "$ fake two\nstatus: failed\nstderr:\n  line a\n  line b\n",
+            "error: user.name is not set, and --yes suppresses the prompt for it\n\
+             hint: set it with `git config --global user.name`\n",
+            "setup summary:\n  ✓ first\n  ✗ git defaults: user.name is not set",
+        ] {
+            assert!(
+                run.log.contains(expected),
+                "missing {expected:?}:\n{}",
+                run.log
+            );
+        }
+        // Compact mode is over: the caller's rendering of the final error
+        // reaches the terminal, and nothing is left collected.
+        let ((), written) = ui::tap_terminal(|| ui::error(&err));
+        assert_eq!(written.len(), 1, "{written:?}");
+        assert_eq!(written[0].0, ui::Stream::Stderr);
+        assert!(
+            written[0].1.contains("2 of 3 setup steps failed"),
+            "{written:?}"
+        );
+        assert!(ui::take_reports().is_empty());
+    }
+
+    /// A git-setup seam that raises the two warnings a fresh account gets
+    /// and then fails like [`failing_git_setup`].
+    fn warning_then_failing_git_setup() -> anyhow::Result<()> {
+        warning_git_setup()?;
+        failing_git_setup()
+    }
+
+    #[test]
+    fn quiet_compact_failures_still_show_their_errors_and_next_steps() {
+        let fake = FakeRunner::default()
+            .with_output("fake one", "one done\n")
+            .with_failure("fake two", "line a\nline b\n");
+        let runner = LoggingRunner::new(&fake);
+        let deps = deps_recording_git(
+            Os::Mac,
+            true,
+            &runner,
+            &PanicFetcher,
+            &warning_then_failing_git_setup,
+        );
+        let dir = tempfile::tempdir().unwrap();
+        let log_path = dir.path().join("hpds-setup.log");
+
+        let run = run_logged_with(
+            Profile::Dev,
+            FAILING_COMPACT_STEPS,
+            &deps,
+            true,
+            &log_path,
+            true,
+        );
+
+        assert!(run.result.is_err());
+        assert_eq!(
+            stream_lines(&run.written, ui::Stream::Stdout, &log_path),
+            [
+                "        user.name is not set, and --yes suppresses the prompt for it",
+                "        hint: set it with `git config --global user.name`",
+                "        `fake` failed: line a",
+                "        line b",
+                "        full output: <LOG>",
+                "        hint: fix the reported problem and re-run setup",
+                "Next steps:",
+                &format!("  - {USER_NAME_WARNING}"),
+                &format!("  - {GH_WARNING}"),
+            ],
+            "quiet hides the opening line, step lines, and tally, never errors"
+        );
+        assert_eq!(
+            stream_lines(&run.written, ui::Stream::Stderr, &log_path),
+            Vec::<String>::new()
+        );
+        // The log has every quiet line, and each error once, as the step
+        // reported it.
+        for expected in [
+            "hpds setup --profile dev: 3 steps. Full log: <LOG>\n",
+            "[1/3] first ✓\n",
+            "[2/3] git defaults ✗\n",
+            "[3/3] second ✗\n",
+            "1 of 3 steps succeeded. Details: <LOG>\n",
+        ] {
+            assert!(
+                run.log.contains(expected),
+                "missing {expected:?}:\n{}",
+                run.log
+            );
+        }
+        for once in [
+            "error: user.name is not set, and --yes suppresses the prompt for it\n",
+            "hint: set it with `git config --global user.name`\n",
+            "error: `fake` failed: line a\n",
+            &format!("warning: {USER_NAME_WARNING}\n"),
+            &format!("warning: {GH_WARNING}\n"),
+        ] {
+            assert_eq!(run.log.matches(once).count(), 1, "{once:?}:\n{}", run.log);
+        }
+        assert!(!run.log.contains("Next steps:"), "{}", run.log);
+        assert!(!run.log.contains("        "), "{}", run.log);
+        assert!(ui::take_reports().is_empty());
+    }
+
+    #[test]
+    fn compact_background_steps_print_their_line_when_their_result_arrives() {
+        // The background step can only finish after the last foreground
+        // step, so its line comes last.
+        let runner = GateRunner::new(Duration::from_secs(10)).gate("fake wait", "fake release");
+        let git_setup = || Ok(());
+        let deps = deps_recording_git(Os::Linux, true, &runner, &PanicFetcher, &git_setup);
+        let dir = tempfile::tempdir().unwrap();
+        let log_path = dir.path().join("hpds-setup.log");
+
+        let run = run_logged(Profile::Server, OVERLAP_STEPS, &deps, true, &log_path);
+
+        assert!(run.result.is_ok(), "{:?}", run.result);
+        assert!(
+            !run.terminal.contains("runs these"),
+            "under --yes the plan goes to the log only:\n{}",
+            run.terminal
+        );
+        insta::assert_snapshot!("compact_background_terminal", run.terminal);
+        insta::assert_snapshot!("compact_background_log", run.log);
+    }
+
+    #[test]
+    fn compact_background_failure_shows_its_error_under_its_line() {
+        let runner =
+            GateRunner::new(Duration::from_millis(20)).gate("fake stuck", "fake never runs");
+        let git_setup = || Ok(());
+        let deps = deps_recording_git(Os::Linux, true, &runner, &PanicFetcher, &git_setup);
+        let dir = tempfile::tempdir().unwrap();
+        let log_path = dir.path().join("hpds-setup.log");
+
+        let run = run_logged(
+            Profile::Server,
+            FAILING_BACKGROUND_STEPS,
+            &deps,
+            true,
+            &log_path,
+        );
+
+        assert!(run.result.is_err());
+        insta::assert_snapshot!("compact_background_failure_terminal", run.terminal);
+    }
+
+    #[test]
+    fn interactive_server_shows_the_plan_on_the_terminal_before_the_checklist() {
+        // Prompts must fail here rather than wait on a terminal a test
+        // run may have attached; the plan has to be on screen by then.
+        ui::set_non_interactive(true);
+        let runner = GateRunner::new(Duration::from_secs(10));
+        let git_setup = || panic!("no step may run before the checklist is answered");
+        let deps = deps_recording_git(Os::Linux, false, &runner, &PanicFetcher, &git_setup);
+        let dir = tempfile::tempdir().unwrap();
+        let log_path = dir.path().join("hpds-setup.log");
+        let log = test_log(Some(log_path.clone()));
+
+        let (result, written) = ui::tap_terminal(|| {
+            run_profile(Profile::Server, OVERLAP_STEPS, &deps, false, true, &log)
+        });
+
+        let err = result.expect_err("the checklist cannot be shown in a test");
+        assert!(render_error(&err, false).contains("cannot ask"), "{err:#}");
+        assert_eq!(ui::log_path(), None, "a refused run closes its log");
+        assert!(runner.finished().is_empty(), "{:?}", runner.finished());
+        let stdout = stream_lines(&written, ui::Stream::Stdout, &log_path).join("\n");
+        assert_eq!(
+            stdout,
+            plan_for(Profile::Server, OVERLAP_STEPS).trim_end(),
+            "the plan, and only the plan, is on the terminal before the checklist"
+        );
+        assert!(
+            read_redacted(&log_path).contains("hpds setup --profile server runs these 3 steps:"),
+            "the log receives the plan as well"
+        );
+    }
+
+    #[test]
+    fn verbose_run_prints_todays_full_output_and_still_logs_everything() {
+        let fake = compact_runner();
+        let runner = LoggingRunner::new(&fake);
+        let mut deps =
+            deps_recording_git(Os::Mac, true, &runner, &PanicFetcher, &warning_git_setup);
+        deps.install.verbose = true;
+        let dir = tempfile::tempdir().unwrap();
+        let log_path = dir.path().join("hpds-setup.log");
+
+        let run = run_logged(Profile::Dev, COMPACT_STEPS, &deps, true, &log_path);
+
+        assert!(run.result.is_ok(), "{:?}", run.result);
+        insta::assert_snapshot!("verbose_dev_terminal", run.terminal);
+        assert!(
+            run.log.starts_with(
+                "=== hpds setup --profile dev ===\n\
+                 hpds version: 9.9.9\n\
+                 started: 2026-11-03 21:15:00 UTC\n\
+                 os: linux x86_64\n"
+            ),
+            "{}",
+            run.log
+        );
+        for expected in [
+            "[1/4] first\none\n$ fake one\nstatus: success\nstdout:\n  one done\n",
+            &format!("[2/4] git defaults\nwarning: {USER_NAME_WARNING}\nwarning: {GH_WARNING}\n"),
+            "setup summary:\n  ✓ first\n  ✓ git defaults\n  ✓ second\n  ✓ git again\n\
+             ✓ setup complete\n",
+        ] {
+            assert!(
+                run.log.contains(expected),
+                "missing {expected:?}:\n{}",
+                run.log
+            );
+        }
+        assert!(ui::take_reports().is_empty());
+    }
+
+    #[test]
+    fn verbose_server_run_with_yes_prints_the_plan_to_the_terminal_and_the_log() {
+        let runner = GateRunner::new(Duration::from_secs(10)).gate("fake wait", "fake release");
+        let git_setup = || Ok(());
+        let mut deps = deps_recording_git(Os::Linux, true, &runner, &PanicFetcher, &git_setup);
+        deps.install.verbose = true;
+        let dir = tempfile::tempdir().unwrap();
+        let log_path = dir.path().join("hpds-setup.log");
+
+        let run = run_logged(Profile::Server, OVERLAP_STEPS, &deps, true, &log_path);
+
+        assert!(run.result.is_ok(), "{:?}", run.result);
+        let plan = plan_for(Profile::Server, OVERLAP_STEPS);
+        let plan = plan.trim_end();
+        assert!(
+            run.terminal.starts_with(plan),
+            "-v shows the plan first, even with --yes:\n{}",
+            run.terminal
+        );
+        assert_eq!(run.log.matches(plan).count(), 1, "{}", run.log);
+    }
+
+    #[test]
+    fn each_run_appends_its_own_header_and_keeps_what_the_log_held() {
+        let fake = compact_runner();
+        let runner = LoggingRunner::new(&fake);
+        let deps = deps_recording_git(Os::Mac, true, &runner, &PanicFetcher, &warning_git_setup);
+        let dir = tempfile::tempdir().unwrap();
+        let log_path = dir.path().join("hpds-setup.log");
+        std::fs::write(&log_path, "written by the bootstrap script\n").unwrap();
+
+        let first = run_logged(Profile::Dev, COMPACT_STEPS, &deps, true, &log_path);
+        assert!(first.result.is_ok(), "{:?}", first.result);
+        assert_eq!(ui::log_path(), None, "the run closes its log");
+        let second_log = SetupLog {
+            path: Some(log_path.clone()),
+            info: RunInfo {
+                started: "2026-11-04 09:00:00 UTC".to_string(),
+                ..test_info()
+            },
+        };
+        let (second, _) = ui::tap_terminal(|| {
+            run_profile(Profile::Dev, COMPACT_STEPS, &deps, true, false, &second_log)
+        });
+        assert!(second.is_ok(), "{second:?}");
+        assert_eq!(ui::log_path(), None, "the run closes its log");
+
+        let log = read_redacted(&log_path);
+        let first_header = "=== hpds setup --profile dev ===\n\
+                            hpds version: 9.9.9\n\
+                            started: 2026-11-03 21:15:00 UTC\n\
+                            os: linux x86_64\n";
+        let second_header = "=== hpds setup --profile dev ===\n\
+                             hpds version: 9.9.9\n\
+                             started: 2026-11-04 09:00:00 UTC\n\
+                             os: linux x86_64\n";
+        assert!(
+            log.starts_with(&format!("written by the bootstrap script\n{first_header}")),
+            "{log}"
+        );
+        let second_at = log.find(second_header).unwrap_or_else(|| panic!("{log}"));
+        assert_eq!(log.matches("setup summary:").count(), 2, "{log}");
+        assert!(
+            log[..second_at].contains("setup summary:"),
+            "the first run's section is complete before the second begins:\n{log}"
+        );
+    }
+
+    /// The stdout lines of a successful [`COMPACT_STEPS`] run without a
+    /// log.
+    fn compact_lines_without_a_log() -> Vec<String> {
+        [
+            "hpds setup --profile dev: 4 steps. No log file.",
+            "[1/4] first ✓",
+            "[2/4] git defaults ✓",
+            "[3/4] second ✓",
+            "[4/4] git again ✓",
+            "All 4 steps succeeded.",
+            "Next steps:",
+            &format!("  - {USER_NAME_WARNING}"),
+            &format!("  - {GH_WARNING}"),
+        ]
+        .iter()
+        .map(|line| line.to_string())
+        .collect()
+    }
+
+    #[test]
+    fn without_home_the_run_warns_and_continues_without_a_log() {
+        let fake = compact_runner();
+        let runner = LoggingRunner::new(&fake);
+        let deps = deps_recording_git(Os::Mac, true, &runner, &PanicFetcher, &warning_git_setup);
+        let log = test_log(None);
+
+        let (result, written) =
+            ui::tap_terminal(|| run_profile(Profile::Dev, COMPACT_STEPS, &deps, true, false, &log));
+
+        assert!(result.is_ok(), "{result:?}");
+        let nowhere = Path::new("/no-log");
+        let stderr = stream_lines(&written, ui::Stream::Stderr, nowhere);
+        assert_eq!(stderr.len(), 1, "{stderr:?}");
+        assert!(stderr[0].starts_with("warning: "), "{stderr:?}");
+        assert!(stderr[0].contains("HOME"), "{stderr:?}");
+        assert!(stderr[0].contains("without a log"), "{stderr:?}");
+        assert_eq!(
+            stream_lines(&written, ui::Stream::Stdout, nowhere),
+            compact_lines_without_a_log()
+        );
+    }
+
+    #[test]
+    fn a_log_that_cannot_be_opened_is_a_warning_and_the_run_continues() {
+        let fake = compact_runner();
+        let runner = LoggingRunner::new(&fake);
+        let deps = deps_recording_git(Os::Mac, true, &runner, &PanicFetcher, &warning_git_setup);
+        let dir = tempfile::tempdir().unwrap();
+        let log_path = dir.path().join("missing-dir").join("hpds-setup.log");
+        let log = test_log(Some(log_path.clone()));
+
+        let (result, written) =
+            ui::tap_terminal(|| run_profile(Profile::Dev, COMPACT_STEPS, &deps, true, false, &log));
+
+        assert!(result.is_ok(), "{result:?}");
+        let unredacted = Path::new("/no-log");
+        let stderr = stream_lines(&written, ui::Stream::Stderr, unredacted);
+        assert_eq!(stderr.len(), 1, "{stderr:?}");
+        assert!(stderr[0].starts_with("warning: "), "{stderr:?}");
+        assert!(
+            stderr[0].contains(&log_path.display().to_string()),
+            "the warning names the log it could not open: {stderr:?}"
+        );
+        assert!(stderr[0].contains("without a log"), "{stderr:?}");
+        assert_eq!(
+            stream_lines(&written, ui::Stream::Stdout, unredacted),
+            compact_lines_without_a_log()
+        );
+        assert!(!log_path.exists());
+    }
+
+    #[test]
+    fn a_running_foreground_step_is_the_active_spinner_so_prompts_suspend_it() {
+        let seen = Mutex::new(Vec::new());
+        let git_setup = || {
+            seen.lock().unwrap().push(ui::active_spinner_message());
+            Ok(())
+        };
+        let fake = compact_runner();
+        let runner = LoggingRunner::new(&fake);
+        let deps = deps_recording_git(Os::Mac, true, &runner, &PanicFetcher, &git_setup);
+        let dir = tempfile::tempdir().unwrap();
+        let log_path = dir.path().join("hpds-setup.log");
+
+        let run = run_logged(Profile::Dev, COMPACT_STEPS, &deps, true, &log_path);
+
+        assert!(run.result.is_ok(), "{:?}", run.result);
+        assert_eq!(
+            *seen.lock().unwrap(),
+            [
+                Some("[2/4] git defaults".to_string()),
+                Some("[4/4] git again".to_string())
+            ]
+        );
+        assert_eq!(
+            ui::active_spinner_message(),
+            None,
+            "no spinner outlives its step"
+        );
+    }
+
+    /// The terminal lines after the tally must be a `Next steps:` list.
+    fn assert_next_steps(rest: &[String]) {
+        if let Some((first, items)) = rest.split_first() {
+            assert_eq!(first, "Next steps:", "{rest:#?}");
+            assert!(!items.is_empty(), "{rest:#?}");
+            for item in items {
+                assert!(item.starts_with("  - "), "{rest:#?}");
+            }
+        }
+    }
+
+    #[test]
+    fn compact_dev_profile_shows_one_line_per_step_in_plan_order() {
+        let runner = runner_with_everything_installed();
+        let fetcher = FakeFetcher::default().with_latest("0.1.0");
+        let git_setup = || Ok(());
+        let deps = deps_recording_git(Os::Mac, true, &runner, &fetcher, &git_setup);
+        let dir = tempfile::tempdir().unwrap();
+        let log_path = dir.path().join("hpds-setup.log");
+        let log = test_log(Some(log_path.clone()));
+
+        let (result, written) = ui::tap_terminal(|| run_dev(&deps, true, false, &log));
+
+        assert!(result.is_ok(), "{result:?}");
+        let table = steps(Profile::Dev);
+        let total = table.len();
+        let lines = stream_lines(&written, ui::Stream::Stdout, &log_path);
+        let mut expected = vec![format!(
+            "hpds setup --profile dev: {total} steps. Full log: <LOG>"
+        )];
+        for (index, step) in table.iter().enumerate() {
+            expected.push(format!("[{}/{total}] {} ✓", index + 1, step.title));
+        }
+        expected.push(format!("All {total} steps succeeded. Details: <LOG>"));
+        assert!(lines.len() >= expected.len(), "{lines:#?}");
+        assert_eq!(lines[..expected.len()], expected[..], "{lines:#?}");
+        assert_next_steps(&lines[expected.len()..]);
+        assert_eq!(
+            stream_lines(&written, ui::Stream::Stderr, &log_path),
+            Vec::<String>::new()
+        );
+    }
+
+    #[test]
+    fn compact_overlapped_server_shows_every_step_once_and_logs_the_plan() {
+        let (tx, rx) = mpsc::channel();
+        std::thread::spawn(move || {
+            let sim = Sim::default();
+            let host = SimHost::default();
+            let git_setup = || {
+                sim.record("hpds git setup");
+                Ok(())
+            };
+            let fetcher = FakeFetcher::default().with_latest("0.1.0");
+            let (_, lookup) = sim_lookup(SimRstudio::default());
+            let mut deps = deps_recording_git(Os::Linux, true, &sim, &fetcher, &git_setup);
+            deps.installer_lookup = lookup;
+            deps.server_host = &host;
+            let dir = tempfile::tempdir().unwrap();
+            let log_path = dir.path().join("hpds-setup.log");
+            let log = test_log(Some(log_path.clone()));
+            let (result, written) = ui::tap_terminal(|| run_server(&deps, true, false, &log));
+            let _ = tx.send((
+                result.map_err(|err| format!("{err:#}")),
+                stream_lines(&written, ui::Stream::Stdout, &log_path),
+                read_redacted(&log_path),
+            ));
+        });
+        let (result, lines, log) = match rx.recv_timeout(Duration::from_secs(30)) {
+            Ok(outcome) => outcome,
+            Err(mpsc::RecvTimeoutError::Timeout) => panic!("server setup hung"),
+            Err(mpsc::RecvTimeoutError::Disconnected) => panic!("server setup panicked"),
+        };
+
+        assert!(result.is_ok(), "{result:?}");
+        let table = steps(Profile::Server);
+        let total = table.len();
+        assert_eq!(
+            lines.first().map(String::as_str),
+            Some(format!("hpds setup --profile server: {total} steps. Full log: <LOG>").as_str()),
+            "{lines:#?}"
+        );
+        let step_lines: Vec<&String> = lines.iter().filter(|line| line.starts_with('[')).collect();
+        assert_eq!(step_lines.len(), total, "{lines:#?}");
+        for (index, step) in table.iter().enumerate() {
+            let expected = format!("[{}/{total}] {} ✓", index + 1, step.title);
+            assert_eq!(
+                lines.iter().filter(|line| **line == expected).count(),
+                1,
+                "{expected}: {lines:#?}"
+            );
+        }
+        let foreground: Vec<String> = lines
+            .iter()
+            .filter(|line| {
+                table.iter().enumerate().any(|(index, step)| {
+                    step.lane == Lane::Foreground
+                        && **line == format!("[{}/{total}] {} ✓", index + 1, step.title)
+                })
+            })
+            .cloned()
+            .collect();
+        let planned_foreground: Vec<String> = table
+            .iter()
+            .enumerate()
+            .filter(|(_, step)| step.lane == Lane::Foreground)
+            .map(|(index, step)| format!("[{}/{total}] {} ✓", index + 1, step.title))
+            .collect();
+        assert_eq!(
+            foreground, planned_foreground,
+            "foreground lines follow plan order"
+        );
+        let tally = lines
+            .iter()
+            .position(|line| line.starts_with("All "))
+            .unwrap_or_else(|| panic!("no tally: {lines:#?}"));
+        assert_eq!(
+            lines[tally],
+            format!("All {total} steps succeeded. Details: <LOG>")
+        );
+        assert_eq!(tally, total + 1, "{lines:#?}");
+        assert_next_steps(&lines[tally + 1..]);
+        assert!(
+            !lines.iter().any(|line| line.contains("runs these")),
+            "{lines:#?}"
+        );
+
+        assert!(
+            log.contains(&plan(Profile::Server).trim_end().to_string()),
+            "the log holds the plan:\n{log}"
+        );
+        for (index, step) in table.iter().enumerate() {
+            if step.lane == Lane::Background {
+                let header = format!(
+                    "[{}/{total}] {} (ran in the background)",
+                    index + 1,
+                    step.title
+                );
+                assert!(log.contains(&header), "missing {header}:\n{log}");
+            }
+        }
+        assert!(log.contains("setup summary:\n"), "{log}");
+    }
+
+    #[test]
+    fn the_tally_counts_one_step_in_the_singular() {
+        assert_eq!(tally(1, 1, None), "All 1 step succeeded.");
+        assert_eq!(tally(0, 1, None), "0 of 1 step succeeded.");
+        assert_eq!(
+            tally(1, 2, Some(Path::new("/home/nero/hpds-setup.log"))),
+            "1 of 2 steps succeeded. Details: /home/nero/hpds-setup.log"
+        );
+        assert_eq!(tally(2, 2, None), "All 2 steps succeeded.");
+    }
+
+    // --- the log's run header -----------------------------------------------
+
+    #[test]
+    fn utc_timestamps_read_as_calendar_dates_in_utc() {
+        assert_eq!(utc_timestamp(0), "1970-01-01 00:00:00 UTC");
+        assert_eq!(utc_timestamp(1_793_740_500), "2026-11-03 21:15:00 UTC");
+        assert_eq!(utc_timestamp(1_709_251_199), "2024-02-29 23:59:59 UTC");
+        assert_eq!(utc_timestamp(951_868_800), "2000-03-01 00:00:00 UTC");
+    }
+
+    #[test]
+    fn the_current_run_reports_this_build_and_host() {
+        let info = RunInfo::current();
+        assert_eq!(info.version, env!("CARGO_PKG_VERSION"));
+        assert!(info.os.contains(std::env::consts::OS), "{info:?}");
+        assert!(info.started.ends_with(" UTC"), "{info:?}");
+        assert_eq!(
+            info.started.len(),
+            "2026-11-03 21:15:00 UTC".len(),
+            "{info:?}"
+        );
     }
 }

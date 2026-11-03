@@ -358,16 +358,27 @@ impl InstallCtx<'_> {
         what: &str,
         commands: &[&[&str]],
     ) -> anyhow::Result<()> {
-        ui::println(&format!("{what} (needs sudo)"));
-        for command in commands {
-            ui::println(&format!("  will run: sudo {}", command.join(" ")));
+        let approved = self.yes || self.sudo_approved.get();
+        let mut lines = vec![format!("{what} (needs sudo)")];
+        lines.extend(
+            commands
+                .iter()
+                .map(|command| format!("  will run: sudo {}", command.join(" "))),
+        );
+        for line in &lines {
+            if approved {
+                ui::println(line);
+            } else {
+                // A prompt is about to ask about these commands, so they
+                // reach the terminal whatever compact mode or `--quiet`
+                // would hide, and the log keeps them as well.
+                ui::log_detail(line);
+                ui::report(line);
+            }
         }
-        approve_sudo(
-            what,
-            self.yes || self.sudo_approved.get(),
-            std::io::stdin().is_terminal(),
-            |prompt| ui::confirm(prompt, true),
-        )
+        approve_sudo(what, approved, std::io::stdin().is_terminal(), |prompt| {
+            ui::confirm(prompt, true)
+        })
     }
 
     /// Run `sudo <args>` that [`Self::approve_sudo_commands`] already
@@ -522,20 +533,17 @@ fn approve_sudo(
 }
 
 /// Turn a finished process into an error when it exited nonzero, carrying
-/// the tail of what the process said (see [`command_failure`]). The hint
-/// points at the log when there is one (see [`ui::log_path`]), since it
-/// already holds every command hpds ran and its full output; otherwise it
-/// suggests `-v`.
+/// the tail of what the process said (see [`command_failure`]). When a log
+/// is open (see [`ui::log_path`]) the error already names it as the place
+/// for the full output, so the hint only says to fix and re-run; otherwise
+/// it suggests `-v`.
 fn ensure_step_success(program: &str, out: CommandOutput) -> anyhow::Result<CommandOutput> {
     if out.success {
         return Ok(out);
     }
     let hint = match ui::log_path() {
-        Some(path) => format!(
-            "see {} for every command hpds ran and its full output",
-            path.display()
-        ),
-        None => "re-run with -v to see the exact commands hpds ran".to_string(),
+        Some(_) => "fix the reported problem and re-run setup",
+        None => "re-run with -v to see the exact commands hpds ran",
     };
     Err(command_failure(&format!("`{program}` failed"), &out)).hint(hint)
 }
@@ -1111,6 +1119,56 @@ mod tests {
         text
     }
 
+    #[test]
+    fn a_sudo_prompt_shows_what_it_approves_in_compact_mode() {
+        // Keeps the test from waiting on a prompt when cargo test runs
+        // with a terminal attached to stdin.
+        ui::set_non_interactive(true);
+        let runner = FakeRunner::default();
+        let ctx = ctx(&runner);
+        let _compact = ui::compact();
+        let (result, written) = ui::tap_terminal(|| {
+            ctx.approve_sudo_commands(
+                "installing R via rig",
+                &[&["installer", "-pkg", "rig.pkg", "-target", "/"]],
+            )
+        });
+        assert_eq!(
+            written,
+            vec![
+                (
+                    ui::Stream::Stdout,
+                    "installing R via rig (needs sudo)".to_string()
+                ),
+                (
+                    ui::Stream::Stdout,
+                    "  will run: sudo installer -pkg rig.pkg -target /".to_string()
+                ),
+            ]
+        );
+        let err = result.expect_err("nobody can answer the prompt");
+        let out = render_error(&err, false);
+        if std::io::stdin().is_terminal() {
+            assert!(out.contains("non-interactively"), "{out}");
+        } else {
+            assert!(out.contains("non-interactive session"), "{out}");
+        }
+        assert!(runner.calls().is_empty(), "{:?}", runner.calls());
+    }
+
+    #[test]
+    fn a_pre_approved_sudo_step_keeps_its_commands_off_a_compact_terminal() {
+        let runner = FakeRunner::default();
+        let mut ctx = ctx(&runner);
+        ctx.yes = true;
+        let _compact = ui::compact();
+        let (result, written) = ui::tap_terminal(|| {
+            ctx.approve_sudo_commands("installing R via rig", &[&["installer", "-pkg", "rig.pkg"]])
+        });
+        assert!(result.is_ok(), "{result:?}");
+        assert!(written.is_empty(), "{written:?}");
+    }
+
     fn failing_apt_update(runner: &FakeRunner) -> String {
         let err = ctx(runner)
             .run_step("refreshing package lists", "apt-get", &["update"])
@@ -1173,11 +1231,13 @@ mod tests {
             "{out}"
         );
         assert!(
-            out.contains(&format!(
-                "hint: see {} for every command hpds ran and its full output",
-                log.display()
-            )),
+            out.contains("hint: fix the reported problem and re-run setup"),
             "{out}"
+        );
+        assert_eq!(
+            out.matches(&log.display().to_string()).count(),
+            1,
+            "the log path is named once: {out}"
         );
         assert!(!out.contains("re-run with -v"), "{out}");
     }
@@ -1212,9 +1272,10 @@ mod tests {
             "{out}"
         );
         assert!(
-            out.contains(&format!("hint: see {}", log.display())),
+            out.contains("hint: fix the reported problem and re-run setup"),
             "{out}"
         );
+        assert!(!out.contains("re-run with -v"), "{out}");
     }
 
     #[test]

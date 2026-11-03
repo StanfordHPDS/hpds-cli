@@ -1849,7 +1849,7 @@ mod tests {
         let text = summary(&results);
         assert!(text.contains("✗ Docker Engine"), "{text}");
         assert!(text.contains("✓ RStudio preferences"), "{text}");
-        let error = finish(&results, None).expect_err("one failed step fails setup");
+        let error = finish(Profile::Server, &results).expect_err("one failed step fails setup");
         assert!(error.to_string().contains("1 of 2"), "{error:#}");
     }
 

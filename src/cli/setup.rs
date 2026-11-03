@@ -5,22 +5,22 @@
 //! and hand the profile flow real dependencies (system runner, release
 //! fetcher, the `hpds git setup` flow).
 
+use std::ffi::OsStr;
 use std::io::IsTerminal;
-use std::path::Path;
+use std::path::PathBuf;
 
 use anyhow::anyhow;
 use clap::{Args, ValueEnum};
 
 use crate::install::{CacheFetcher, InstallCtx, LoggingRunner, SystemRunner};
-use crate::setup::{self, Profile, SetupDeps};
+use crate::setup::{self, Profile, RunInfo, SetupDeps, SetupLog};
 use crate::tools::{Os, Platform};
 use crate::ui::{self, HintExt};
 
 use super::GlobalArgs;
 
-/// Where the server profile writes its end-of-run summary log. The server
-/// profile only ever runs on Linux, so the Unix path is deliberate.
-const SERVER_LOG_PATH: &str = "/tmp/hpds-setup.log";
+/// The setup log's file name, in the user's home directory.
+const LOG_FILE_NAME: &str = "hpds-setup.log";
 
 #[derive(Debug, Args)]
 pub struct SetupArgs {
@@ -103,13 +103,22 @@ pub fn run(args: SetupArgs, global: &GlobalArgs) -> anyhow::Result<()> {
         server_host: &server_host,
     };
     let interactive = std::io::stdin().is_terminal();
+    let log = SetupLog {
+        path: home_log_path(std::env::var_os("HOME").as_deref()),
+        info: RunInfo::current(),
+    };
 
     match profile {
-        Profile::Dev => setup::run_dev(&deps, args.yes, interactive),
-        Profile::Server => {
-            setup::run_server(&deps, args.yes, interactive, Path::new(SERVER_LOG_PATH))
-        }
+        Profile::Dev => setup::run_dev(&deps, args.yes, interactive, &log),
+        Profile::Server => setup::run_server(&deps, args.yes, interactive, &log),
     }
+}
+
+/// Where setup appends its log: [`LOG_FILE_NAME`] in `home` (the value of
+/// `HOME`), or `None` when `HOME` is unset or empty.
+fn home_log_path(home: Option<&OsStr>) -> Option<PathBuf> {
+    home.filter(|home| !home.is_empty())
+        .map(|home| PathBuf::from(home).join(LOG_FILE_NAME))
 }
 
 /// Human name for an OS in error messages.
@@ -129,6 +138,20 @@ mod tests {
     fn profile_arg_maps_onto_the_engine_profile() {
         assert_eq!(Profile::from(ProfileArg::Dev), Profile::Dev);
         assert_eq!(Profile::from(ProfileArg::Server), Profile::Server);
+    }
+
+    #[test]
+    fn the_setup_log_lives_in_the_home_directory() {
+        assert_eq!(
+            home_log_path(Some(OsStr::new("/home/nero"))),
+            Some(PathBuf::from("/home/nero/hpds-setup.log"))
+        );
+    }
+
+    #[test]
+    fn there_is_no_setup_log_path_without_a_home_directory() {
+        assert_eq!(home_log_path(None), None);
+        assert_eq!(home_log_path(Some(OsStr::new(""))), None);
     }
 
     #[test]

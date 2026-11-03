@@ -130,14 +130,9 @@ pub struct Spinner {
     _not_send: PhantomData<*const ()>,
 }
 
-#[allow(dead_code)] // part of the ui API for setup's compact output; no caller outside tests yet
 impl Spinner {
-    /// Replace the text beside the spinner.
-    pub fn set_message(&self, msg: impl Into<String>) {
-        self.bar.set_message(msg.into());
-    }
-
     /// Whether the spinner draws nothing.
+    #[cfg(test)]
     pub fn is_hidden(&self) -> bool {
         self.bar.is_hidden()
     }
@@ -172,7 +167,6 @@ const SPINNER_TICK: Duration = Duration::from_millis(100);
 /// Start a spinner labeled `msg`. It draws only when stderr is a TTY and
 /// the calling thread is not capturing; otherwise it is hidden and prints
 /// nothing, since the caller prints the step's line when the step finishes.
-#[allow(dead_code)] // part of the ui API for setup's compact output; no caller outside tests yet
 pub fn spinner(msg: impl Into<String>) -> Spinner {
     match spinner_target(std::io::stderr().is_terminal(), is_capturing()) {
         BarTarget::Stderr => {
@@ -235,6 +229,12 @@ pub(crate) fn suspend_spinner<T>(f: impl FnOnce() -> T) -> T {
 #[cfg(test)]
 fn has_active_spinner() -> bool {
     ACTIVE_SPINNERS.with(|active| !active.borrow().is_empty())
+}
+
+/// The text beside the calling thread's newest live spinner, if any.
+#[cfg(test)]
+pub(crate) fn active_spinner_message() -> Option<String> {
+    ACTIVE_SPINNERS.with(|active| active.borrow().last().map(|(_, bar)| bar.message()))
 }
 
 #[cfg(test)]

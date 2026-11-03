@@ -1,0 +1,11 @@
+---
+source: src/setup/mod.rs
+expression: run.terminal
+---
+hpds setup --profile server: 2 steps. Full log: <LOG>
+[1/2] foreground first ✓
+[2/2] background fails ✗
+        `fake` failed: gave up waiting for fake never runs
+        full output: <LOG>
+        hint: fix the reported problem and re-run setup
+1 of 2 steps succeeded. Details: <LOG>

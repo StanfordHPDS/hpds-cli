@@ -3,10 +3,10 @@
 //! All of this state is scoped to the calling thread. Work that moves to
 //! another thread already runs inside [`fn@super::capture`] (its lines would
 //! otherwise interleave with the foreground's), and its transcript is
-//! replayed on the thread that owns the terminal, so its lines reach that thread's log and
-//! reports in order. Keeping the state per thread also lets tests, which run
-//! on parallel threads, each open their own log without seeing another
-//! test's lines.
+//! replayed on the thread that owns the terminal, so its lines reach that
+//! thread's log and reports in order. Keeping the state per thread also
+//! lets tests, which run on parallel threads, each open their own log
+//! without seeing another test's lines.
 //!
 //! - **Log.** [`open_log`] appends every line the thread writes out (see
 //!   [`super::capture::emit`]) to a file, without color, log-only lines
@@ -72,7 +72,6 @@ thread_local! {
 /// absent; never truncating). Replaces any log the thread already had open.
 /// On error no log is open, and the caller decides whether to warn and
 /// continue.
-#[allow(dead_code)] // part of the ui API for setup's compact output; no caller outside tests yet
 pub fn open_log(path: &Path) -> io::Result<()> {
     close_log();
     let file = OpenOptions::new().append(true).create(true).open(path)?;
@@ -86,7 +85,6 @@ pub fn open_log(path: &Path) -> io::Result<()> {
 
 /// Close the calling thread's log, if one is open. Later lines are no longer
 /// written to it.
-#[allow(dead_code)] // part of the ui API for setup's compact output; no caller outside tests yet
 pub fn close_log() {
     let _ = LOG.try_with(|slot| slot.borrow_mut().take());
 }
@@ -150,7 +148,6 @@ fn set_compact(compact: bool) {
 /// Keeps the calling thread in compact terminal mode while it lives; see
 /// [`compact`]. Not `Send`: the guard restores the mode of the thread that
 /// created it, so it must be dropped there.
-#[allow(dead_code)] // part of the ui API for setup's compact output; no caller outside tests yet
 #[must_use = "compact mode ends when the guard is dropped"]
 #[derive(Debug)]
 pub struct CompactGuard {
@@ -169,7 +166,6 @@ impl Drop for CompactGuard {
 /// Put the calling thread in compact terminal mode until the returned guard
 /// is dropped, which restores whatever mode was in force before. Guards
 /// nest: dropping an inner guard leaves the outer one's compact mode on.
-#[allow(dead_code)] // part of the ui API for setup's compact output; no caller outside tests yet
 pub fn compact() -> CompactGuard {
     let previous = is_compact();
     set_compact(true);
@@ -191,7 +187,6 @@ pub(crate) fn push_report(report: Report) {
 
 /// Drain the warnings and errors the calling thread kept in compact mode,
 /// in the order they were emitted.
-#[allow(dead_code)] // part of the ui API for setup's compact output; no caller outside tests yet
 pub fn take_reports() -> Vec<Report> {
     REPORTS
         .try_with(|reports| std::mem::take(&mut *reports.borrow_mut()))

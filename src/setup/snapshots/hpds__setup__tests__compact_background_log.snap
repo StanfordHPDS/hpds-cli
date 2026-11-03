@@ -1,0 +1,30 @@
+---
+source: src/setup/mod.rs
+expression: run.log
+---
+=== hpds setup --profile server ===
+hpds version: 9.9.9
+started: 2026-11-03 21:15:00 UTC
+os: linux x86_64
+hpds setup --profile server runs these 3 steps:
+  1. foreground first
+       fake one
+  2. background waits
+       fake wait
+  3. foreground release
+       fake release
+hpds setup --profile server: 3 steps. Full log: <LOG>
+[1/3] foreground first
+one
+[1/3] foreground first ✓
+[3/3] foreground release
+release
+[3/3] foreground release ✓
+[2/3] background waits (ran in the background)
+wait
+[2/3] background waits ✓
+setup summary:
+  ✓ foreground first
+  ✓ background waits
+  ✓ foreground release
+All 3 steps succeeded. Details: <LOG>

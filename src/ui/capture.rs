@@ -21,6 +21,7 @@
 
 use std::cell::RefCell;
 
+use super::progress::suspend_spinner;
 use super::sink::{self, Report, ReportKind};
 
 /// Which standard stream a line is destined for.
@@ -42,6 +43,12 @@ pub(crate) enum LineKind {
     /// A line on stdout that stays on the terminal in compact mode, such as
     /// a setup step's result. Never kept as a report.
     Status,
+    /// A line on stdout that always reaches the terminal, compact mode and
+    /// `--quiet` included, and is never written to the log, for a line the
+    /// log already holds in another form (a failed step's error repeated
+    /// under its step line, or a collected warning listed as a next step).
+    /// Never kept as a report.
+    Report,
     /// A `✓`-prefixed success line on stdout.
     Success,
     /// An informational line on stderr, such as a hidden progress bar's
@@ -60,9 +67,11 @@ impl LineKind {
     /// log-only lines.
     pub(crate) fn stream(self) -> Option<Stream> {
         match self {
-            LineKind::Info | LineKind::Echo | LineKind::Status | LineKind::Success => {
-                Some(Stream::Stdout)
-            }
+            LineKind::Info
+            | LineKind::Echo
+            | LineKind::Status
+            | LineKind::Report
+            | LineKind::Success => Some(Stream::Stdout),
             LineKind::Notice | LineKind::Warning | LineKind::Error => Some(Stream::Stderr),
             LineKind::Detail => None,
         }
@@ -90,6 +99,7 @@ impl Line {
             LineKind::Info
             | LineKind::Echo
             | LineKind::Status
+            | LineKind::Report
             | LineKind::Notice
             | LineKind::Error
             | LineKind::Detail => self.message.clone(),
@@ -188,17 +198,18 @@ pub(crate) fn emit(kind: LineKind, message: &str, styled: &str) {
     }
 }
 
-/// Write an unrecorded line out: to the log, if one is open (echo lines
-/// excepted), and then to the terminal. In compact mode only status lines
-/// reach the terminal; warnings and errors are kept as reports instead, and
-/// other lines go to the log only. Log-only lines never reach the terminal.
+/// Write an unrecorded line out: to the log, if one is open (echo and
+/// report lines excepted), and then to the terminal. In compact mode only
+/// status and report lines reach the terminal; warnings and errors are kept
+/// as reports instead, and other lines go to the log only. Log-only lines
+/// never reach the terminal.
 fn write_out(line: &Line) {
-    if line.kind != LineKind::Echo {
+    if !matches!(line.kind, LineKind::Echo | LineKind::Report) {
         sink::write_log(&line.plain());
     }
     if sink::is_compact() {
         match line.kind {
-            LineKind::Status => {}
+            LineKind::Status | LineKind::Report => {}
             LineKind::Warning => {
                 sink::push_report(Report {
                     kind: ReportKind::Warning,
@@ -221,7 +232,7 @@ fn write_out(line: &Line) {
         }
     }
     if let Some(stream) = line.kind.stream() {
-        write_terminal(stream, &line.styled);
+        suspend_spinner(|| write_terminal(stream, &line.styled));
     }
 }
 
@@ -247,6 +258,13 @@ fn write_terminal(stream: Stream, text: &str) {
             None => false,
         })
         .unwrap_or(false);
+    if tapped {
+        let _ = PROBE.try_with(|probe| {
+            if let Some((look, seen)) = probe.borrow_mut().as_mut() {
+                seen.push(look());
+            }
+        });
+    }
     if !tapped {
         match stream {
             Stream::Stdout => std::println!("{text}"),
@@ -255,10 +273,16 @@ fn write_terminal(stream: Stream, text: &str) {
     }
 }
 
+/// A closure run at each tapped terminal write, and what it returned.
+#[cfg(test)]
+type Probe = (Box<dyn Fn() -> String>, Vec<String>);
+
 #[cfg(test)]
 thread_local! {
     /// Terminal writes collected by [`tap_terminal`] on the calling thread.
     static TAP: RefCell<Option<Vec<(Stream, String)>>> = const { RefCell::new(None) };
+    /// The probe [`tap_terminal_probing`] runs at each tapped write.
+    static PROBE: RefCell<Option<Probe>> = const { RefCell::new(None) };
 }
 
 /// Run `f` with this thread's terminal writes collected instead of printed,
@@ -271,6 +295,25 @@ pub(crate) fn tap_terminal<T>(f: impl FnOnce() -> T) -> (T, Vec<(Stream, String)
     let value = f();
     let written = TAP.with(|tap| std::mem::replace(&mut *tap.borrow_mut(), previous));
     (value, written.unwrap_or_default())
+}
+
+/// [`tap_terminal`], also running `probe` at the moment of each tapped
+/// write and returning what it saw then, one entry per write. Lets a test
+/// look at another surface (such as a spinner's in-memory terminal) while
+/// a line is being written.
+#[cfg(test)]
+pub(crate) fn tap_terminal_probing<T>(
+    probe: impl Fn() -> String + 'static,
+    f: impl FnOnce() -> T,
+) -> (T, Vec<(Stream, String)>, Vec<String>) {
+    let previous = PROBE.with(|slot| slot.borrow_mut().replace((Box::new(probe), Vec::new())));
+    let (value, written) = tap_terminal(f);
+    let seen = PROBE.with(|slot| std::mem::replace(&mut *slot.borrow_mut(), previous));
+    (
+        value,
+        written,
+        seen.map(|(_, seen)| seen).unwrap_or_default(),
+    )
 }
 
 /// The innermost open capture on this thread. Dropping it without
@@ -598,6 +641,37 @@ mod tests {
         assert_eq!(
             transcript.lines(),
             vec![line(Stream::Stdout, "a"), line(Stream::Stdout, "c")]
+        );
+    }
+
+    #[test]
+    fn a_terminal_line_written_while_a_spinner_is_live_does_not_draw_over_it() {
+        // The spinner owns the bottom row of the terminal; a line printed
+        // straight to the stream would land on that row. Each terminal
+        // write clears the spinner first and redraws it afterwards.
+        let term = indicatif::InMemoryTerm::new(24, 80);
+        let target = indicatif::ProgressDrawTarget::term_like(Box::new(term.clone()));
+        let _spinner = super::super::progress::new_spinner("[2/15] Docker Engine".into(), target);
+        let _compact = compact();
+        let probe_term = term.clone();
+        let ((), written, drawn) = tap_terminal_probing(
+            move || probe_term.contents(),
+            || say(LineKind::Status, "[1/15] system libraries (apt) ✓"),
+        );
+        assert_eq!(
+            written,
+            vec![line(Stream::Stdout, "[1/15] system libraries (apt) ✓")]
+        );
+        assert_eq!(drawn.len(), 1, "drawn was: {drawn:?}");
+        assert!(
+            !drawn[0].contains("[2/15] Docker Engine"),
+            "the spinner must be cleared while the line is written, drawn was: {:?}",
+            drawn[0]
+        );
+        let after = term.contents();
+        assert!(
+            after.contains("[2/15] Docker Engine"),
+            "the spinner must be redrawn after the line, drawn was: {after:?}"
         );
     }
 

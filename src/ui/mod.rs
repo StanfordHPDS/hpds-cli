@@ -21,9 +21,12 @@ pub(crate) use capture::Stream;
 pub(crate) use capture::tap_terminal;
 use capture::{LineKind, emit};
 pub use capture::{Transcript, capture, replay};
-#[allow(unused_imports)]
-// part of the ui API for setup's compact output; no caller outside tests yet
-pub use sink::{CompactGuard, Report, ReportKind, close_log, compact, open_log, take_reports};
+#[cfg(test)]
+pub(crate) use progress::active_spinner_message;
+#[cfg(test)]
+use sink::Report;
+pub(crate) use sink::is_compact;
+pub use sink::{ReportKind, close_log, compact, open_log, take_reports};
 pub use sink::{log_path, with_log_path};
 
 #[allow(unused_imports)] // consumed only by unit tests today; part of the ui API
@@ -32,8 +35,6 @@ pub use error::{HintExt, error};
 pub(crate) use progress::bar_is_live;
 #[allow(unused_imports)] // re-exported for later commands; no caller outside tests yet
 pub use progress::progress_bar;
-#[allow(unused_imports)]
-// part of the ui API for setup's compact output; no caller outside tests yet
 pub use progress::{Spinner, spinner};
 pub use prompt::{
     can_prompt, confirm, multiselect_all, multiselect_with_defaults, select, set_non_interactive,
@@ -52,7 +53,9 @@ pub fn set_quiet(quiet: bool) {
     QUIET.store(quiet, Ordering::Relaxed);
 }
 
-fn is_quiet() -> bool {
+/// Whether `--quiet` is on, for callers that resolve it once and pass it
+/// down explicitly (see [`status_line`]).
+pub(crate) fn is_quiet() -> bool {
     QUIET.load(Ordering::Relaxed)
 }
 
@@ -184,15 +187,20 @@ pub fn echo(msg: &str) {
 /// Print a status line to stdout: one of the few lines that stay on the
 /// terminal in compact mode, such as a setup step's result or a run's
 /// closing tally. Written to the log as well. Unlike a warning it is never
-/// kept as a [`Report`]. Suppressed on the terminal by `--quiet`, like
-/// [`fn@println`]; still written to the log.
-#[allow(dead_code)] // part of the ui API for setup's compact output; no caller outside tests yet
-pub fn status(msg: &str) {
-    status_line(msg, is_quiet());
+/// kept as a [`Report`](sink::Report). When `quiet` (the caller's resolved
+/// `--quiet`, see [`is_quiet`]) it stays off the terminal, like
+/// [`fn@println`], and is still written to the log.
+pub(crate) fn status_line(msg: &str, quiet: bool) {
+    emit(visible_or_detail(LineKind::Status, quiet), msg, msg);
 }
 
-fn status_line(msg: &str, quiet: bool) {
-    emit(visible_or_detail(LineKind::Status, quiet), msg, msg);
+/// Print a line to stdout that always reaches the terminal: compact mode
+/// passes it through and `--quiet` does not suppress it. It is never
+/// written to the log, so it suits a line the log already holds in another
+/// form, such as a failed step's error repeated under its step line, or a
+/// warning the run collected and lists as a next step.
+pub fn report(msg: &str) {
+    emit(LineKind::Report, msg, msg);
 }
 
 /// Write a line to the log only; it never reaches the terminal. Inside
@@ -593,6 +601,39 @@ mod tests {
             )]
         );
         assert!(take_reports().is_empty());
+    }
+
+    #[test]
+    fn report_lines_reach_the_terminal_in_compact_mode_but_never_the_log() {
+        let (_dir, path) = temp_log();
+        let _compact = compact();
+        let ((), written) = tap_terminal(|| {
+            status_line("[2/3] git defaults ✗", true);
+            report("        user.name is not set");
+            report("Next steps:");
+        });
+        assert_eq!(
+            written,
+            vec![
+                (Stream::Stdout, "        user.name is not set".to_string()),
+                (Stream::Stdout, "Next steps:".to_string()),
+            ]
+        );
+        assert!(take_reports().is_empty());
+        assert_eq!(read_log(&path), "[2/3] git defaults ✗\n");
+    }
+
+    #[test]
+    fn report_lines_are_recorded_in_a_capture_and_replay_to_the_terminal() {
+        let ((), transcript) = capture(|| report("  - run `gh auth login`"));
+        let kinds: Vec<_> = transcript.entries().iter().map(|l| l.kind).collect();
+        assert_eq!(kinds, [LineKind::Report]);
+        let _compact = compact();
+        let ((), written) = tap_terminal(|| replay(&transcript));
+        assert_eq!(
+            written,
+            vec![(Stream::Stdout, "  - run `gh auth login`".to_string())]
+        );
     }
 
     #[test]
