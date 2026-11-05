@@ -27,3 +27,7 @@ pr-run-mode = "skip"
 install-updater = false
 # Path that installers should place binaries in
 install-path = "CARGO_HOME"
+
+# GitHub retired the macos-14 image that dist picks for Apple Silicon builds.
+[dist.github-custom-runners]
+aarch64-apple-darwin = "macos-15"
