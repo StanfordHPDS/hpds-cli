@@ -1644,6 +1644,8 @@ mod tests {
             "code-server@<user>",
             "enable --now",
             "quarto.path",
+            "chat.disableAIFeatures=true",
+            "telemetry.telemetryLevel=off",
             ".local/bin/quarto",
         ] {
             assert!(text.contains(required), "missing {required}:\n{text}");

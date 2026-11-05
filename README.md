@@ -187,7 +187,8 @@ updates leave a reboot pending, setup says so under its next steps; it never
 reboots the server itself. The profile then installs the official Docker
 Engine packages, stable Rust, R, Python, Quarto, TinyTeX, RStudio Server,
 code-server, and the lab command-line tools. It adds the invoking user to the
-Docker group, merges the managed RStudio and code-server preferences, and
+Docker group, merges the managed RStudio and code-server preferences (the
+code-server ones also turn off its AI chat features and telemetry), and
 enables that user's code-server service. Log in again after the run before
 using Docker without `sudo`. The profile does not install Miniconda. With
 `--yes`, the user-space installs (Rust, Quarto, TinyTeX, gh, DuckDB, and uv

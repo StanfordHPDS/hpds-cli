@@ -37,7 +37,7 @@ pub(crate) fn describe(action: &ServerAction) -> &'static str {
             "if code-server is still missing, download and verify its package as in step 2 and install it with sudo env DEBIAN_FRONTEND=noninteractive NEEDRESTART_SUSPEND=1 apt-get -o DPkg::Lock::Timeout=600 install -y <verified code-server package>"
         }
         ServerAction::CodeServer => {
-            "set quarto.path to <home>/.local/bin/quarto and systemctl enable --now code-server@<user>"
+            "set quarto.path to <home>/.local/bin/quarto, chat.disableAIFeatures=true, and telemetry.telemetryLevel=off, then systemctl enable --now code-server@<user>"
         }
     }
 }
@@ -855,7 +855,11 @@ pub(crate) fn merge_code_server_settings(host: &dyn ServerHost, user: &str) -> R
     merge_json(
         host,
         &server_path(&home, ".local/share/code-server/User/settings.json")?,
-        &[("quarto.path", json!(quarto))],
+        &[
+            ("quarto.path", json!(quarto)),
+            ("chat.disableAIFeatures", json!(true)),
+            ("telemetry.telemetryLevel", json!("off")),
+        ],
         0o644,
     )
 }
@@ -1685,7 +1689,12 @@ mod tests {
         reconcile_code_server(&host, &runner).expect("configure code-server");
         assert_eq!(
             host.json(settings),
-            json!({"editor.fontSize": 15, "quarto.path": QUARTO})
+            json!({
+                "editor.fontSize": 15,
+                "quarto.path": QUARTO,
+                "chat.disableAIFeatures": true,
+                "telemetry.telemetryLevel": "off",
+            })
         );
         assert_eq!(host.writes().len(), 1);
         assert_eq!(

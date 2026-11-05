@@ -75,6 +75,8 @@ fn server_plan_covers_complete_provisioning_without_legacy_extras() {
         "RStudio preferences",
         "code-server@<user>",
         "quarto.path",
+        "chat.disableAIFeatures=true",
+        "telemetry.telemetryLevel=off",
         "system updates (apt upgrade)",
         "--force-confdef -o Dpkg::Options::=--force-confold upgrade -y",
     ] {
