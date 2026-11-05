@@ -859,9 +859,13 @@ def smoke_checks(checks: Checks, first_run: SetupRun) -> None:
     else:
         checks.http("code-server: HTTP", host, port)
     checks.json_file(
-        "code-server: quarto.path",
+        "code-server: managed settings",
         CODE_SERVER_SETTINGS,
-        {"quarto.path": f"{HOME}/.local/bin/quarto"},
+        {
+            "quarto.path": f"{HOME}/.local/bin/quarto",
+            "chat.disableAIFeatures": True,
+            "telemetry.telemetryLevel": "off",
+        },
     )
     listing = c.exec(["code-server", "--list-extensions"])
     absent = (

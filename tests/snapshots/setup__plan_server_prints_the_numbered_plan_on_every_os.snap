@@ -39,7 +39,7 @@ hpds setup --profile server runs these 16 steps:
  11. code-server + extensions
        if code-server is still missing, download and verify its package as in step 2 and install it with sudo env DEBIAN_FRONTEND=noninteractive NEEDRESTART_SUSPEND=1 apt-get -o DPkg::Lock::Timeout=600 install -y <verified code-server package>
        code-server --install-extension ms-python.python --install-extension ms-toolsai.jupyter --install-extension quarto.quarto --install-extension charliermarsh.ruff --install-extension tomoki1207.pdf
-       set quarto.path to <home>/.local/bin/quarto and systemctl enable --now code-server@<user>
+       set quarto.path to <home>/.local/bin/quarto, chat.disableAIFeatures=true, and telemetry.telemetryLevel=off, then systemctl enable --now code-server@<user>
  12. gh
        hpds install gh (latest stable)
  13. duckdb
