@@ -4,6 +4,6 @@ expression: run.terminal
 ---
 hpds setup --profile server: 3 steps. Full log: <LOG>
 [1/3] foreground first ✓
-[3/3] foreground release ✓
-[2/3] background waits ✓
+[2/3] foreground release ✓
+[3/3] background waits ✓
 All 3 steps succeeded. Details: <LOG>

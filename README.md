@@ -193,13 +193,15 @@ enables that user's code-server service. Log in again after the run before
 using Docker without `sudo`. The profile does not install Miniconda. With
 `--yes`, the user-space installs (Rust, Quarto, TinyTeX, gh, DuckDB, and uv
 with its tools) run on a background thread while the system steps run, so
-their step lines can appear out of order. `dev` (the default) installs the
-toolchain on your own machine.
+some steps can finish before steps planned ahead of them. `dev` (the
+default) installs the toolchain on your own machine.
 
 Either profile keeps the terminal short. It opens with one line that names
 the profile, the number of steps, and the log; shows one `[n/N] title` line
 per step, marked ✓ or ✗ when the step finishes, with a failed step's error
-indented beneath it; and ends with a one-line tally and a `Next steps:` list
+indented beneath it (n counts the steps finished so far, so the lines read 1
+to N in the order the steps finish, while the log numbers each step by its
+place in the plan); and ends with a one-line tally and a `Next steps:` list
 of anything left for you to do, such as setting a git identity or logging in
 to GitHub with `gh auth login`.
 
