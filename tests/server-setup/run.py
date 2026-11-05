@@ -329,10 +329,11 @@ def header_problems(text: str, expected: list[str]) -> list[str]:
 
 
 def step_line_problems(text: str, expected: list[str]) -> list[str]:
-    """Every way the `[n/N] title ✓` step lines in `text` stray from the plan.
+    """Every way the `[n/N] title ✓` step lines in a log stray from the plan.
 
-    Each planned step must have exactly one step line, with its own title
-    and the plan's step count, and every step line must carry ✓.
+    The log numbers each step line by its place in the plan. Each planned
+    step must have exactly one step line, with its own title and the plan's
+    step count, and every step line must carry ✓.
     """
     steps: list[tuple[int, int, str, str]] = []
     failed: list[str] = []
@@ -344,6 +345,45 @@ def step_line_problems(text: str, expected: list[str]) -> list[str]:
         if match.group(4) != "✓":
             failed.append(f"step line marks a failure: {line.rstrip()}")
     return numbered_problems(steps, expected, "step line") + failed
+
+
+def terminal_step_line_problems(text: str, expected: list[str]) -> list[str]:
+    """Every way the terminal's `[n/N] title ✓` step lines stray from the plan.
+
+    The terminal prints each step's line as the step finishes, so lines come
+    in completion order and `n` counts finished steps: the lines must be
+    numbered 1 to N in order, with the plan's step count. Each planned step
+    must have exactly one line, matched by title, and every line must carry ✓.
+    """
+    total = len(expected)
+    problems: list[str] = []
+    failed: list[str] = []
+    seen: dict[str, int] = {}
+    position = 0
+    for line in text.splitlines():
+        stripped = line.rstrip()
+        match = STEP_LINE.fullmatch(stripped)
+        if match is None:
+            continue
+        position += 1
+        number, count, title = int(match.group(1)), int(match.group(2)), match.group(3)
+        if number != position:
+            problems.append(f"step line {position} is numbered {number}: {stripped}")
+        if count != total:
+            problems.append(
+                f"step line counts {count} steps, the plan {total}: {stripped}"
+            )
+        if title in expected:
+            seen[title] = seen.get(title, 0) + 1
+        else:
+            problems.append(f"step line names a step outside the plan: {stripped}")
+        if match.group(4) != "✓":
+            failed.append(f"step line marks a failure: {stripped}")
+    for title in expected:
+        times = seen.get(title, 0)
+        if times != 1:
+            problems.append(f"{title!r} has {times} step lines, expected 1")
+    return problems + failed
 
 
 def terminal_noise(text: str) -> list[str]:
@@ -679,7 +719,9 @@ class Checks:
     ) -> None:
         """Check what a setup run printed and logged, and report how long it took."""
         terminal = run.output.text
-        problems = step_line_problems(terminal, expected) + terminal_noise(terminal)
+        problems = terminal_step_line_problems(terminal, expected) + terminal_noise(
+            terminal
+        )
         self.record(
             f"{prefix}: one step line per step",
             not problems,

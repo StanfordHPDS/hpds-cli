@@ -371,10 +371,9 @@ class HeaderTests(unittest.TestCase):
 class StepLineTests(unittest.TestCase):
     PLAN: ClassVar[list[str]] = SummaryTests.PLAN
 
-    def test_the_recorded_terminal_has_one_passing_line_per_step(self) -> None:
-        terminal = setup_snapshot("compact_background_terminal")
-        self.assertEqual(RUN.step_line_problems(terminal, RECORDED_PLAN), [])
-        self.assertEqual(RUN.terminal_noise(terminal), [])
+    def test_the_recorded_log_numbers_step_lines_by_the_plan(self) -> None:
+        log = setup_snapshot("compact_background_log")
+        self.assertIn("[2/3] background waits ✓", log)
 
     def test_the_recorded_log_has_one_passing_line_per_step(self) -> None:
         log = setup_snapshot("compact_background_log")
@@ -420,6 +419,62 @@ class StepLineTests(unittest.TestCase):
         self.assertIn(
             "step 1 has 0 step lines, expected 1",
             RUN.step_line_problems(text, self.PLAN),
+        )
+
+
+class TerminalStepLineTests(unittest.TestCase):
+    PLAN: ClassVar[list[str]] = SummaryTests.PLAN
+
+    def test_the_recorded_terminal_has_one_passing_line_per_step(self) -> None:
+        terminal = setup_snapshot("compact_background_terminal")
+        self.assertEqual(RUN.terminal_step_line_problems(terminal, RECORDED_PLAN), [])
+        self.assertEqual(RUN.terminal_noise(terminal), [])
+
+    def test_lines_in_completion_order_pass_when_counts_ascend(self) -> None:
+        text = (
+            "[1/3] git defaults ✓\n"
+            "[2/3] system libraries (apt) ✓\n"
+            "[3/3] Docker Engine ✓\n"
+        )
+        self.assertEqual(RUN.terminal_step_line_problems(text, self.PLAN), [])
+
+    def test_reports_counts_that_do_not_rise_by_one(self) -> None:
+        text = (
+            "[1/3] system libraries (apt) ✓\n"
+            "[3/3] Docker Engine ✓\n"
+            "[2/3] git defaults ✓\n"
+        )
+        self.assertEqual(
+            RUN.terminal_step_line_problems(text, self.PLAN),
+            [
+                "step line 2 is numbered 3: [3/3] Docker Engine ✓",
+                "step line 3 is numbered 2: [2/3] git defaults ✓",
+            ],
+        )
+
+    def test_reports_missing_repeated_unknown_and_miscounted_lines(self) -> None:
+        text = (
+            "[1/3] system libraries (apt) ✓\n"
+            "[2/3] system libraries (apt) ✓\n"
+            "[3/4] extra ✓\n"
+        )
+        self.assertEqual(
+            RUN.terminal_step_line_problems(text, self.PLAN),
+            [
+                "step line counts 4 steps, the plan 3: [3/4] extra ✓",
+                "step line names a step outside the plan: [3/4] extra ✓",
+                "'system libraries (apt)' has 2 step lines, expected 1",
+                "'Docker Engine' has 0 step lines, expected 1",
+                "'git defaults' has 0 step lines, expected 1",
+            ],
+        )
+
+    def test_reports_failures_in_a_recorded_terminal(self) -> None:
+        terminal = setup_snapshot("compact_background_fails_first_terminal")
+        plan = ["waits for background", "background fails", "last"]
+        self.assertEqual(
+            RUN.terminal_step_line_problems(terminal, plan),
+            ["step line marks a failure: [1/3] background fails ✗"],
         )
 
 

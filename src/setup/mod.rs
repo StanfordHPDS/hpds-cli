@@ -616,17 +616,24 @@ fn execute_rendered(
 ///
 /// Outside compact mode (`-v`, or a caller that never entered it) each step
 /// prints its `[n/N] title` header and then its output, as it always has.
-/// In compact mode the header goes to the log only, a spinner labeled with
-/// it marks a running foreground step, and the step's result is one
-/// `[n/N] title ✓`/`✗` line, with any error the step reported indented
-/// under it. The warnings the step raised are kept for the run's closing
-/// next steps.
+/// In compact mode the header goes to the log only, a spinner marks a
+/// running foreground step, and the step's result is one `[n/N] title ✓`/`✗`
+/// line, with any error the step reported indented under it. The warnings
+/// the step raised are kept for the run's closing next steps.
+///
+/// Steps on the two lanes of an overlapped run finish out of plan order, and
+/// each step's line reaches the terminal as it finishes. So on the terminal
+/// `n` counts finished steps, rising by one per line, while the log keeps
+/// each step's plan index, as `--plan` numbers it. The spinner shows the
+/// count the running step's line will take.
 struct Render {
     compact: bool,
     /// `--quiet`: step lines go to the log only, while a failed step's
     /// error still reaches the terminal.
     quiet: bool,
     total: usize,
+    /// How many steps have ended so far.
+    finished: usize,
     /// Warnings raised so far, deduplicated, in the order first seen.
     next_steps: Vec<String>,
 }
@@ -640,19 +647,21 @@ impl Render {
             compact: ui::is_compact(),
             quiet,
             total,
+            finished: 0,
             next_steps: Vec::new(),
         }
     }
 
     /// Introduce a step about to run on this thread. In compact mode the
-    /// returned spinner marks it until dropped.
+    /// returned spinner marks it until dropped, labeled with the count its
+    /// line will take.
     fn start(&self, index: usize, title: &str) -> Option<ui::Spinner> {
-        let header = header(index, self.total, title);
+        let planned = header(index, self.total, title);
         if self.compact {
-            ui::log_detail(&header);
-            Some(ui::spinner(header))
+            ui::log_detail(&planned);
+            Some(ui::spinner(header(self.finished, self.total, title)))
         } else {
-            ui::println(&header);
+            ui::println(&planned);
             None
         }
     }
@@ -669,18 +678,28 @@ impl Render {
     }
 
     /// Close a step: in compact mode, its result line, the errors it
-    /// reported, and its warnings kept for the next steps. The errors reach
-    /// the terminal even under `--quiet`, and stay out of the log, which
-    /// already holds them as the step reported them.
+    /// reported, and its warnings kept for the next steps. The log gets the
+    /// line under the step's plan index and the terminal under the count of
+    /// finished steps (see [`Render`]). The errors reach the terminal even
+    /// under `--quiet`, and stay out of the log, which already holds them
+    /// as the step reported them.
     fn end(&mut self, index: usize, result: &StepResult) {
         if !self.compact {
             return;
         }
         let mark = if result.error.is_some() { "✗" } else { "✓" };
-        ui::status_line(
-            &format!("{} {mark}", header(index, self.total, result.title)),
-            self.quiet,
-        );
+        ui::log_detail(&format!(
+            "{} {mark}",
+            header(index, self.total, result.title)
+        ));
+        if !self.quiet {
+            // The log already holds this line under the plan index.
+            ui::report(&format!(
+                "{} {mark}",
+                header(self.finished, self.total, result.title)
+            ));
+        }
+        self.finished += 1;
         let continuing = continuing_warning(result.title);
         for report in ui::take_reports() {
             match report.kind {
@@ -5041,6 +5060,142 @@ mod tests {
         insta::assert_snapshot!("compact_background_failure_terminal", run.terminal);
     }
 
+    /// A foreground step that cannot start until the background step
+    /// after it in the plan has reported, so the background step finishes
+    /// first.
+    const BACKGROUND_FIRST_STEPS: &[Step] = &[
+        Step {
+            title: "waits for background",
+            lane: Lane::Foreground,
+            requires: &["background"],
+            apt: AptShare::None,
+            actions: &[Action::GitSetup],
+        },
+        Step {
+            title: "background",
+            lane: Lane::Background,
+            requires: &[],
+            apt: AptShare::None,
+            actions: &[fake!("background")],
+        },
+        Step {
+            title: "last",
+            lane: Lane::Foreground,
+            requires: &[],
+            apt: AptShare::None,
+            actions: &[fake!("last")],
+        },
+    ];
+
+    /// The `[` step lines among `written`'s stdout lines.
+    fn step_lines(written: &[(ui::Stream, String)], log_path: &Path) -> Vec<String> {
+        stream_lines(written, ui::Stream::Stdout, log_path)
+            .into_iter()
+            .filter(|line| line.starts_with('['))
+            .collect()
+    }
+
+    #[test]
+    fn compact_step_lines_count_finished_steps_in_completion_order() {
+        let seen = Mutex::new(Vec::new());
+        let git_setup = || {
+            seen.lock().unwrap().push(ui::active_spinner_message());
+            Ok(())
+        };
+        let runner = GateRunner::new(Duration::from_secs(10));
+        let deps = deps_recording_git(Os::Linux, true, &runner, &PanicFetcher, &git_setup);
+        let dir = tempfile::tempdir().unwrap();
+        let log_path = dir.path().join("hpds-setup.log");
+
+        let run = run_logged(
+            Profile::Server,
+            BACKGROUND_FIRST_STEPS,
+            &deps,
+            true,
+            &log_path,
+        );
+
+        assert!(run.result.is_ok(), "{:?}", run.result);
+        assert_eq!(
+            step_lines(&run.written, &log_path),
+            [
+                "[1/3] background ✓",
+                "[2/3] waits for background ✓",
+                "[3/3] last ✓",
+            ],
+            "the count is of finished steps, in the order they finished"
+        );
+        assert_eq!(
+            *seen.lock().unwrap(),
+            [Some("[2/3] waits for background".to_string())],
+            "the spinner carries the count the step's line will take"
+        );
+        insta::assert_snapshot!("compact_background_first_terminal", run.terminal);
+        // The log keeps each step's plan index, as `--plan` numbers it.
+        for expected in [
+            "[2/3] background (ran in the background)\nbackground\n[2/3] background ✓\n",
+            "[1/3] waits for background\n[1/3] waits for background ✓\n",
+            "[3/3] last\nlast\n[3/3] last ✓\n",
+        ] {
+            assert!(
+                run.log.contains(expected),
+                "missing {expected:?}:\n{}",
+                run.log
+            );
+        }
+    }
+
+    /// [`BACKGROUND_FIRST_STEPS`] with a background step that fails.
+    const BACKGROUND_FAILS_FIRST_STEPS: &[Step] = &[
+        Step {
+            title: "waits for background",
+            lane: Lane::Foreground,
+            requires: &["background fails"],
+            apt: AptShare::None,
+            actions: &[fake!("one")],
+        },
+        Step {
+            title: "background fails",
+            lane: Lane::Background,
+            requires: &[],
+            apt: AptShare::None,
+            actions: &[fake!("stuck")],
+        },
+        Step {
+            title: "last",
+            lane: Lane::Foreground,
+            requires: &[],
+            apt: AptShare::None,
+            actions: &[fake!("last")],
+        },
+    ];
+
+    #[test]
+    fn compact_background_failure_that_finishes_first_takes_the_first_count() {
+        let runner =
+            GateRunner::new(Duration::from_millis(20)).gate("fake stuck", "fake never runs");
+        let git_setup = || Ok(());
+        let deps = deps_recording_git(Os::Linux, true, &runner, &PanicFetcher, &git_setup);
+        let dir = tempfile::tempdir().unwrap();
+        let log_path = dir.path().join("hpds-setup.log");
+
+        let run = run_logged(
+            Profile::Server,
+            BACKGROUND_FAILS_FIRST_STEPS,
+            &deps,
+            true,
+            &log_path,
+        );
+
+        assert!(run.result.is_err());
+        insta::assert_snapshot!("compact_background_fails_first_terminal", run.terminal);
+        assert!(
+            run.log.contains("[2/3] background fails ✗\n"),
+            "the log keeps the plan index:\n{}",
+            run.log
+        );
+    }
+
     #[test]
     fn interactive_server_shows_the_plan_on_the_terminal_before_the_checklist() {
         // Prompts must fail here rather than wait on a terminal a test
@@ -5363,31 +5518,46 @@ mod tests {
             Some(format!("hpds setup --profile server: {total} steps. Full log: <LOG>").as_str()),
             "{lines:#?}"
         );
-        let step_lines: Vec<&String> = lines.iter().filter(|line| line.starts_with('[')).collect();
-        assert_eq!(step_lines.len(), total, "{lines:#?}");
-        for (index, step) in table.iter().enumerate() {
-            let expected = format!("[{}/{total}] {} ✓", index + 1, step.title);
+        // Each line is `[n/N] title ✓`, where `n` counts finished steps.
+        let step_lines: Vec<(usize, &str)> = lines
+            .iter()
+            .filter_map(|line| {
+                let (count, rest) = line.strip_prefix('[')?.split_once(&format!("/{total}] "))?;
+                Some((count.parse().ok()?, rest.strip_suffix(" ✓")?))
+            })
+            .collect();
+        assert_eq!(
+            step_lines
+                .iter()
+                .map(|(count, _)| *count)
+                .collect::<Vec<_>>(),
+            (1..=total).collect::<Vec<_>>(),
+            "the counts rise by one per line: {lines:#?}"
+        );
+        for step in table {
             assert_eq!(
-                lines.iter().filter(|line| **line == expected).count(),
+                step_lines
+                    .iter()
+                    .filter(|(_, title)| *title == step.title)
+                    .count(),
                 1,
-                "{expected}: {lines:#?}"
+                "{}: {lines:#?}",
+                step.title
             );
         }
-        let foreground: Vec<String> = lines
+        let foreground: Vec<&str> = step_lines
             .iter()
-            .filter(|line| {
-                table.iter().enumerate().any(|(index, step)| {
-                    step.lane == Lane::Foreground
-                        && **line == format!("[{}/{total}] {} ✓", index + 1, step.title)
-                })
+            .map(|(_, title)| *title)
+            .filter(|title| {
+                table
+                    .iter()
+                    .any(|step| step.lane == Lane::Foreground && step.title == *title)
             })
-            .cloned()
             .collect();
-        let planned_foreground: Vec<String> = table
+        let planned_foreground: Vec<&str> = table
             .iter()
-            .enumerate()
-            .filter(|(_, step)| step.lane == Lane::Foreground)
-            .map(|(index, step)| format!("[{}/{total}] {} ✓", index + 1, step.title))
+            .filter(|step| step.lane == Lane::Foreground)
+            .map(|step| step.title)
             .collect();
         assert_eq!(
             foreground, planned_foreground,
